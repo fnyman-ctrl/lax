@@ -13,6 +13,7 @@ mod logging;
 #[allow(dead_code, unused_imports)] // Used by the model settings (#15) and the journal (Stage 3).
 mod models;
 mod pause;
+#[allow(dead_code)] // RemoteRedactor is used by remote providers (#16).
 mod redact;
 mod site;
 #[allow(dead_code)] // Plain search and setting the capture interval await the settings window.
