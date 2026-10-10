@@ -28,6 +28,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_captures.sql"),
     include_str!("../migrations/0002_settings.sql"),
     include_str!("../migrations/0003_exclusions.sql"),
+    include_str!("../migrations/0004_outbox.sql"),
 ];
 
 /// How long raw captures are kept unless the user chooses otherwise
@@ -44,6 +45,9 @@ pub const CAPTURE_INTERVAL_RANGE: std::ops::RangeInclusive<u32> = 2..=300;
 
 const RETENTION_KEY: &str = "retention_days";
 const CAPTURE_INTERVAL_KEY: &str = "capture_interval_seconds";
+const OUTBOX_RETENTION_KEY: &str = "outbox_retention_days";
+/// How long the outbox log is kept unless the user chooses otherwise.
+pub const DEFAULT_OUTBOX_RETENTION_DAYS: u32 = 90;
 const PAUSE_KEY: &str = "paused_until";
 const PAUSED_UNTIL_RESUMED: &str = "resumed";
 
@@ -313,6 +317,165 @@ pub struct ModelChoice {
     pub model: String,
 }
 
+/// One request to a remote provider, as it was sent (GUARDRAILS §3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutboxEntry {
+    pub sent_at: DateTime<Utc>,
+    pub provider: String,
+    pub task: String,
+    pub model: String,
+    /// The request body exactly as sent, after redaction.
+    pub payload: String,
+    /// HTTP status, 0 if nothing came back.
+    pub status: u16,
+    pub response_bytes: usize,
+    /// The earliest and latest capture time the request was made from, if
+    /// it was made from captures.
+    pub covers: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    /// The apps (bundle ids) whose captures it held.
+    pub apps: Vec<String>,
+}
+
+/// An outbox entry as the window lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutboxSummary {
+    pub id: i64,
+    pub sent_at: DateTime<Utc>,
+    pub provider: String,
+    pub task: String,
+    pub model: String,
+    pub preview: String,
+    pub payload_chars: usize,
+    pub status: u16,
+    pub response_bytes: usize,
+}
+
+/// The outbox log.
+impl Store {
+    pub fn record_outbox(&self, entry: &OutboxEntry) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO outbox (sent_at, provider, task, model, payload, status, response_bytes,
+                                 covers_from, covers_to, apps)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                entry.sent_at.timestamp_millis(),
+                entry.provider,
+                entry.task,
+                entry.model,
+                entry.payload,
+                entry.status,
+                i64::try_from(entry.response_bytes).unwrap_or(i64::MAX),
+                entry.covers.map(|(from, _)| from.timestamp_millis()),
+                entry.covers.map(|(_, to)| to.timestamp_millis()),
+                entry.apps.join("\n"),
+            ],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Entries newest first, at most `limit`; with `query`, only those whose
+    /// payload matches it. `before` continues a listing.
+    pub fn outbox(
+        &self,
+        query: Option<&str>,
+        before: Option<(DateTime<Utc>, i64)>,
+        limit: usize,
+    ) -> Result<Vec<OutboxSummary>> {
+        let (before_ms, before_id) = before
+            .map(|(at, id)| (at.timestamp_millis(), id))
+            .unwrap_or((i64::MAX, i64::MAX));
+        let fts = query.and_then(match_query);
+        let sql = format!(
+            "SELECT o.id, o.sent_at, o.provider, o.task, o.model, substr(o.payload, 1, ?1),
+                    length(o.payload), o.status, o.response_bytes
+             FROM outbox AS o {}
+             WHERE (o.sent_at, o.id) < (?2, ?3) {}
+             ORDER BY o.sent_at DESC, o.id DESC
+             LIMIT ?4",
+            if fts.is_some() {
+                "JOIN outbox_fts ON outbox_fts.rowid = o.id"
+            } else {
+                ""
+            },
+            if fts.is_some() {
+                "AND outbox_fts MATCH ?5"
+            } else {
+                ""
+            },
+        );
+        let mut statement = self.conn.prepare(&sql)?;
+        let map = |row: &Row| -> rusqlite::Result<OutboxSummary> {
+            let millis: i64 = row.get(1)?;
+            let chars: i64 = row.get(6)?;
+            let bytes: i64 = row.get(8)?;
+            Ok(OutboxSummary {
+                id: row.get(0)?,
+                sent_at: DateTime::from_timestamp_millis(millis).unwrap_or_default(),
+                provider: row.get(2)?,
+                task: row.get(3)?,
+                model: row.get(4)?,
+                preview: row.get(5)?,
+                payload_chars: usize::try_from(chars).unwrap_or(0),
+                status: row.get(7)?,
+                response_bytes: usize::try_from(bytes).unwrap_or(0),
+            })
+        };
+        let preview = PREVIEW_CHARS as i64;
+        let limit = sql_limit(limit);
+        let rows = match &fts {
+            Some(fts) => statement
+                .query_map(params![preview, before_ms, before_id, limit, fts], map)?
+                .collect::<rusqlite::Result<Vec<_>>>()?,
+            None => statement
+                .query_map(params![preview, before_ms, before_id, limit], map)?
+                .collect::<rusqlite::Result<Vec<_>>>()?,
+        };
+        Ok(rows)
+    }
+
+    /// The whole payload of one entry.
+    pub fn outbox_payload(&self, id: i64) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT payload FROM outbox WHERE id = ?1", [id], |row| {
+                row.get(0)
+            })
+            .optional()?)
+    }
+
+    /// Deletes one entry (`Some(id)`) or the whole log (`None`), also from
+    /// the files on disk. Returns how many entries were deleted.
+    pub fn delete_outbox(&self, id: Option<i64>) -> Result<usize> {
+        let deleted = match id {
+            Some(id) => self
+                .conn
+                .execute("DELETE FROM outbox WHERE id = ?1", [id])?,
+            None => self.conn.execute("DELETE FROM outbox", [])?,
+        };
+        if deleted > 0 {
+            self.scrub()?;
+        }
+        Ok(deleted)
+    }
+
+    pub fn outbox_retention_days(&self) -> Result<u32> {
+        let value = self.setting(OUTBOX_RETENTION_KEY)?;
+        Ok(value
+            .and_then(|v| v.parse().ok())
+            .filter(|days| (1..=MAX_RETENTION_DAYS).contains(days))
+            .unwrap_or(DEFAULT_OUTBOX_RETENTION_DAYS))
+    }
+
+    pub fn set_outbox_retention_days(&self, days: u32, now: DateTime<Utc>) -> Result<()> {
+        if !(1..=MAX_RETENTION_DAYS).contains(&days) {
+            return Err(StoreError::InvalidRetention(days));
+        }
+        self.set_setting(OUTBOX_RETENTION_KEY, &days.to_string())?;
+        self.expire(now)?;
+        Ok(())
+    }
+}
+
 /// A kind of user exclusion (GUARDRAILS §4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExclusionKind {
@@ -517,16 +680,44 @@ impl Store {
     /// deleted captures must be deleted here too (GUARDRAILS §4).
     pub fn forget(&self, what: &Forget) -> Result<usize> {
         let deleted = self.delete(what)?;
+        // What was sent off the machine about the forgotten captures goes
+        // too. (Everything already includes the outbox.)
+        let outbox_deleted = self.forget_in_outbox(what)?;
         // Remembered once the rows are gone, so a failed delete refuses
         // nothing. The store is behind a lock, so no capture can be stored
         // in between.
         self.recent_forgets
             .borrow_mut()
             .push((what.clone(), Utc::now()));
-        if deleted > 0 {
+        if deleted + outbox_deleted > 0 {
             self.scrub()?;
         }
         Ok(deleted)
+    }
+
+    /// Outbox entries made from captures that `what` covers.
+    fn forget_in_outbox(&self, what: &Forget) -> Result<usize> {
+        Ok(match what {
+            Forget::Before(t) => self.conn.execute(
+                "DELETE FROM outbox WHERE covers_from < ?1",
+                [t.timestamp_millis()],
+            )?,
+            Forget::Since(t) => self.conn.execute(
+                "DELETE FROM outbox WHERE covers_to >= ?1",
+                [t.timestamp_millis()],
+            )?,
+            Forget::Between(from, to) => self.conn.execute(
+                "DELETE FROM outbox WHERE covers_from < ?2 AND covers_to >= ?1",
+                [from.timestamp_millis(), to.timestamp_millis()],
+            )?,
+            Forget::App(bundle_id) => self.conn.execute(
+                "DELETE FROM outbox
+                 WHERE instr(char(10) || lower(apps) || char(10),
+                             char(10) || lower(?1) || char(10)) > 0",
+                [bundle_id],
+            )?,
+            Forget::Everything => 0,
+        })
     }
 
     /// Deletes captures older than the retention period.
@@ -538,7 +729,12 @@ impl Store {
     pub fn expire(&self, now: DateTime<Utc>) -> Result<usize> {
         let days = i64::from(self.retention_days()?);
         let deleted = self.delete(&Forget::Before(now - TimeDelta::days(days)))?;
-        if deleted > 0 {
+        let outbox_days = i64::from(self.outbox_retention_days()?);
+        let outbox_deleted = self.conn.execute(
+            "DELETE FROM outbox WHERE sent_at < ?1",
+            [(now - TimeDelta::days(outbox_days)).timestamp_millis()],
+        )?;
+        if deleted + outbox_deleted > 0 {
             self.checkpoint()?;
         }
         Ok(deleted)
@@ -562,7 +758,11 @@ impl Store {
                 "DELETE FROM captures WHERE bundle_id = ?1 COLLATE NOCASE",
                 [bundle_id],
             )?,
-            Forget::Everything => self.conn.execute("DELETE FROM captures", [])?,
+            Forget::Everything => {
+                // What was sent off the machine is part of "everything".
+                self.conn.execute("DELETE FROM outbox", [])?;
+                self.conn.execute("DELETE FROM captures", [])?
+            }
         })
     }
 
@@ -695,6 +895,10 @@ impl Store {
     fn scrub(&self) -> Result<()> {
         self.conn.execute(
             "INSERT INTO captures_fts (captures_fts) VALUES ('optimize')",
+            [],
+        )?;
+        self.conn.execute(
+            "INSERT INTO outbox_fts (outbox_fts) VALUES ('optimize')",
             [],
         )?;
         self.conn.execute_batch("VACUUM")?;
@@ -1416,6 +1620,108 @@ mod tests {
         assert_eq!(store.model_choice(ModelTask::Embeddings).unwrap(), None);
         store.set_model_choice(ModelTask::Chat, None).unwrap();
         assert_eq!(store.model_choice(ModelTask::Chat).unwrap(), None);
+    }
+
+    fn sent(minute: i64, payload: &str) -> OutboxEntry {
+        OutboxEntry {
+            sent_at: at(minute),
+            provider: "api.example.com".to_string(),
+            task: "summarize".to_string(),
+            model: "example-model".to_string(),
+            payload: payload.to_string(),
+            status: 200,
+            response_bytes: 512,
+            covers: Some((at(minute - 15), at(minute))),
+            apps: vec!["com.apple.mail".to_string()],
+        }
+    }
+
+    #[test]
+    fn forgetting_captures_forgets_what_was_sent_about_them() {
+        let store = Store::open_in_memory().unwrap();
+        // Requests covering minutes -15..0, 45..60 and 105..120.
+        store.record_outbox(&sent(0, "first")).unwrap();
+        store.record_outbox(&sent(60, "second")).unwrap();
+        store
+            .record_outbox(&OutboxEntry {
+                apps: vec!["com.apple.Notes".to_string()],
+                ..sent(120, "third")
+            })
+            .unwrap();
+        // A request not made from captures stays through time forgets.
+        store
+            .record_outbox(&OutboxEntry {
+                covers: None,
+                apps: Vec::new(),
+                ..sent(130, "not from captures")
+            })
+            .unwrap();
+        let left = |store: &Store| -> Vec<String> {
+            store
+                .outbox(None, None, 10)
+                .unwrap()
+                .into_iter()
+                .map(|o| o.preview)
+                .collect()
+        };
+
+        store.forget(&Forget::Between(at(50), at(55))).unwrap();
+        assert_eq!(left(&store), ["not from captures", "third", "first"]);
+        store
+            .forget(&Forget::App("COM.APPLE.NOTES".to_string()))
+            .unwrap();
+        assert_eq!(left(&store), ["not from captures", "first"]);
+        store.forget(&Forget::Since(at(-5))).unwrap();
+        assert_eq!(left(&store), ["not from captures"]);
+    }
+
+    #[test]
+    fn outbox_lists_searches_and_deletes() {
+        let store = Store::open_in_memory().unwrap();
+        let first = store
+            .record_outbox(&sent(0, r#"{"messages":["Offert för Q3"]}"#))
+            .unwrap();
+        store
+            .record_outbox(&sent(1, r#"{"messages":["Weekly report"]}"#))
+            .unwrap();
+        let all = store.outbox(None, None, 10).unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].task, "summarize");
+        assert!(all[1].preview.contains("Offert"));
+        let found = store.outbox(Some("offert"), None, 10).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, first);
+        assert_eq!(
+            store.outbox_payload(first).unwrap().as_deref(),
+            Some(r#"{"messages":["Offert för Q3"]}"#)
+        );
+        assert_eq!(store.delete_outbox(Some(first)).unwrap(), 1);
+        assert!(store.outbox(Some("offert"), None, 10).unwrap().is_empty());
+        assert_eq!(store.delete_outbox(None).unwrap(), 1);
+        assert!(store.outbox(None, None, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn deleting_everything_includes_the_outbox() {
+        let store = Store::open_in_memory().unwrap();
+        store.record_outbox(&sent(0, "sent text")).unwrap();
+        store.forget(&Forget::Everything).unwrap();
+        assert!(store.outbox(None, None, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_outbox_expires_on_its_own_retention() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(
+            store.outbox_retention_days().unwrap(),
+            DEFAULT_OUTBOX_RETENTION_DAYS
+        );
+        store.record_outbox(&sent(0, "old")).unwrap();
+        store
+            .set_outbox_retention_days(1, at(0) + TimeDelta::days(2))
+            .unwrap();
+        assert!(store.outbox(None, None, 10).unwrap().is_empty());
+        assert!(store.set_outbox_retention_days(0, Utc::now()).is_err());
     }
 
     #[test]

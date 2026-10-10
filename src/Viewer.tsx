@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Exclusions } from "./Exclusions";
 import { Forget } from "./Forget";
 import { Models } from "./Models";
+import { Outbox } from "./Outbox";
 // The app icon is the one source of the mascot (docs/BRAND.md).
 import laxIcon from "../src-tauri/icons/app-icon.svg";
 
@@ -53,7 +54,7 @@ const MATCH_END = "\u0003";
  * only ever rendered as text, never as HTML.
  */
 export function Viewer() {
-  const [tab, setTab] = useState<"captures" | "exclusions" | "models">("captures");
+  const [tab, setTab] = useState<"captures" | "exclusions" | "models" | "outbox">("captures");
   const [query, setQuery] = useState("");
   // Bumped after a deletion, so the lists start over from the database.
   const [version, setVersion] = useState(0);
@@ -91,8 +92,17 @@ export function Viewer() {
         >
           Models
         </button>
+        <button
+          type="button"
+          aria-current={tab === "outbox" ? "page" : undefined}
+          onClick={() => setTab("outbox")}
+        >
+          Sent
+        </button>
       </nav>
-      {tab === "models" ? (
+      {tab === "outbox" ? (
+        <Outbox />
+      ) : tab === "models" ? (
         <Models />
       ) : tab === "exclusions" ? (
         <Exclusions onForgotten={forgotten} />

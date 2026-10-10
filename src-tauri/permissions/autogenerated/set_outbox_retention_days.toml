@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-outbox-retention-days"
+description = "Enables the set_outbox_retention_days command without any pre-configured scope."
+commands.allow = ["set_outbox_retention_days"]
+
+[[permission]]
+identifier = "deny-set-outbox-retention-days"
+description = "Denies the set_outbox_retention_days command without any pre-configured scope."
+commands.deny = ["set_outbox_retention_days"]

@@ -642,3 +642,15 @@ mark {
   margin: 0.25rem 0 0;
   padding-left: 1.2rem;
 }
+
+/* Outbox (src/Outbox.tsx) */
+
+.outbox .card.empty p {
+  margin: 0.25rem 0;
+}
+
+.outbox .sent {
+  margin: 0.5rem 0 0;
+  padding: 0;
+  list-style: none;
+}

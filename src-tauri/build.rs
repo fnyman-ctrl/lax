@@ -24,6 +24,11 @@ fn main() {
             "set_model",
             "clear_model",
             "test_model",
+            "outbox_entries",
+            "outbox_payload",
+            "delete_outbox",
+            "outbox_retention_days",
+            "set_outbox_retention_days",
         ]),
     ))
     .expect("failed to run tauri-build");
