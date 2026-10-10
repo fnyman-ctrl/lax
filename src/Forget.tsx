@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 // Shapes used by src-tauri/src/forget.rs.
@@ -27,6 +27,15 @@ export function Forget({ onForgotten }: { onForgotten: () => void }) {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [retention, setRetention] = useState<number | null>(null);
+  const confirmButton = useRef<HTMLButtonElement>(null);
+
+  // Move focus to the confirm button, so keyboard and VoiceOver users land
+  // on the question.
+  useEffect(() => {
+    if (pending) {
+      confirmButton.current?.focus();
+    }
+  }, [pending]);
 
   const loadApps = () => {
     invoke<AppItem[]>("captured_apps").then(
@@ -56,14 +65,13 @@ export function Forget({ onForgotten }: { onForgotten: () => void }) {
     pending
       .run()
       .then(
-        (text) => {
-          setMessage({ text, error: false });
-          onForgotten();
-          loadApps();
-        },
+        (text) => setMessage({ text, error: false }),
         (error) => setMessage({ text: String(error), error: true }),
       )
       .finally(() => {
+        // Also after an error: part of it may have been deleted.
+        onForgotten();
+        loadApps();
         setBusy(false);
         setPending(null);
       });
@@ -221,7 +229,13 @@ export function Forget({ onForgotten }: { onForgotten: () => void }) {
         <div className="confirm" role="alertdialog" aria-label="Confirm">
           <p>{pending.question}</p>
           <p className="buttons">
-            <button type="button" className="danger" disabled={busy} onClick={confirm}>
+            <button
+              type="button"
+              className="danger"
+              disabled={busy}
+              onClick={confirm}
+              ref={confirmButton}
+            >
               {busy ? "Deleting…" : pending.button}
             </button>
             <button type="button" className="secondary" disabled={busy} onClick={() => setPending(null)}>

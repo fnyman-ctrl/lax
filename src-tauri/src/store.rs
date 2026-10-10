@@ -363,12 +363,10 @@ impl Store {
     /// Every app with captures, the most captured first.
     pub fn apps(&self) -> Result<Vec<CapturedApp>> {
         let mut statement = self.conn.prepare(
-            "SELECT bundle_id,
-                    (SELECT app_name FROM captures AS n
-                     WHERE n.bundle_id = c.bundle_id COLLATE NOCASE
-                     ORDER BY captured_at DESC LIMIT 1),
-                    count(*)
-             FROM captures AS c
+            // With max(), SQLite takes the bare columns from the row that
+            // has the maximum, so app_name is the latest name.
+            "SELECT bundle_id, app_name, count(*), max(captured_at)
+             FROM captures
              GROUP BY bundle_id COLLATE NOCASE
              ORDER BY count(*) DESC, bundle_id",
         )?;
@@ -411,10 +409,13 @@ impl Store {
     /// When episodes and memory pages arrive, what is derived from the
     /// deleted captures must be deleted here too (GUARDRAILS §4).
     pub fn forget(&self, what: &Forget) -> Result<usize> {
+        let deleted = self.delete(what)?;
+        // Remembered once the rows are gone, so a failed delete refuses
+        // nothing. The store is behind a lock, so no capture can be stored
+        // in between.
         self.recent_forgets
             .borrow_mut()
             .push((what.clone(), Utc::now()));
-        let deleted = self.delete(what)?;
         if deleted > 0 {
             self.scrub()?;
         }
@@ -913,10 +914,19 @@ mod tests {
                 ..capture("c", "x")
             })
             .unwrap();
+        // The same app under a newer name: the newest name is shown.
+        store
+            .insert(&NewCapture {
+                captured_at: at(3),
+                app_name: "Mail (new)",
+                ..capture("d", "x")
+            })
+            .unwrap();
         let apps = store.apps().unwrap();
         assert_eq!(apps.len(), 2);
+        assert_eq!(apps[0].app_name, "Mail (new)");
         assert_eq!(apps[0].bundle_id, "com.apple.mail");
-        assert_eq!(apps[0].captures, 2);
+        assert_eq!(apps[0].captures, 3);
         assert_eq!(apps[1].app_name, "Anteckningar");
     }
 
