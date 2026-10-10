@@ -1,3 +1,5 @@
+#[allow(dead_code)] // Used by capture, which arrives in #6.
+mod exclusions;
 #[allow(dead_code)] // Most levels and fields are first used by capture (#6).
 mod logging;
 mod pause;
