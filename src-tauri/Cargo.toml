@@ -17,7 +17,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
+# Local time for pause deadlines ("until tomorrow") and the menu label.
+# Already in the dependency tree through Tauri.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [lints.rust]
 unsafe_code = "warn"

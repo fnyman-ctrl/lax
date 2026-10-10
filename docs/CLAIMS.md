@@ -15,7 +15,7 @@ The idea comes from [Mason](https://github.com/Baltsar/mason/blob/main/docs/CLAI
 | Exclusions are checked before content is read | §4 | Not yet implemented | None yet |
 | Only the host of a URL is stored | §4 | Not yet implemented | None yet |
 | Secrets are redacted before they are stored | §4 | Not yet implemented | None yet |
-| While paused, nothing is read | §4 | Not yet implemented | None yet |
+| While paused, nothing is read | §4 | Pause state in `src-tauri/src/pause.rs` (`Pause::is_paused`). Capture must check it before every read; capture itself arrives in #6 | Pause, resume and expiry: `pause::tests`. A test that capture reads nothing while paused comes with #6 |
 | Captured content never appears in logs | §6 | Not yet implemented | None yet |
 | Remote requests are redacted and logged in the outbox | §3 | Not yet implemented | None yet |
 | API keys are only stored in the macOS Keychain | §3 | Not yet implemented | None yet |

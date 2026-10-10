@@ -57,6 +57,9 @@ npm ci
 npm run tauri dev
 ```
 
+Lax starts in the menu bar without opening a window. Click the fish icon and
+choose **Open Lax** to show it.
+
 npm install scripts are disabled in `.npmrc`. Don't turn them on.
 
 ### Checks

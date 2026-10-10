@@ -1650,6 +1650,7 @@ dependencies = [
 name = "lax"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "tauri",
  "tauri-build",
 ]
