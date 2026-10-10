@@ -11,15 +11,18 @@ previous one, so they can be built, tested and improved independently.
 
 ## 1. Capture
 
+- Lax runs in the menu bar. While capture is paused, nothing at all is read.
 - Every few seconds, read the focused app, window title and visible text through
-  the macOS Accessibility API (`AXUIElement`).
+  the macOS Accessibility API (`AXUIElement`). This needs the Accessibility
+  permission, which the user grants in System Settings after onboarding explains it.
 - If an app exposes no accessible text, fall back to a screenshot of the window
   (ScreenCaptureKit) and on-device OCR (Apple Vision). The screenshot is discarded
   after OCR.
 - Skip unchanged content (hash-based dedup) and anything on the exclude list
   (password managers, private browser windows, user-chosen apps).
-- Redact secrets, then store as `captures` rows in SQLite: timestamp, app, window title,
-  site (host only, if browser), text.
+- Mask secrets (passwords, keys, tokens, card numbers, personal identity numbers) in
+  the text and window title, then store as `captures` rows in SQLite: timestamp, app,
+  window title, site (host only, if browser), text.
 
 ## 2. Summarize
 

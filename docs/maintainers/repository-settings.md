@@ -16,8 +16,8 @@ Ruleset **Protect main**, enforcement *Active*, target: default branch.
   - [x] Require conversation resolution before merging
 - [x] Require status checks to pass
   - [x] Require branches to be up to date before merging
-  - Required checks: `Lint workflows`, `Analyze (actions)`
-    (more are added with the app scaffold)
+  - Required checks: `Lint workflows`, `Frontend`, `Rust`, `Cargo deny`,
+    `Analyze (actions)`, `Analyze (rust)`, `Analyze (javascript-typescript)`
 - [x] Require linear history
 - Bypass list: empty
 

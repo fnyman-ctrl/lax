@@ -10,7 +10,7 @@ closer to them.
 | Stage | Goal | Status |
 |---|---|---|
 | 0 | Foundation | ✅ Done |
-| [1](https://github.com/fnyman-ctrl/lax/milestone/1) | Capture | 🚧 Next |
+| [1](https://github.com/fnyman-ctrl/lax/milestone/1) | Capture | 🚧 In progress |
 | [2](https://github.com/fnyman-ctrl/lax/milestone/2) | Model layer | Planned |
 | [3](https://github.com/fnyman-ctrl/lax/milestone/3) | Journal | Planned |
 | [4](https://github.com/fnyman-ctrl/lax/milestone/4) | Learning memory ⭐ | Planned |
@@ -29,11 +29,14 @@ security policy and hardened CI, all in place before the first line of app code.
 **Goal:** A menu bar app that reads the text of the active window and stores it
 locally. No AI yet.
 
+- Menu bar app with pause (15 minutes, 1 hour, until tomorrow, until resumed)
 - Accessibility permission onboarding that explains what is and isn't read
-- Capture app, window title, visible text and browser URL
-- Never capture password fields, password managers or private windows; user-defined exclusions
+- Capture app, window title, visible text and the site of browser windows (host only)
+- Never capture password fields, password managers or private windows; banking and
+  health excluded by default; user-defined exclusions
+- Secrets masked before anything is stored
 - SQLite storage with full-text search
-- Pause, retention, and "forget" controls
+- Retention and "forget" controls
 - A view of everything captured, with search
 - A logging policy that keeps captured content out of logs
 
