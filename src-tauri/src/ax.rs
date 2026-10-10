@@ -52,6 +52,12 @@ unsafe extern "C" {
         max_values: CFIndex,
         values: *mut *const CFArray,
     ) -> AXError;
+    fn AXUIElementCopyMultipleAttributeValues(
+        element: &CFType,
+        attributes: &CFArray,
+        options: u32,
+        values: *mut *const CFArray,
+    ) -> AXError;
     fn AXUIElementCopyParameterizedAttributeValue(
         element: &CFType,
         attribute: &CFString,
@@ -131,6 +137,8 @@ struct Names {
     manual_accessibility: CFRetained<CFString>,
     visible_character_range: CFRetained<CFString>,
     string_for_range: CFRetained<CFString>,
+    /// AXRole and AXSubrole, for reading both in one request.
+    role_and_subrole: CFRetained<CFArray<CFString>>,
 }
 
 impl Names {
@@ -149,6 +157,7 @@ impl Names {
             manual_accessibility: name("AXManualAccessibility"),
             visible_character_range: name("AXVisibleCharacterRange"),
             string_for_range: name("AXStringForRange"),
+            role_and_subrole: CFArray::from_retained_objects(&[name("AXRole"), name("AXSubrole")]),
         }
     }
 }
@@ -340,6 +349,39 @@ impl Node for Element {
 
     fn subrole(&self) -> Option<String> {
         self.string(&self.names.subrole)
+    }
+
+    fn role_and_subrole(&self) -> (Option<String>, Option<String>) {
+        let mut values: *const CFArray = ptr::null();
+        let attributes: &CFArray = self.names.role_and_subrole.as_ref();
+        // SAFETY: valid element, an array of attribute name strings and an
+        // out pointer. With options 0, an attribute the element lacks gives
+        // an error value in its place instead of failing the whole call.
+        let error = unsafe {
+            AXUIElementCopyMultipleAttributeValues(&self.element, attributes, 0, &mut values)
+        };
+        // Some apps can't answer the combined request; ask one at a time.
+        let one_at_a_time = || (self.role(), self.subrole());
+        if error != AX_SUCCESS {
+            return one_at_a_time();
+        }
+        // SAFETY: on success the array is a new reference we own.
+        let Some(array) = (unsafe { owned(values.cast()) }) else {
+            return one_at_a_time();
+        };
+        let Ok(array) = array.downcast::<CFArray>() else {
+            return one_at_a_time();
+        };
+        // SAFETY: the array holds CoreFoundation objects; each is checked to
+        // be a string below, and error values are not.
+        let array = unsafe { CFRetained::cast_unchecked::<CFArray<CFType>>(array) };
+        let string = |i: usize| {
+            array
+                .get(i)
+                .and_then(|value| value.downcast::<CFString>().ok())
+                .map(|s| s.to_string())
+        };
+        (string(0), string(1))
     }
 
     fn identifier(&self) -> Option<String> {
