@@ -10,9 +10,10 @@ mod pause;
 mod redact;
 #[allow(dead_code)] // Used by capture, which arrives in #6.
 mod site;
-#[allow(dead_code)] // Writing and searching are used by capture (#6) and the viewer (#10).
+#[allow(dead_code)] // Writing is used by capture (#6), forgetting by #9.
 mod store;
 mod tray;
+mod viewer;
 
 use std::sync::Mutex;
 
@@ -26,6 +27,10 @@ pub fn run() {
             accessibility::accessibility_status,
             accessibility::open_accessibility_settings,
             filevault::filevault_enabled,
+            viewer::capture_status,
+            viewer::recent_captures,
+            viewer::search_captures,
+            viewer::capture_detail,
         ])
         .setup(|app| {
             // Lax lives in the menu bar, without a Dock icon.
@@ -47,9 +52,8 @@ pub fn run() {
             // capturing by mistake.
             //
             // If the database can't be opened (damaged, from a newer Lax, disk
-            // full), Lax still starts so the user can see what's wrong, but
-            // nothing can be stored. Showing the error in the window comes with
-            // the viewer (#10).
+            // full), Lax still starts so the user can see what's wrong in the
+            // window, but nothing can be stored.
             let paused_until_resumed = pause::CaptureState::Paused { until: None };
             let pause = app.state::<pause::Pause>();
             match store::Store::open(&app.path().app_data_dir()?) {
@@ -58,7 +62,10 @@ pub fn run() {
                     app.manage(Mutex::new(store));
                     expiry::start(app.handle().clone());
                 }
-                Err(_) => pause.restore(paused_until_resumed),
+                Err(error) => {
+                    pause.restore(paused_until_resumed);
+                    app.manage(viewer::StoreUnavailable(error.to_string()));
+                }
             }
             tray::create(app.handle())?;
 

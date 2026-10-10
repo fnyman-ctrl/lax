@@ -108,6 +108,38 @@ pub struct Capture {
     pub text: String,
 }
 
+/// A capture as the viewer lists it: the start of its text, not all of it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaptureSummary {
+    pub id: i64,
+    pub captured_at: DateTime<Utc>,
+    pub app_name: String,
+    pub bundle_id: String,
+    pub window_title: String,
+    pub site: Option<String>,
+    /// At most [`PREVIEW_CHARS`] characters from the start of the text.
+    pub preview: String,
+    /// The length of the whole text, in characters.
+    pub text_chars: usize,
+}
+
+/// A search result: the capture, and the part of it that matched.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SearchHit {
+    pub capture: CaptureSummary,
+    /// A few words around the match. Each matched word is enclosed in
+    /// [`MATCH_START`] and [`MATCH_END`].
+    pub snippet: String,
+}
+
+pub const PREVIEW_CHARS: usize = 240;
+/// Mark matched words in [`SearchHit::snippet`]. Control characters, so they
+/// can't be confused with the text, which never reaches the web UI as HTML.
+pub const MATCH_START: char = '\u{2}';
+pub const MATCH_END: char = '\u{3}';
+/// Words of context around a match in a snippet.
+const SNIPPET_WORDS: i64 = 16;
+
 /// Creates the data folder if needed, and makes sure only the user can open it,
 /// also when it already existed with wider permissions.
 pub fn prepare_data_dir(dir: &Path) -> std::io::Result<()> {
@@ -201,6 +233,101 @@ impl Store {
         let rows = statement.query_map(params![query, limit], capture_from_row)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
+}
+
+/// Reading for the viewer (#10).
+impl Store {
+    /// Captures from newest to oldest, at most `limit`. `before` continues a
+    /// listing after the last capture shown, by its time and id.
+    pub fn recent(
+        &self,
+        before: Option<(DateTime<Utc>, i64)>,
+        limit: usize,
+    ) -> Result<Vec<CaptureSummary>> {
+        let (before_ms, before_id) = before
+            .map(|(at, id)| (at.timestamp_millis(), id))
+            .unwrap_or((i64::MAX, i64::MAX));
+        let mut statement = self.conn.prepare(
+            "SELECT id, captured_at, app_name, bundle_id, window_title, site,
+                    substr(text, 1, ?1), length(text)
+             FROM captures
+             WHERE (captured_at, id) < (?2, ?3)
+             ORDER BY captured_at DESC, id DESC
+             LIMIT ?4",
+        )?;
+        let rows = statement.query_map(
+            params![PREVIEW_CHARS as i64, before_ms, before_id, sql_limit(limit)],
+            summary_from_row,
+        )?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// One capture with all its text.
+    pub fn get(&self, id: i64) -> Result<Option<Capture>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id, captured_at, app_name, bundle_id, window_title, site, text
+                 FROM captures WHERE id = ?1",
+                [id],
+                capture_from_row,
+            )
+            .optional()?)
+    }
+
+    /// Like [`Store::search`], with a snippet of the matching text instead of
+    /// all of it.
+    pub fn search_hits(&self, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
+        let Some(query) = match_query(query) else {
+            return Ok(Vec::new());
+        };
+        let mut statement = self.conn.prepare(
+            "SELECT c.id, c.captured_at, c.app_name, c.bundle_id, c.window_title, c.site,
+                    substr(c.text, 1, ?2), length(c.text),
+                    snippet(captures_fts, -1, ?3, ?4, '…', ?5)
+             FROM captures_fts
+             JOIN captures AS c ON c.id = captures_fts.rowid
+             WHERE captures_fts MATCH ?1
+             ORDER BY rank, c.captured_at DESC
+             LIMIT ?6",
+        )?;
+        let rows = statement.query_map(
+            params![
+                query,
+                PREVIEW_CHARS as i64,
+                MATCH_START.to_string(),
+                MATCH_END.to_string(),
+                SNIPPET_WORDS,
+                sql_limit(limit)
+            ],
+            |row| {
+                Ok(SearchHit {
+                    capture: summary_from_row(row)?,
+                    snippet: row.get(8)?,
+                })
+            },
+        )?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+}
+
+fn sql_limit(limit: usize) -> i64 {
+    i64::try_from(limit).unwrap_or(i64::MAX)
+}
+
+fn summary_from_row(row: &Row) -> rusqlite::Result<CaptureSummary> {
+    let millis: i64 = row.get(1)?;
+    let chars: i64 = row.get(7)?;
+    Ok(CaptureSummary {
+        id: row.get(0)?,
+        captured_at: DateTime::from_timestamp_millis(millis).unwrap_or_default(),
+        app_name: row.get(2)?,
+        bundle_id: row.get(3)?,
+        window_title: row.get(4)?,
+        site: row.get(5)?,
+        preview: row.get(6)?,
+        text_chars: usize::try_from(chars).unwrap_or(0),
+    })
 }
 
 impl Store {
@@ -633,6 +760,77 @@ mod tests {
         }
         assert!(store.search("", 10).unwrap().is_empty());
         assert!(store.search("   ", 10).unwrap().is_empty());
+    }
+
+    fn at(minute: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp_millis(1_781_520_000_000 + minute * 60_000).unwrap()
+    }
+
+    fn insert_at(store: &Store, minute: i64, title: &str, text: &str) -> i64 {
+        store
+            .insert(&NewCapture {
+                captured_at: at(minute),
+                ..capture(title, text)
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn recent_lists_newest_first_and_continues() {
+        let store = Store::open_in_memory().unwrap();
+        for minute in 0..5 {
+            insert_at(&store, minute, &format!("t{minute}"), "x");
+        }
+        // Two captures in the same millisecond keep a stable order by id.
+        insert_at(&store, 4, "t4b", "x");
+
+        let first = store.recent(None, 3).unwrap();
+        let titles: Vec<_> = first.iter().map(|c| c.window_title.as_str()).collect();
+        assert_eq!(titles, ["t4b", "t4", "t3"]);
+
+        let last = first.last().unwrap();
+        let next = store.recent(Some((last.captured_at, last.id)), 10).unwrap();
+        let titles: Vec<_> = next.iter().map(|c| c.window_title.as_str()).collect();
+        assert_eq!(titles, ["t2", "t1", "t0"]);
+    }
+
+    #[test]
+    fn recent_shows_only_the_start_of_long_text() {
+        let store = Store::open_in_memory().unwrap();
+        let long = "å".repeat(PREVIEW_CHARS + 100);
+        insert_at(&store, 0, "Long", &long);
+        let summary = &store.recent(None, 1).unwrap()[0];
+        assert_eq!(summary.preview.chars().count(), PREVIEW_CHARS);
+        assert_eq!(summary.text_chars, PREVIEW_CHARS + 100);
+    }
+
+    #[test]
+    fn get_returns_all_the_text() {
+        let store = Store::open_in_memory().unwrap();
+        let long = "word ".repeat(1000);
+        let id = insert_at(&store, 0, "Long", &long);
+        assert_eq!(store.get(id).unwrap().unwrap().text, long);
+        assert_eq!(store.get(id + 1).unwrap(), None);
+    }
+
+    #[test]
+    fn search_hits_mark_the_matched_words() {
+        let store = Store::open_in_memory().unwrap();
+        insert_at(
+            &store,
+            0,
+            "Q3 proposal",
+            "Anna Example wants the offert för Q3 by Friday",
+        );
+        let hits = store.search_hits("offert", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        let snippet = &hits[0].snippet;
+        assert!(
+            snippet.contains(&format!("{MATCH_START}offert{MATCH_END}")),
+            "{snippet:?}"
+        );
+        assert_eq!(hits[0].capture.window_title, "Q3 proposal");
+        assert!(store.search_hits("   ", 10).unwrap().is_empty());
     }
 
     #[test]

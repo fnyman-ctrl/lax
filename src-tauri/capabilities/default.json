@@ -7,6 +7,10 @@
     "core:default",
     "allow-accessibility-status",
     "allow-open-accessibility-settings",
-    "allow-filevault-enabled"
+    "allow-filevault-enabled",
+    "allow-capture-status",
+    "allow-recent-captures",
+    "allow-search-captures",
+    "allow-capture-detail"
   ]
 }

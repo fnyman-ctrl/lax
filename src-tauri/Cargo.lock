@@ -1686,6 +1686,8 @@ dependencies = [
  "chrono",
  "regex",
  "rusqlite",
+ "serde",
+ "serde_json",
  "tauri",
  "tauri-build",
  "url",

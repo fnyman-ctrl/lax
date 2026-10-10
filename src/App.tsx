@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { Viewer } from "./Viewer";
 
 // Must match CHANGED_EVENT in src-tauri/src/accessibility.rs.
 const ACCESSIBILITY_CHANGED = "accessibility-changed";
@@ -10,6 +11,9 @@ type Access = boolean | null | "unknown";
 
 function App() {
   const [granted, setGranted] = useState<Access>(null);
+  // Without the permission, onboarding is shown, but what was captured
+  // before can still be seen.
+  const [showViewer, setShowViewer] = useState(false);
 
   const refresh = useCallback(() => {
     invoke<boolean>("accessibility_status").then(setGranted, () => setGranted("unknown"));
@@ -28,10 +32,18 @@ function App() {
   if (granted === null) {
     return null;
   }
+  let content;
+  if (granted === "unknown") {
+    content = <CheckFailed />;
+  } else if (granted || showViewer) {
+    content = <Viewer onShowOnboarding={() => setShowViewer(false)} />;
+  } else {
+    content = <Onboarding onShowCaptures={() => setShowViewer(true)} />;
+  }
   return (
     <>
       <FileVaultWarning />
-      {granted === "unknown" ? <CheckFailed /> : granted ? <Ready /> : <Onboarding />}
+      {content}
     </>
   );
 }
@@ -89,7 +101,7 @@ function CheckFailed() {
   );
 }
 
-function Onboarding() {
+function Onboarding({ onShowCaptures }: { onShowCaptures: () => void }) {
   const [error, setError] = useState(false);
 
   const openSettings = () => {
@@ -150,19 +162,10 @@ function Onboarding() {
         In Privacy &amp; Security → Accessibility, turn on Lax. This window updates as soon as
         access is granted. You can turn it off there at any time.
       </p>
-    </main>
-  );
-}
-
-function Ready() {
-  return (
-    <main className="container">
-      <h1>Lax</h1>
-      <p>A private, fully local memory for your Mac.</p>
-      <p>✓ Accessibility access is on.</p>
-      <p className="muted">
-        Nothing is captured yet. You can turn access off at any time in System Settings →
-        Privacy &amp; Security → Accessibility.
+      <p>
+        <button type="button" className="link" onClick={onShowCaptures}>
+          See what Lax has already captured
+        </button>
       </p>
     </main>
   );

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-recent-captures"
+description = "Enables the recent_captures command without any pre-configured scope."
+commands.allow = ["recent_captures"]
+
+[[permission]]
+identifier = "deny-recent-captures"
+description = "Denies the recent_captures command without any pre-configured scope."
+commands.deny = ["recent_captures"]

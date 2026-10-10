@@ -6,6 +6,10 @@ fn main() {
             "accessibility_status",
             "open_accessibility_settings",
             "filevault_enabled",
+            "capture_status",
+            "recent_captures",
+            "search_captures",
+            "capture_detail",
         ]),
     ))
     .expect("failed to run tauri-build");

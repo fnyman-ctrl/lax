@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-capture-detail"
+description = "Enables the capture_detail command without any pre-configured scope."
+commands.allow = ["capture_detail"]
+
+[[permission]]
+identifier = "deny-capture-detail"
+description = "Denies the capture_detail command without any pre-configured scope."
+commands.deny = ["capture_detail"]
