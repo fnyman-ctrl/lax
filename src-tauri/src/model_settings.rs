@@ -262,6 +262,17 @@ mod tests {
         }
     }
 
+    /// Looks for real servers on this Mac. Not run by default; run with
+    /// `LAX_LIVE_EXPECT_SERVER="LM Studio" cargo test live_find -- --ignored`.
+    #[tokio::test]
+    #[ignore = "needs a model server running on this Mac"]
+    async fn live_find_local_models() {
+        let expected = std::env::var("LAX_LIVE_EXPECT_SERVER").unwrap();
+        let servers = find_local_models().await;
+        let server = servers.iter().find(|s| s.name == expected).unwrap();
+        assert!(!server.models.is_empty());
+    }
+
     #[test]
     fn tasks_arrive_as_the_window_sends_them() {
         assert_eq!(
