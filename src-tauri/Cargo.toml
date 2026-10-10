@@ -27,6 +27,11 @@ unsafe_code = "warn"
 
 [lints.clippy]
 all = { level = "warn", priority = -1 }
+# All output goes through src/logging.rs, which can't carry captured content
+# (GUARDRAILS §6). No printing or debug dumps anywhere else.
+print_stdout = "deny"
+print_stderr = "deny"
+dbg_macro = "deny"
 
 # See https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
