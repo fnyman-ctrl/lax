@@ -26,6 +26,8 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 
+use chrono::{DateTime, Utc};
+
 use crate::exclusions::{
     Decision, Exclusions, SkipReason, address_field_identifier, is_browser, is_secure_text_field,
 };
@@ -116,6 +118,9 @@ const WEB_AREA: &str = "AXWebArea";
 /// What was read from a window, before redaction (the store redacts it).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
+    /// When it was read, which can be up to [`MIN_GAP_PER_WINDOW`] before it
+    /// is stored.
+    pub captured_at: DateTime<Utc>,
     pub app_name: String,
     pub bundle_id: String,
     pub window_title: String,
@@ -144,7 +149,9 @@ pub enum Outcome {
 pub struct Capturer {
     exclusions: Exclusions,
     limits: Limits,
+    /// The fingerprint of the last stored snapshot.
     last: Option<u64>,
+    throttle: Throttle,
 }
 
 impl Capturer {
@@ -153,6 +160,7 @@ impl Capturer {
             exclusions,
             limits,
             last: None,
+            throttle: Throttle::new(MIN_GAP_PER_WINDOW),
         }
     }
 
@@ -205,6 +213,7 @@ impl Capturer {
             window_title = title_without_address(&window_title);
         }
         let snapshot = Snapshot {
+            captured_at: Utc::now(),
             window_title,
             app_name: app.name,
             bundle_id: app.bundle_id,
@@ -223,11 +232,19 @@ impl Capturer {
         Outcome::Captured(snapshot)
     }
 
+    /// What to store after a tick with `outcome`, oldest first; see
+    /// [`Throttle`]. Call [`Capturer::stored`] for each one that was stored.
+    pub fn due(&mut self, outcome: Outcome, now: Instant) -> Vec<Snapshot> {
+        self.throttle.after(outcome, now)
+    }
+
     /// Tells the capturer that `snapshot` was stored, so the same content is
-    /// skipped until it changes. A snapshot that was dropped (a pause began)
-    /// or failed to store is not remembered, and is captured again.
-    pub fn stored(&mut self, snapshot: &Snapshot) {
+    /// skipped until it changes and the window waits for its next turn. A
+    /// snapshot that was dropped (a pause began) or failed to store is not
+    /// remembered, and is captured again.
+    pub fn stored(&mut self, snapshot: &Snapshot, now: Instant) {
         self.last = Some(fingerprint(snapshot));
+        self.throttle.stored(snapshot, now);
     }
 }
 
@@ -524,10 +541,10 @@ mod run {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    use chrono::{Local, Utc};
+    use chrono::Local;
     use tauri::{AppHandle, Manager};
 
-    use super::{Capturer, Limits, MIN_GAP_PER_WINDOW, Outcome, Snapshot, Throttle};
+    use super::{Capturer, Limits, Outcome, Snapshot};
     use crate::accessibility;
     use crate::ax::AxScreen;
     use crate::exclusions::{Exclusions, SkipCounter};
@@ -547,7 +564,6 @@ mod run {
             let mut screen = AxScreen::default();
             // User-defined exclusions arrive with the settings window.
             let mut capturer = Capturer::new(Exclusions::default(), Limits::default());
-            let mut throttle = Throttle::new(MIN_GAP_PER_WINDOW);
             let mut stats = Stats::default();
             let mut last_summary = Instant::now();
             loop {
@@ -560,11 +576,10 @@ mod run {
                         outcome = Outcome::Paused;
                     }
                     stats.record(&outcome, started.elapsed());
-                    for snapshot in throttle.after(outcome, Instant::now()) {
+                    for snapshot in capturer.due(outcome, Instant::now()) {
                         let stored = store(&app, &snapshot);
                         if stored {
-                            capturer.stored(&snapshot);
-                            throttle.stored(&snapshot, Instant::now());
+                            capturer.stored(&snapshot, Instant::now());
                         }
                         stats.record_store(stored);
                     }
@@ -589,7 +604,7 @@ mod run {
         let store = store.lock().unwrap_or_else(PoisonError::into_inner);
         store
             .insert(&NewCapture {
-                captured_at: Utc::now(),
+                captured_at: snapshot.captured_at,
                 app_name: &snapshot.app_name,
                 bundle_id: &snapshot.bundle_id,
                 window_title: &snapshot.window_title,
@@ -1322,7 +1337,7 @@ mod tests {
     fn tick_and_store(capturer: &mut Capturer, screen: &mut FakeScreen) -> Outcome {
         let outcome = capturer.tick(screen, running);
         if let Outcome::Captured(snapshot) = &outcome {
-            capturer.stored(snapshot);
+            capturer.stored(snapshot, Instant::now());
         }
         outcome
     }
@@ -1442,6 +1457,7 @@ mod tests {
 
     fn snapshot(title: &str, text: &str) -> Snapshot {
         Snapshot {
+            captured_at: Utc::now(),
             app_name: "Claude".to_string(),
             bundle_id: "com.anthropic.claudefordesktop".to_string(),
             window_title: title.to_string(),
@@ -1514,6 +1530,25 @@ mod tests {
             feed(&mut throttle, t, 20, Outcome::Skipped(SkipReason::Never)),
             ["note 2"]
         );
+    }
+
+    #[test]
+    fn held_content_keeps_the_time_it_was_read() {
+        let mut throttle = Throttle::new(Duration::from_secs(30));
+        let t = Instant::now();
+        feed(&mut throttle, t, 0, changed("Chat", "a"));
+        let read = snapshot("Chat", "read at 10:00:05");
+        let read_at = read.captured_at;
+        assert!(
+            throttle
+                .after(Outcome::Captured(read), t + Duration::from_secs(5))
+                .is_empty()
+        );
+        let due = throttle.after(
+            Outcome::Captured(snapshot("Notes", "n")),
+            t + Duration::from_secs(29),
+        );
+        assert_eq!(due[0].captured_at, read_at);
     }
 
     #[test]
@@ -1597,7 +1632,7 @@ mod tests {
         let snapshot = captured(capturer().tick(&mut screen, running));
         store
             .insert(&crate::store::NewCapture {
-                captured_at: chrono::Utc::now(),
+                captured_at: snapshot.captured_at,
                 app_name: &snapshot.app_name,
                 bundle_id: &snapshot.bundle_id,
                 window_title: &snapshot.window_title,
