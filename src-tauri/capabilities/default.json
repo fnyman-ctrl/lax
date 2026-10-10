@@ -6,6 +6,7 @@
   "permissions": [
     "core:default",
     "allow-accessibility-status",
-    "allow-open-accessibility-settings"
+    "allow-open-accessibility-settings",
+    "allow-filevault-enabled"
   ]
 }

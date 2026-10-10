@@ -1,4 +1,5 @@
 mod accessibility;
+mod filevault;
 mod pause;
 mod tray;
 
@@ -11,6 +12,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             accessibility::accessibility_status,
             accessibility::open_accessibility_settings,
+            filevault::filevault_enabled,
         ])
         .setup(|app| {
             // Lax lives in the menu bar, without a Dock icon.

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-filevault-enabled"
+description = "Enables the filevault_enabled command without any pre-configured scope."
+commands.allow = ["filevault_enabled"]
+
+[[permission]]
+identifier = "deny-filevault-enabled"
+description = "Denies the filevault_enabled command without any pre-configured scope."
+commands.deny = ["filevault_enabled"]

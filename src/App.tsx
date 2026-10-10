@@ -28,10 +28,50 @@ function App() {
   if (granted === null) {
     return null;
   }
-  if (granted === "unknown") {
-    return <CheckFailed />;
+  return (
+    <>
+      <FileVaultWarning />
+      {granted === "unknown" ? <CheckFailed /> : granted ? <Ready /> : <Onboarding />}
+    </>
+  );
+}
+
+/**
+ * Warns when FileVault is off (GUARDRAILS §6). If the status can't be read,
+ * says so mildly instead of staying silent. Checked again whenever the window
+ * gets focus, so the warning goes away once FileVault is turned on.
+ */
+function FileVaultWarning() {
+  // undefined while loading, null if the status couldn't be read.
+  const [enabled, setEnabled] = useState<boolean | null | undefined>(undefined);
+
+  useEffect(() => {
+    const check = () => {
+      invoke<boolean | null>("filevault_enabled").then(setEnabled, () => setEnabled(null));
+    };
+    check();
+    window.addEventListener("focus", check);
+    return () => window.removeEventListener("focus", check);
+  }, []);
+
+  if (enabled === undefined || enabled === true) {
+    return null;
   }
-  return granted ? <Ready /> : <Onboarding />;
+  if (enabled === null) {
+    return (
+      <aside className="notice">
+        Lax couldn't check whether FileVault is on. Lax relies on FileVault to encrypt what it
+        stores. You can check in System Settings → Privacy &amp; Security → FileVault.
+      </aside>
+    );
+  }
+  return (
+    <aside className="warning" role="alert">
+      <strong>FileVault is off.</strong> Lax keeps what it captures on this Mac's disk. Without
+      FileVault, anyone who gets hold of the disk can read it. Turn FileVault on in System
+      Settings → Privacy &amp; Security → FileVault.
+    </aside>
+  );
 }
 
 function CheckFailed() {
