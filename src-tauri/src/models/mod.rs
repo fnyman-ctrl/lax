@@ -3,6 +3,8 @@
 
 mod client;
 mod endpoint;
+mod structured;
 
 pub use client::{ChatMessage, ModelClient, ModelError, Role};
 pub use endpoint::{Endpoint, EndpointError, Locality};
+pub use structured::{Captured, Entities, StructuredError, Validate, ask};
