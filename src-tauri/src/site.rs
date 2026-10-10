@@ -6,8 +6,9 @@
 
 use url::{Host, Url};
 
-/// The host of an `http` or `https` address, in lower case, without `www.`,
-/// a port or a trailing dot. Anything else (other schemes, addresses that
+/// The host of an `http` or `https` address, in lower case, without a port or
+/// a trailing dot. `www.` is kept: the host is stored as the browser had it,
+/// and exclusions match subdomains anyway. Anything else (other schemes, addresses that
 /// don't parse) gives `None`, and nothing is kept.
 ///
 /// International domain names are returned in their ASCII (punycode) form,
@@ -22,7 +23,6 @@ pub fn site_from_url(address: &str) -> Option<String> {
         Host::Ipv4(ip) => ip.to_string(),
         Host::Ipv6(ip) => ip.to_string(),
     };
-    let host = host.strip_prefix("www.").unwrap_or(&host).to_string();
     (!host.is_empty()).then_some(host)
 }
 
@@ -38,7 +38,7 @@ mod tests {
     fn keeps_only_the_host() {
         assert_eq!(
             site("https://www.figma.com/file/AbC123/Q3-proposal?node-id=1#frame"),
-            Some("figma.com".to_string())
+            Some("www.figma.com".to_string())
         );
         assert_eq!(
             site("https://docs.example.com/d/1x2y3z/edit"),
@@ -50,7 +50,7 @@ mod tests {
     fn drops_searches_and_tokens() {
         let kept =
             site("https://www.example.com/search?q=anna+example+diagnosis&token=abc123").unwrap();
-        assert_eq!(kept, "example.com");
+        assert_eq!(kept, "www.example.com");
     }
 
     #[test]
