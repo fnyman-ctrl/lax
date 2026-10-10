@@ -86,6 +86,7 @@ pub struct ModelClient {
     http: Client,
     endpoint: Endpoint,
     backoff: [Duration; 2],
+    retries: bool,
 }
 
 impl ModelClient {
@@ -109,6 +110,7 @@ impl ModelClient {
             http,
             endpoint,
             backoff: BACKOFF,
+            retries: true,
         })
     }
 
@@ -255,7 +257,7 @@ impl ModelClient {
                 Err(error) => (Err(ModelError::Unreachable), error.is_connect()),
             };
             match self.backoff.get(attempts - 1) {
-                Some(wait) if retry => tokio::time::sleep(*wait).await,
+                Some(wait) if retry && self.retries => tokio::time::sleep(*wait).await,
                 _ => break outcome,
             }
         };
@@ -274,6 +276,14 @@ impl ModelClient {
         );
         let bytes = result?;
         serde_json::from_slice(&bytes).map_err(|_| ModelError::InvalidResponse)
+    }
+
+    /// The same client without retries, for quick checks such as looking
+    /// for servers that may not be running.
+    pub fn without_retries(mut self) -> Self {
+        self.backoff = [Duration::ZERO; 2];
+        self.retries = false;
+        self
     }
 
     #[cfg(test)]
