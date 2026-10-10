@@ -133,6 +133,8 @@ pub enum Outcome {
     Paused,
     NoApp,
     NoWindow,
+    /// A window with neither a title nor text, such as the Finder desktop.
+    Empty,
     Skipped(SkipReason),
     Unchanged,
     Captured(Snapshot),
@@ -211,6 +213,9 @@ impl Capturer {
             nodes: content.nodes,
             skipped_frames: content.skipped_frames,
         };
+        if snapshot.window_title.is_empty() && snapshot.text.is_empty() {
+            return Outcome::Empty;
+        }
         if self.last == Some(fingerprint(&snapshot)) {
             return Outcome::Unchanged;
         }
@@ -222,6 +227,99 @@ impl Capturer {
     /// or failed to store is not remembered, and is captured again.
     pub fn stored(&mut self, snapshot: &Snapshot) {
         self.last = Some(fingerprint(snapshot));
+    }
+}
+
+/// How often a window whose text keeps changing is stored, at most.
+pub const MIN_GAP_PER_WINDOW: Duration = Duration::from_secs(30);
+
+/// Decides when captures are stored. A window whose text keeps changing (a
+/// chat being answered, a document being typed) would otherwise be stored
+/// every few seconds, nearly the same each time. It is stored at most once
+/// per [`MIN_GAP_PER_WINDOW`], with its latest content. Switching to another
+/// window stores what was held right away, so nothing is lost; a pause drops
+/// it (GUARDRAILS §4: pausing stops any pending processing).
+pub struct Throttle {
+    min_gap: Duration,
+    /// The window stored last, and when.
+    last: Option<(WindowKey, Instant)>,
+    /// The latest content of that window, read too soon to be stored.
+    held: Option<Snapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WindowKey {
+    bundle_id: String,
+    window_title: String,
+}
+
+impl WindowKey {
+    fn of(snapshot: &Snapshot) -> Self {
+        WindowKey {
+            bundle_id: snapshot.bundle_id.clone(),
+            window_title: snapshot.window_title.clone(),
+        }
+    }
+}
+
+impl Throttle {
+    pub fn new(min_gap: Duration) -> Self {
+        Throttle {
+            min_gap,
+            last: None,
+            held: None,
+        }
+    }
+
+    /// What to store after a tick with `outcome`, oldest first. Call
+    /// [`Throttle::stored`] for each one that was stored.
+    pub fn after(&mut self, outcome: Outcome, now: Instant) -> Vec<Snapshot> {
+        match outcome {
+            Outcome::Paused => {
+                self.held = None;
+                Vec::new()
+            }
+            Outcome::Captured(snapshot) => {
+                let key = WindowKey::of(&snapshot);
+                let mut due = Vec::new();
+                if let Some(held) = self.held.take()
+                    && WindowKey::of(&held) != key
+                {
+                    due.push(held);
+                }
+                let recent = self.last.as_ref().is_some_and(|(last, at)| {
+                    *last == key && now.duration_since(*at) < self.min_gap
+                });
+                // Held content is always from the window stored last, so after
+                // a switch `recent` is false and the new window is stored too.
+                if recent {
+                    self.held = Some(snapshot);
+                } else {
+                    due.push(snapshot);
+                }
+                due
+            }
+            // Still the same window: store what was held once the gap is up.
+            Outcome::Unchanged => {
+                let gap_up = self
+                    .last
+                    .as_ref()
+                    .is_none_or(|(_, at)| now.duration_since(*at) >= self.min_gap);
+                if gap_up {
+                    self.held.take().into_iter().collect()
+                } else {
+                    Vec::new()
+                }
+            }
+            // Another window, or none: store what was held now.
+            Outcome::NoApp | Outcome::NoWindow | Outcome::Empty | Outcome::Skipped(_) => {
+                self.held.take().into_iter().collect()
+            }
+        }
+    }
+
+    pub fn stored(&mut self, snapshot: &Snapshot, now: Instant) {
+        self.last = Some((WindowKey::of(snapshot), now));
     }
 }
 
@@ -428,7 +526,7 @@ mod run {
     use chrono::{Local, Utc};
     use tauri::{AppHandle, Manager};
 
-    use super::{Capturer, Limits, Outcome};
+    use super::{Capturer, Limits, MIN_GAP_PER_WINDOW, Outcome, Snapshot, Throttle};
     use crate::accessibility;
     use crate::ax::AxScreen;
     use crate::exclusions::{Exclusions, SkipCounter};
@@ -448,26 +546,27 @@ mod run {
             let mut screen = AxScreen::default();
             // User-defined exclusions arrive with the settings window.
             let mut capturer = Capturer::new(Exclusions::default(), Limits::default());
+            let mut throttle = Throttle::new(MIN_GAP_PER_WINDOW);
             let mut stats = Stats::default();
             let mut last_summary = Instant::now();
             loop {
                 let started = Instant::now();
                 if accessibility::is_granted() {
                     let pause = app.state::<Pause>();
-                    let outcome = capturer.tick(&mut screen, || pause.is_paused());
-                    let stored = match &outcome {
-                        // Paused while reading: what was read is dropped.
-                        Outcome::Captured(_) if pause.is_paused() => None,
-                        Outcome::Captured(snapshot) => {
-                            let stored = store(&app, snapshot);
-                            if stored {
-                                capturer.stored(snapshot);
-                            }
-                            Some(stored)
+                    let mut outcome = capturer.tick(&mut screen, || pause.is_paused());
+                    // Paused while reading: what was read is dropped.
+                    if pause.is_paused() {
+                        outcome = Outcome::Paused;
+                    }
+                    stats.record(&outcome, started.elapsed());
+                    for snapshot in throttle.after(outcome, Instant::now()) {
+                        let stored = store(&app, &snapshot);
+                        if stored {
+                            capturer.stored(&snapshot);
+                            throttle.stored(&snapshot, Instant::now());
                         }
-                        _ => None,
-                    };
-                    stats.record(&outcome, stored, started.elapsed());
+                        stats.record_store(stored);
+                    }
                 }
                 if last_summary.elapsed() >= SUMMARY_INTERVAL {
                     stats.log();
@@ -482,7 +581,7 @@ mod run {
         });
     }
 
-    fn store(app: &AppHandle, snapshot: &super::Snapshot) -> bool {
+    fn store(app: &AppHandle, snapshot: &Snapshot) -> bool {
         let Some(store) = app.try_state::<Mutex<Store>>() else {
             return false;
         };
@@ -514,7 +613,8 @@ mod run {
     #[derive(Default)]
     struct Stats {
         ticks: u64,
-        captured: u64,
+        changed: u64,
+        stored: u64,
         unchanged: u64,
         paused: u64,
         no_window: u64,
@@ -527,24 +627,28 @@ mod run {
     }
 
     impl Stats {
-        fn record(&mut self, outcome: &Outcome, stored: Option<bool>, elapsed: Duration) {
+        fn record(&mut self, outcome: &Outcome, elapsed: Duration) {
             self.ticks += 1;
             self.slowest = self.slowest.max(elapsed);
             match outcome {
                 Outcome::Paused => self.paused += 1,
-                Outcome::NoApp | Outcome::NoWindow => self.no_window += 1,
+                Outcome::NoApp | Outcome::NoWindow | Outcome::Empty => self.no_window += 1,
                 Outcome::Skipped(reason) => self.skips.record(*reason, Local::now().date_naive()),
                 Outcome::Unchanged => self.unchanged += 1,
                 Outcome::Captured(snapshot) => {
+                    self.changed += 1;
                     self.truncated += u64::from(snapshot.truncated);
                     self.skipped_frames += snapshot.skipped_frames as u64;
                     self.largest_window = self.largest_window.max(snapshot.nodes as u64);
-                    match stored {
-                        Some(true) => self.captured += 1,
-                        Some(false) => self.store_errors += 1,
-                        None => self.paused += 1,
-                    }
                 }
+            }
+        }
+
+        fn record_store(&mut self, stored: bool) {
+            if stored {
+                self.stored += 1;
+            } else {
+                self.store_errors += 1;
             }
         }
 
@@ -554,7 +658,8 @@ mod run {
                 "capture.summary",
                 &[
                     Field::Count("ticks", self.ticks),
-                    Field::Count("captured", self.captured),
+                    Field::Count("changed", self.changed),
+                    Field::Count("stored", self.stored),
                     Field::Count("unchanged", self.unchanged),
                     Field::Count("paused", self.paused),
                     Field::Count("no_window", self.no_window),
@@ -1274,6 +1379,118 @@ mod tests {
             captured(Capturer::new(Exclusions::default(), limits).tick(&mut screen, running));
         assert_eq!(snapshot.text, "abcd\nefgh");
         assert!(snapshot.truncated);
+    }
+
+    #[test]
+    fn windows_without_title_or_text_are_not_captured() {
+        let mut screen = FakeScreen::new("com.apple.finder", "Finder", window("", vec![]));
+        assert_eq!(capturer().tick(&mut screen, running), Outcome::Empty);
+        // A title alone is still worth keeping.
+        let mut screen = FakeScreen::new("com.apple.Safari", "Safari", window("Startsida", vec![]));
+        let mut screen_with_field = FakeScreen::new(
+            "com.apple.Safari",
+            "Safari",
+            window("Startsida", vec![safari_toolbar("smart sökfält")]),
+        );
+        assert_eq!(
+            capturer().tick(&mut screen, running),
+            Outcome::Skipped(SkipReason::Never)
+        );
+        assert!(matches!(
+            capturer().tick(&mut screen_with_field, running),
+            Outcome::Captured(_)
+        ));
+    }
+
+    fn snapshot(title: &str, text: &str) -> Snapshot {
+        Snapshot {
+            app_name: "Claude".to_string(),
+            bundle_id: "com.anthropic.claudefordesktop".to_string(),
+            window_title: title.to_string(),
+            site: None,
+            text: text.to_string(),
+            truncated: false,
+            nodes: 1,
+            skipped_frames: 0,
+        }
+    }
+
+    /// Runs `outcome` through the throttle at `seconds`, storing everything
+    /// it hands out, and returns the texts stored.
+    fn feed(
+        throttle: &mut Throttle,
+        start: Instant,
+        seconds: u64,
+        outcome: Outcome,
+    ) -> Vec<String> {
+        let now = start + Duration::from_secs(seconds);
+        let due = throttle.after(outcome, now);
+        for snapshot in &due {
+            throttle.stored(snapshot, now);
+        }
+        due.into_iter().map(|s| s.text).collect()
+    }
+
+    fn changed(title: &str, text: &str) -> Outcome {
+        Outcome::Captured(snapshot(title, text))
+    }
+
+    #[test]
+    fn a_window_that_keeps_changing_is_stored_at_most_every_gap() {
+        let mut throttle = Throttle::new(Duration::from_secs(30));
+        let t = Instant::now();
+        assert_eq!(feed(&mut throttle, t, 0, changed("Chat", "a")), ["a"]);
+        assert!(feed(&mut throttle, t, 5, changed("Chat", "ab")).is_empty());
+        assert!(feed(&mut throttle, t, 10, changed("Chat", "abc")).is_empty());
+        // Gap up: the latest content is stored, the ones in between never.
+        assert_eq!(
+            feed(&mut throttle, t, 30, changed("Chat", "abcd")),
+            ["abcd"]
+        );
+    }
+
+    #[test]
+    fn held_content_is_stored_once_the_window_stops_changing() {
+        let mut throttle = Throttle::new(Duration::from_secs(30));
+        let t = Instant::now();
+        feed(&mut throttle, t, 0, changed("Chat", "a"));
+        assert!(feed(&mut throttle, t, 5, changed("Chat", "final")).is_empty());
+        assert!(feed(&mut throttle, t, 10, Outcome::Unchanged).is_empty());
+        assert_eq!(feed(&mut throttle, t, 30, Outcome::Unchanged), ["final"]);
+        assert!(feed(&mut throttle, t, 35, Outcome::Unchanged).is_empty());
+    }
+
+    #[test]
+    fn switching_window_stores_what_was_held_first() {
+        let mut throttle = Throttle::new(Duration::from_secs(30));
+        let t = Instant::now();
+        feed(&mut throttle, t, 0, changed("Chat", "a"));
+        feed(&mut throttle, t, 5, changed("Chat", "last words"));
+        assert_eq!(
+            feed(&mut throttle, t, 10, changed("Notes", "note")),
+            ["last words", "note"]
+        );
+        // Also when the next window is skipped or empty.
+        feed(&mut throttle, t, 15, changed("Notes", "note 2"));
+        assert_eq!(
+            feed(&mut throttle, t, 20, Outcome::Skipped(SkipReason::Never)),
+            ["note 2"]
+        );
+    }
+
+    #[test]
+    fn a_pause_drops_what_was_held() {
+        let mut throttle = Throttle::new(Duration::from_secs(30));
+        let t = Instant::now();
+        feed(&mut throttle, t, 0, changed("Chat", "a"));
+        feed(
+            &mut throttle,
+            t,
+            5,
+            changed("Chat", "read before the pause"),
+        );
+        assert!(feed(&mut throttle, t, 10, Outcome::Paused).is_empty());
+        assert!(feed(&mut throttle, t, 40, Outcome::Unchanged).is_empty());
     }
 
     #[test]
