@@ -14,7 +14,8 @@ leaves your computer.
 > Salmon (*lax* in Swedish) find their way back to the exact river they were born
 > in, years later and thousands of kilometres away. That's the kind of memory we're after.
 
-> ⚠️ **Status: early development.** Nothing works yet. Follow along or help out!
+> ⚠️ **Status: early development.** Nothing works yet. See the [roadmap](docs/ROADMAP.md),
+> follow along or help out!
 
 ## Why
 
