@@ -537,7 +537,13 @@ fn walk<N: Node>(
 /// so without this every capture would start with "Skip to content".
 fn is_skip_link(page: &str, target: &str) -> bool {
     let without_fragment = |address: &str| address.split('#').next().unwrap_or("").to_string();
-    target.contains('#') && without_fragment(target) == without_fragment(page)
+    let Some((_, fragment)) = target.split_once('#') else {
+        return false;
+    };
+    // Single-page apps route with fragments ("#/inbox", "#!/settings"); those
+    // links lead to other views, not further down the same page.
+    let route = fragment.starts_with('/') || fragment.starts_with('!');
+    !route && without_fragment(target) == without_fragment(page)
 }
 
 /// At most `max` characters of `text`, cut at a character boundary.
@@ -1507,6 +1513,15 @@ mod tests {
             "https://a.example/y#main"
         ));
         assert!(!is_skip_link("https://a.example/x", "https://a.example/x"));
+        // Routes in single-page apps are not skip links.
+        assert!(!is_skip_link(
+            "https://a.example/#/inbox",
+            "https://a.example/#/sent"
+        ));
+        assert!(!is_skip_link(
+            "https://a.example/#!/a",
+            "https://a.example/#!/b"
+        ));
     }
 
     #[test]

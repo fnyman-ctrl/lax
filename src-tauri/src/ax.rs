@@ -360,15 +360,17 @@ impl Node for Element {
         let error = unsafe {
             AXUIElementCopyMultipleAttributeValues(&self.element, attributes, 0, &mut values)
         };
+        // Some apps can't answer the combined request; ask one at a time.
+        let one_at_a_time = || (self.role(), self.subrole());
         if error != AX_SUCCESS {
-            return (None, None);
+            return one_at_a_time();
         }
         // SAFETY: on success the array is a new reference we own.
         let Some(array) = (unsafe { owned(values.cast()) }) else {
-            return (None, None);
+            return one_at_a_time();
         };
         let Ok(array) = array.downcast::<CFArray>() else {
-            return (None, None);
+            return one_at_a_time();
         };
         // SAFETY: the array holds CoreFoundation objects; each is checked to
         // be a string below, and error values are not.
