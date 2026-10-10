@@ -1,21 +1,91 @@
+/*
+ * Lax's look, from docs/BRAND.md: calm, friendly, never like a camera.
+ * Colours are the brand palette; text and backgrounds keep at least 4.5:1
+ * contrast in both light and dark mode. Fonts are bundled (src/fonts),
+ * never loaded from the network.
+ */
+
+@font-face {
+  font-family: "Bricolage Grotesque";
+  src: url("./fonts/BricolageGrotesque-Variable.woff2") format("woff2");
+  font-weight: 200 800;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Atkinson Hyperlegible Next";
+  src: url("./fonts/AtkinsonHyperlegibleNext-Variable.woff2") format("woff2");
+  font-weight: 200 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Atkinson Hyperlegible Next";
+  src: url("./fonts/AtkinsonHyperlegibleNext-Italic-Variable.woff2") format("woff2");
+  font-weight: 200 800;
+  font-style: italic;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("./fonts/JetBrainsMono-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-display: swap;
+}
+
 :root {
   color-scheme: light dark;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  line-height: 1.5;
-  --fg: #1d1d1f;
-  --muted: #6e6e73;
-  --bg: #ffffff;
-  --error: #c4291c;
+  --font-heading: "Bricolage Grotesque", -apple-system, sans-serif;
+  --font-body: "Atkinson Hyperlegible Next", -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+
+  /* Brand palette (docs/BRAND.md) */
+  --djupvatten: #0f2a33;
+  --stromfara: #2e6f73;
+  --ryggbla: #4f7f93;
+  --silversida: #c7d6dc;
+  --alvsten: #eef2f1;
+  --laxrosa: #e07a84;
+
+  --bg: var(--alvsten);
+  --surface: #ffffff;
+  --fg: var(--djupvatten);
+  --muted: #3e6474;
+  --line: var(--silversida);
+  --accent: var(--stromfara);
+  --accent-fg: #ffffff;
+  --accent-hover: #245a5d;
+  --link: var(--stromfara);
+  --running: var(--stromfara);
+  --paused: #7a5c00;
+  --error: #b3261e;
+  --danger: #b3261e;
+  --danger-hover: #8c1d18;
+  --mark-bg: #f8d7da;
+  --mark-fg: var(--djupvatten);
   --warning-bg: #fff4ce;
   --warning-fg: #5c4400;
+  --radius: 10px;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --fg: #f5f5f7;
-    --muted: #98989d;
-    --bg: #1d1d1f;
-    --error: #ff6961;
+    --bg: var(--djupvatten);
+    --surface: #163843;
+    --fg: var(--alvsten);
+    --muted: #9db4bb;
+    --line: #2c4c56;
+    --accent: #7cc4c4;
+    --accent-fg: var(--djupvatten);
+    --accent-hover: #9ad4d4;
+    --link: #7cc4c4;
+    --running: #7cc4c4;
+    --paused: #e8c766;
+    --error: #ff8a80;
+    --mark-bg: #6b2f36;
+    --mark-fg: #ffffff;
     --warning-bg: #3d3214;
     --warning-fg: #ffe28a;
   }
@@ -23,104 +93,282 @@
 
 body {
   margin: 0;
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.55;
   color: var(--fg);
   background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--font-heading);
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+}
+
+h1 {
+  font-size: 1.9rem;
+  font-weight: 700;
+}
+
+h2 {
+  font-size: 1.05rem;
+  font-weight: 650;
+  margin: 1.5rem 0 0.35rem;
+}
+
+h3 {
+  font-size: 0.95rem;
+  font-weight: 650;
 }
 
 .container {
-  padding: 2rem;
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 1.75rem 2rem 3rem;
 }
 
 .muted {
   color: var(--muted);
 }
 
-h2 {
-  font-size: 1rem;
-  margin: 1.5rem 0 0.25rem;
-}
-
-.actions {
-  margin-top: 2rem;
-}
-
-button {
-  font: inherit;
-  padding: 0.5rem 1rem;
-  border: none;
-  border-radius: 6px;
-  color: #ffffff;
-  background: #0a66d8;
-  cursor: pointer;
-}
-
-button:hover {
-  background: #0857b8;
-}
-
 .error {
   color: var(--error);
 }
 
-.warning {
-  margin: 1rem 2rem 0;
+.actions {
+  margin-top: 1.5rem;
+}
+
+a,
+button.link {
+  color: var(--link);
+}
+
+button {
+  font: inherit;
+  font-weight: 600;
+  padding: 0.5rem 1.1rem;
+  border: none;
+  border-radius: 999px;
+  color: var(--accent-fg);
+  background: var(--accent);
+  cursor: pointer;
+}
+
+button:hover {
+  background: var(--accent-hover);
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+button.secondary {
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--line);
+}
+
+button.secondary:hover {
+  border-color: var(--accent);
+  background: var(--surface);
+}
+
+button.link {
+  padding: 0;
+  font-weight: inherit;
+  background: none;
+  border-radius: 0;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+button.link:hover {
+  background: none;
+}
+
+/* The same dark red in both modes, so white text keeps 4.5:1 contrast. */
+button.danger {
+  color: #ffffff;
+  background: var(--danger);
+}
+
+button.danger:hover {
+  background: var(--danger-hover);
+}
+
+input,
+select {
+  font: inherit;
+  padding: 0.4rem 0.6rem;
+  color: var(--fg);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.warning,
+.notice {
+  max-width: 46rem;
+  box-sizing: border-box;
+  margin: 1rem auto 0;
   padding: 0.75rem 1rem;
-  border-radius: 6px;
+  border-radius: var(--radius);
+}
+
+.warning {
   color: var(--warning-fg);
   background: var(--warning-bg);
 }
 
 .notice {
-  margin: 1rem 2rem 0;
-  padding: 0.75rem 1rem;
-  border-radius: 6px;
   color: var(--muted);
-  border: 1px solid var(--muted);
+  border: 1px solid var(--line);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* Onboarding (src/App.tsx) */
+
+.onboarding .hero {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  margin-bottom: 0.5rem;
+}
+
+.onboarding .hero img {
+  width: 88px;
+  height: 88px;
+  flex: none;
+}
+
+.onboarding .hero h1 {
+  margin: 0 0 0.25rem;
+}
+
+.onboarding .hero p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 1.05rem;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 0.75rem;
+  margin: 1.5rem 0 0;
+}
+
+.card {
+  padding: 0.9rem 1.1rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.card h2 {
+  margin-top: 0;
+}
+
+.card ul {
+  margin: 0.25rem 0 0;
+  padding-left: 1.1rem;
+}
+
+.card p {
+  margin: 0.25rem 0 0;
+}
+
+/* Laxrosa is too light for a meaningful mark on white (under 3:1), so the
+   never-mark uses the error red, which has contrast in both modes. */
+.card.never h2::before {
+  content: "✕ ";
+  color: var(--error);
+}
+
+.card.reads h2::before {
+  content: "✓ ";
+  color: var(--accent);
+}
+
+.steps {
+  margin: 1.5rem 0 0;
+  padding: 1rem 1.25rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.steps h2 {
+  margin-top: 0;
+}
+
+.steps ol {
+  margin: 0.25rem 0 0;
+  padding-left: 1.2rem;
+}
+
+.steps .actions {
+  margin: 0.9rem 0 0.25rem;
 }
 
 /* The viewer (src/Viewer.tsx) */
 
-:root {
-  --line: #d2d2d7;
-  --mark-bg: #fff1a8;
-  --mark-fg: #1d1d1f;
-  --running: #2e7d32;
-  --paused: #8a6d00;
-  --link: #0a66d8;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --line: #3a3a3c;
-    --mark-bg: #6b5900;
-    --mark-fg: #f5f5f7;
-    --running: #66bb6a;
-    --paused: #e0c040;
-    --link: #6cb4ff;
-  }
-}
-
 .viewer-header {
   display: flex;
   flex-wrap: wrap;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
   gap: 0.5rem 1rem;
 }
 
+.viewer-header .brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.viewer-header .brand img {
+  width: 36px;
+  height: 36px;
+}
+
 .viewer-header h1 {
   margin: 0;
+  font-size: 1.6rem;
 }
 
 .status {
   margin: 0;
+  font-size: 0.95rem;
 }
 
 .status .dot {
   display: inline-block;
   width: 0.55rem;
   height: 0.55rem;
-  margin-right: 0.4rem;
+  margin-right: 0.45rem;
   border-radius: 50%;
   background: currentColor;
 }
@@ -133,230 +381,16 @@ button:hover {
   color: var(--paused);
 }
 
-.search input {
-  box-sizing: border-box;
-  width: 100%;
-  margin: 1.25rem 0 0.5rem;
-  padding: 0.55rem 0.75rem;
-  font: inherit;
-  color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-}
-
-.day h2 {
-  margin-top: 1.75rem;
-  padding-bottom: 0.25rem;
-  border-bottom: 1px solid var(--line);
-}
-
-.run h3 {
-  margin: 1rem 0 0.25rem;
-  font-size: 0.95rem;
-}
-
-.viewer ul {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.capture {
-  padding: 0.35rem 0;
-}
-
-button.row {
-  display: flex;
-  gap: 0.75rem;
-  align-items: baseline;
-  width: 100%;
-  padding: 0;
-  text-align: left;
-  color: inherit;
-  background: none;
-  border-radius: 0;
-}
-
-button.row:hover {
-  background: none;
-}
-
-button.row:hover .title {
-  text-decoration: underline;
-}
-
-.row .time {
-  flex: none;
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.row .title {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.row .site {
-  flex: none;
-  color: var(--muted);
-  font-size: 0.9em;
-}
-
-.preview {
-  display: -webkit-box;
-  margin: 0.1rem 0 0 3.6rem;
-  overflow: hidden;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  color: var(--muted);
-  font-size: 0.9em;
-  overflow-wrap: anywhere;
-}
-
-.hit-app {
-  margin: 0.4rem 0 0;
-  font-size: 0.85em;
-}
-
-mark {
-  padding: 0 0.1em;
-  border-radius: 2px;
-  color: var(--mark-fg);
-  background: var(--mark-bg);
-}
-
-.detail {
-  margin: 0.25rem 0 0.5rem 3.6rem;
-}
-
-.detail .text {
-  max-height: 24rem;
-  margin: 0;
-  padding: 0.75rem;
-  overflow: auto;
-  font: 0.85rem/1.45 ui-monospace, Menlo, monospace;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-}
-
-.empty {
-  margin-top: 2rem;
-}
-
-button.secondary {
-  color: var(--fg);
-  background: none;
-  border: 1px solid var(--line);
-}
-
-button.secondary:hover {
-  background: var(--line);
-}
-
-button.link {
-  padding: 0;
-  color: var(--link);
-  background: none;
-  text-decoration: underline;
-}
-
-button.link:hover {
-  background: none;
-}
-
-button:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
-.visually-hidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  overflow: hidden;
-  clip: rect(0 0 0 0);
-  white-space: nowrap;
-}
-
-/* Forgetting (src/Forget.tsx) */
-
-.forget {
-  margin: 0.5rem 0 0;
-  padding: 0.5rem 0.75rem;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-}
-
-.forget summary {
-  cursor: pointer;
-  color: var(--muted);
-}
-
-.forget[open] summary {
-  margin-bottom: 0.5rem;
-  color: var(--fg);
-}
-
-.forget h3 {
-  margin: 1rem 0 0.25rem;
-  font-size: 0.95rem;
-}
-
-.buttons {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem;
-  margin: 0.25rem 0;
-}
-
-.forget input,
-.forget select {
-  font: inherit;
-  padding: 0.3rem 0.4rem;
-  color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 6px;
-}
-
-/* The same dark red in both modes, so white text keeps 4.5:1 contrast. */
-button.danger {
-  background: #b3261e;
-}
-
-button.danger:hover {
-  background: #8c1d18;
-}
-
-.confirm {
-  margin-top: 1rem;
-  padding: 0.75rem 1rem;
-  border: 1px solid var(--error);
-  border-radius: 6px;
-}
-
-.confirm p {
-  margin: 0.25rem 0;
-}
-
-/* Sections and exclusions (src/Exclusions.tsx) */
-
 .tabs {
   display: flex;
   gap: 0.25rem;
-  margin-top: 1rem;
+  margin-top: 1.25rem;
   border-bottom: 1px solid var(--line);
 }
 
 .tabs button {
-  padding: 0.4rem 0.75rem;
+  padding: 0.45rem 0.85rem;
+  font-weight: 600;
   color: var(--muted);
   background: none;
   border-bottom: 2px solid transparent;
@@ -370,21 +404,188 @@ button.danger:hover {
 
 .tabs button[aria-current="page"] {
   color: var(--fg);
-  border-bottom-color: currentColor;
+  border-bottom-color: var(--accent);
 }
+
+.search input {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 1.25rem 0 0.5rem;
+  padding: 0.6rem 0.9rem;
+  border-radius: 999px;
+}
+
+.day h2 {
+  margin-top: 1.75rem;
+  padding-bottom: 0.3rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.run h3 {
+  margin: 1.1rem 0 0.25rem;
+}
+
+.viewer ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.capture {
+  padding: 0.4rem 0;
+}
+
+button.row {
+  display: flex;
+  gap: 0.75rem;
+  align-items: baseline;
+  width: 100%;
+  padding: 0;
+  font-weight: inherit;
+  text-align: left;
+  color: inherit;
+  background: none;
+  border-radius: 0;
+}
+
+button.row:hover {
+  background: none;
+}
+
+button.row:hover .title {
+  color: var(--link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.row .time {
+  flex: none;
+  width: 3.2rem;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+}
+
+.row .title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.row .site {
+  flex: none;
+  color: var(--muted);
+  font-size: 0.85em;
+}
+
+.preview,
+.detail {
+  margin-left: 3.95rem;
+}
+
+.preview {
+  display: -webkit-box;
+  margin-top: 0.1rem;
+  margin-bottom: 0;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  color: var(--muted);
+  font-size: 0.9em;
+  overflow-wrap: anywhere;
+}
+
+.hit-app {
+  margin: 0.5rem 0 0.1rem;
+  font-size: 0.85em;
+}
+
+mark {
+  padding: 0 0.15em;
+  border-radius: 3px;
+  color: var(--mark-fg);
+  background: var(--mark-bg);
+}
+
+.detail {
+  margin-top: 0.35rem;
+  margin-bottom: 0.75rem;
+  padding: 0.75rem 1rem;
+  background: var(--surface);
+  border-radius: var(--radius);
+}
+
+.detail .meta {
+  margin: 0 0 0.5rem;
+  font-size: 0.85em;
+}
+
+/* Captured text: the lines and spacing as they were on screen, in the body
+   font. */
+.detail .text {
+  max-height: 26rem;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
+
+.empty {
+  margin-top: 2rem;
+}
+
+/* Forgetting (src/Forget.tsx) */
+
+.forget {
+  margin: 0.5rem 0 0;
+  padding: 0.6rem 0.9rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.forget summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.forget[open] summary {
+  margin-bottom: 0.5rem;
+  color: var(--fg);
+}
+
+.forget h3,
+.exclusions .add h3 {
+  margin: 1rem 0 0.25rem;
+}
+
+.buttons {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0.25rem 0;
+}
+
+.confirm {
+  margin-top: 1rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--danger);
+  border-radius: var(--radius);
+}
+
+.confirm p {
+  margin: 0.25rem 0;
+}
+
+/* Exclusions (src/Exclusions.tsx) */
 
 .exclusions .add {
   margin-top: 1rem;
-}
-
-.exclusions input[type="text"],
-.exclusions select {
-  font: inherit;
-  padding: 0.3rem 0.4rem;
-  color: var(--fg);
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: 6px;
 }
 
 .exclusions input[type="text"] {
@@ -409,7 +610,7 @@ button.danger:hover {
   display: flex;
   justify-content: space-between;
   gap: 1rem;
-  padding: 0.25rem 0;
+  padding: 0.35rem 0;
   border-bottom: 1px solid var(--line);
 }
 
@@ -423,5 +624,5 @@ button.danger:hover {
 
 .always li::before {
   content: "✓ ";
-  color: var(--running);
+  color: var(--accent);
 }
