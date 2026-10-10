@@ -16,6 +16,10 @@
     "allow-forget-captures",
     "allow-delete-all-data",
     "allow-retention-days",
-    "allow-set-retention-days"
+    "allow-set-retention-days",
+    "allow-exclusion-settings",
+    "allow-add-exclusion",
+    "allow-remove-exclusion",
+    "allow-set-default-excluded"
   ]
 }

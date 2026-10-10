@@ -15,6 +15,10 @@ fn main() {
             "delete_all_data",
             "retention_days",
             "set_retention_days",
+            "exclusion_settings",
+            "add_exclusion",
+            "remove_exclusion",
+            "set_default_excluded",
         ]),
     ))
     .expect("failed to run tauri-build");

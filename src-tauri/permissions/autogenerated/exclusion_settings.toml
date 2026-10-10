@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-exclusion-settings"
+description = "Enables the exclusion_settings command without any pre-configured scope."
+commands.allow = ["exclusion_settings"]
+
+[[permission]]
+identifier = "deny-exclusion-settings"
+description = "Denies the exclusion_settings command without any pre-configured scope."
+commands.deny = ["exclusion_settings"]

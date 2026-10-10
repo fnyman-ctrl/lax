@@ -21,7 +21,8 @@ const MAX_LIMIT: u32 = 200;
 /// The longest search query, in characters.
 const MAX_QUERY_CHARS: usize = 200;
 
-/// Set when the database couldn't be opened, so the window can say why.
+/// Set when capture can't run because of the database (it couldn't be
+/// opened, or the exclusions couldn't be read), so the window can say why.
 pub struct StoreUnavailable(pub String);
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -34,7 +35,7 @@ pub struct CaptureStatus {
     /// Whether the capture loop is going round. If not, nothing is captured
     /// whatever the pause and the permission say.
     pub capturing: bool,
-    /// Why nothing can be stored, if the database couldn't be opened.
+    /// Why capture can't run, if the database is the problem.
     pub store_error: Option<String>,
 }
 

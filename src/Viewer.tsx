@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { Exclusions } from "./Exclusions";
 import { Forget } from "./Forget";
 
 // Shapes returned by src-tauri/src/viewer.rs.
@@ -49,10 +50,12 @@ const MATCH_END = "\u0003";
  * only ever rendered as text, never as HTML.
  */
 export function Viewer() {
+  const [tab, setTab] = useState<"captures" | "exclusions">("captures");
   const [query, setQuery] = useState("");
   // Bumped after a deletion, so the lists start over from the database.
   const [version, setVersion] = useState(0);
   const searching = query.trim() !== "";
+  const forgotten = () => setVersion((v) => v + 1);
 
   return (
     <main className="container viewer">
@@ -60,21 +63,43 @@ export function Viewer() {
         <h1>Lax</h1>
         <Status />
       </header>
-      <label className="search">
-        <span className="visually-hidden">Search what Lax has captured</span>
-        <input
-          type="search"
-          placeholder="Search what Lax has captured"
-          value={query}
-          maxLength={200}
-          onChange={(event) => setQuery(event.target.value)}
-        />
-      </label>
-      <Forget onForgotten={() => setVersion((v) => v + 1)} />
-      {searching ? (
-        <SearchResults key={version} query={query} />
+      <nav className="tabs" aria-label="Sections">
+        <button
+          type="button"
+          aria-current={tab === "captures" ? "page" : undefined}
+          onClick={() => setTab("captures")}
+        >
+          Captures
+        </button>
+        <button
+          type="button"
+          aria-current={tab === "exclusions" ? "page" : undefined}
+          onClick={() => setTab("exclusions")}
+        >
+          Exclusions
+        </button>
+      </nav>
+      {tab === "exclusions" ? (
+        <Exclusions onForgotten={forgotten} />
       ) : (
-        <Timeline key={version} />
+        <>
+          <label className="search">
+            <span className="visually-hidden">Search what Lax has captured</span>
+            <input
+              type="search"
+              placeholder="Search what Lax has captured"
+              value={query}
+              maxLength={200}
+              onChange={(event) => setQuery(event.target.value)}
+            />
+          </label>
+          <Forget onForgotten={forgotten} />
+          {searching ? (
+            <SearchResults key={version} query={query} />
+          ) : (
+            <Timeline key={version} />
+          )}
+        </>
       )}
     </main>
   );
@@ -116,7 +141,7 @@ function Status() {
   if (status.storeError !== null) {
     return (
       <div className="status error" role="alert">
-        Nothing can be stored: the database couldn't be opened ({status.storeError}).
+        Lax can't capture anything: {status.storeError}.
       </div>
     );
   }

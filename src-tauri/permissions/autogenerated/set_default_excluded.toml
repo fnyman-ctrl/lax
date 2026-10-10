@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-default-excluded"
+description = "Enables the set_default_excluded command without any pre-configured scope."
+commands.allow = ["set_default_excluded"]
+
+[[permission]]
+identifier = "deny-set-default-excluded"
+description = "Denies the set_default_excluded command without any pre-configured scope."
+commands.deny = ["set_default_excluded"]

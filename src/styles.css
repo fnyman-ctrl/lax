@@ -86,6 +86,7 @@ button:hover {
   --mark-fg: #1d1d1f;
   --running: #2e7d32;
   --paused: #8a6d00;
+  --link: #0a66d8;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -95,6 +96,7 @@ button:hover {
     --mark-fg: #f5f5f7;
     --running: #66bb6a;
     --paused: #e0c040;
+    --link: #6cb4ff;
   }
 }
 
@@ -259,7 +261,7 @@ button.secondary:hover {
 
 button.link {
   padding: 0;
-  color: #0a66d8;
+  color: var(--link);
   background: none;
   text-decoration: underline;
 }
@@ -342,4 +344,84 @@ button.danger:hover {
 
 .confirm p {
   margin: 0.25rem 0;
+}
+
+/* Sections and exclusions (src/Exclusions.tsx) */
+
+.tabs {
+  display: flex;
+  gap: 0.25rem;
+  margin-top: 1rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.tabs button {
+  padding: 0.4rem 0.75rem;
+  color: var(--muted);
+  background: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+}
+
+.tabs button:hover {
+  color: var(--fg);
+  background: none;
+}
+
+.tabs button[aria-current="page"] {
+  color: var(--fg);
+  border-bottom-color: currentColor;
+}
+
+.exclusions .add {
+  margin-top: 1rem;
+}
+
+.exclusions input[type="text"],
+.exclusions select {
+  font: inherit;
+  padding: 0.3rem 0.4rem;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.exclusions input[type="text"] {
+  min-width: 16rem;
+}
+
+.hint,
+.list-empty {
+  margin: 0.1rem 0 0.25rem;
+  font-size: 0.9em;
+}
+
+.excluded,
+.switches,
+.always {
+  margin: 0.25rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.excluded li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.25rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.switches {
+  columns: 2;
+}
+
+.switches li {
+  padding: 0.15rem 0;
+}
+
+.always li::before {
+  content: "✓ ";
+  color: var(--running);
 }

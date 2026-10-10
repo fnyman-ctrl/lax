@@ -3,6 +3,7 @@ mod accessibility;
 mod ax;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))] // The loop is macOS only.
 mod capture;
+mod exclusion_settings;
 mod exclusions;
 mod expiry;
 mod filevault;
@@ -26,6 +27,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(pause::Pause::default())
         .manage(capture::Heartbeat::default())
+        .manage(exclusions::Current::default())
         .invoke_handler(tauri::generate_handler![
             accessibility::accessibility_status,
             accessibility::open_accessibility_settings,
@@ -39,6 +41,10 @@ pub fn run() {
             forget::delete_all_data,
             forget::retention_days,
             forget::set_retention_days,
+            exclusion_settings::exclusion_settings,
+            exclusion_settings::add_exclusion,
+            exclusion_settings::remove_exclusion,
+            exclusion_settings::set_default_excluded,
         ])
         .setup(|app| {
             // Lax lives in the menu bar, without a Dock icon.
@@ -67,16 +73,32 @@ pub fn run() {
             match store::Store::open(&app.path().app_data_dir()?) {
                 Ok(store) => {
                     pause.restore(store.pause_state().unwrap_or(paused_until_resumed));
+                    // Capture only starts with the user's exclusions in
+                    // place. If they can't be read, it doesn't start at all:
+                    // capturing an app the user excluded is the worse mistake.
+                    let exclusions = store.exclusions();
                     app.manage(Mutex::new(store));
                     expiry::start(app.handle().clone());
-                    // Capture checks the pause and the Accessibility
-                    // permission before every read, so it can start now.
-                    #[cfg(target_os = "macos")]
-                    capture::start(app.handle().clone());
+                    match exclusions {
+                        Ok(exclusions) => {
+                            app.state::<exclusions::Current>().set(exclusions);
+                            // Capture checks the pause and the Accessibility
+                            // permission before every read, so it can start now.
+                            #[cfg(target_os = "macos")]
+                            capture::start(app.handle().clone());
+                        }
+                        Err(_) => {
+                            app.manage(viewer::StoreUnavailable(
+                                "your exclusions couldn't be read".to_string(),
+                            ));
+                        }
+                    }
                 }
                 Err(error) => {
                     pause.restore(paused_until_resumed);
-                    app.manage(viewer::StoreUnavailable(error.to_string()));
+                    app.manage(viewer::StoreUnavailable(format!(
+                        "the database couldn't be opened ({error})"
+                    )));
                 }
             }
             tray::create(app.handle())?;

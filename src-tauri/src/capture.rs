@@ -232,6 +232,11 @@ impl Capturer {
         Outcome::Captured(snapshot)
     }
 
+    /// Takes over changed exclusions; they apply from the next tick.
+    pub fn set_exclusions(&mut self, exclusions: Exclusions) {
+        self.exclusions = exclusions;
+    }
+
     /// What to store after a tick with `outcome`, oldest first; see
     /// [`Throttle`]. Call [`Capturer::stored`] for each one that was stored.
     pub fn due(&mut self, outcome: Outcome, now: Instant) -> Vec<Snapshot> {
@@ -595,7 +600,7 @@ mod run {
     use super::{Capturer, Heartbeat, Limits, Outcome, Snapshot};
     use crate::accessibility;
     use crate::ax::AxScreen;
-    use crate::exclusions::{Exclusions, SkipCounter};
+    use crate::exclusions::{Current, Exclusions, SkipCounter};
     use crate::logging::{self, ErrorKind, Field};
     use crate::pause::Pause;
     use crate::store::{NewCapture, Store};
@@ -611,7 +616,10 @@ mod run {
             crate::ax::set_messaging_timeout(MESSAGING_TIMEOUT);
             let mut screen = AxScreen::default();
             // User-defined exclusions arrive with the settings window.
+            // The user's exclusions are loaded into `Current` before capture
+            // starts, and picked up below before every tick.
             let mut capturer = Capturer::new(Exclusions::default(), Limits::default());
+            let mut exclusions_seen = 0;
             let mut stats = Stats::default();
             let mut last_summary = Instant::now();
             loop {
@@ -619,6 +627,12 @@ mod run {
                 app.state::<Heartbeat>().beat();
                 if accessibility::is_granted() {
                     let pause = app.state::<Pause>();
+                    if let Some((version, exclusions)) =
+                        app.state::<Current>().newer_than(exclusions_seen)
+                    {
+                        capturer.set_exclusions(exclusions);
+                        exclusions_seen = version;
+                    }
                     let mut outcome = capturer.tick(&mut screen, || pause.is_paused());
                     // Paused while reading: what was read is dropped.
                     if pause.is_paused() {
@@ -1393,6 +1407,25 @@ mod tests {
             capturer.stored(snapshot, Instant::now());
         }
         outcome
+    }
+
+    #[test]
+    fn changed_exclusions_apply_from_the_next_tick() {
+        let mut capturer = capturer();
+        assert!(matches!(
+            capturer.tick(&mut notes(), running),
+            Outcome::Captured(_)
+        ));
+        capturer.set_exclusions(Exclusions {
+            apps: vec!["com.apple.Notes".to_string()],
+            ..Exclusions::default()
+        });
+        let mut screen = notes();
+        assert_eq!(
+            capturer.tick(&mut screen, running),
+            Outcome::Skipped(SkipReason::ExcludedByUser)
+        );
+        assert_eq!(screen.reads(), vec!["app"]);
     }
 
     #[test]

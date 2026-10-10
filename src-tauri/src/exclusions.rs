@@ -24,6 +24,7 @@
 //! When in doubt, skip. Skips are counted per reason, never named.
 
 use std::collections::HashSet;
+use std::sync::{Mutex, PoisonError};
 
 use chrono::NaiveDate;
 
@@ -197,7 +198,7 @@ const fn health(
 }
 
 /// The user's exclusion settings.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Exclusions {
     /// Bundle ids, matched exactly, ignoring case.
     pub apps: Vec<String>,
@@ -285,6 +286,38 @@ impl Exclusions {
                 .iter()
                 .any(|name| name.trim().to_lowercase() == rule.name.to_lowercase())
         })
+    }
+}
+
+/// Tier 1, as the window lists it: always excluded, not switchable.
+pub const ALWAYS_EXCLUDED: &[&str] = &[
+    "Password fields, in every app",
+    "Private and incognito browser windows",
+    "Password managers (1Password, Bitwarden, Keychain Access, Passwords and others)",
+    "System password and login prompts",
+    "Tor Browser",
+    "Lax itself",
+];
+
+/// The exclusions capture uses, shared with the window, which changes them.
+/// Capture picks up a change before its next read.
+#[derive(Default)]
+pub struct Current {
+    /// A version that goes up with every change, and the exclusions.
+    inner: Mutex<(u64, Exclusions)>,
+}
+
+impl Current {
+    pub fn set(&self, exclusions: Exclusions) {
+        let mut inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        inner.0 += 1;
+        inner.1 = exclusions;
+    }
+
+    /// The exclusions, if they changed since version `seen`.
+    pub fn newer_than(&self, seen: u64) -> Option<(u64, Exclusions)> {
+        let inner = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        (inner.0 != seen).then(|| (inner.0, inner.1.clone()))
     }
 }
 
@@ -449,6 +482,19 @@ mod tests {
 
     fn none() -> Exclusions {
         Exclusions::default()
+    }
+
+    #[test]
+    fn current_exclusions_report_each_change_once() {
+        let current = Current::default();
+        assert!(current.newer_than(0).is_none());
+        current.set(Exclusions {
+            apps: vec!["com.example.chat".to_string()],
+            ..Exclusions::default()
+        });
+        let (version, exclusions) = current.newer_than(0).unwrap();
+        assert_eq!(exclusions.apps, ["com.example.chat"]);
+        assert!(current.newer_than(version).is_none());
     }
 
     #[test]

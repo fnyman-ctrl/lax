@@ -16,6 +16,7 @@ use std::path::Path;
 use chrono::{DateTime, TimeDelta, Utc};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
+use crate::exclusions::Exclusions;
 use crate::pause::CaptureState;
 use crate::redact::redact;
 
@@ -26,6 +27,7 @@ pub const DATABASE_FILE: &str = "lax.sqlite";
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0001_captures.sql"),
     include_str!("../migrations/0002_settings.sql"),
+    include_str!("../migrations/0003_exclusions.sql"),
 ];
 
 /// How long raw captures are kept unless the user chooses otherwise
@@ -285,6 +287,74 @@ impl Store {
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         let rows = statement.query_map(params![query, limit], capture_from_row)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+}
+
+/// A kind of user exclusion (GUARDRAILS §4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExclusionKind {
+    /// A bundle id.
+    App,
+    /// A host; its subdomains are excluded too.
+    Site,
+    /// Text anywhere in a window title.
+    Title,
+    /// The name of a tier-2 default the user turned off.
+    DefaultOff,
+}
+
+impl ExclusionKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            ExclusionKind::App => "app",
+            ExclusionKind::Site => "site",
+            ExclusionKind::Title => "title",
+            ExclusionKind::DefaultOff => "default_off",
+        }
+    }
+}
+
+/// The user's exclusions.
+impl Store {
+    pub fn exclusions(&self) -> Result<Exclusions> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT kind, value FROM exclusions ORDER BY rowid")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut exclusions = Exclusions::default();
+        for row in rows {
+            let (kind, value) = row?;
+            match kind.as_str() {
+                "app" => exclusions.apps.push(value),
+                "site" => exclusions.sites.push(value),
+                "title" => exclusions.title_patterns.push(value),
+                "default_off" => {
+                    exclusions.re_enabled_defaults.insert(value);
+                }
+                // The table only allows the kinds above.
+                _ => {}
+            }
+        }
+        Ok(exclusions)
+    }
+
+    /// Adds an exclusion. Adding one that exists already changes nothing.
+    pub fn add_exclusion(&self, kind: ExclusionKind, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO exclusions (kind, value) VALUES (?1, ?2)",
+            params![kind.as_str(), value],
+        )?;
+        Ok(())
+    }
+
+    pub fn remove_exclusion(&self, kind: ExclusionKind, value: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM exclusions WHERE kind = ?1 AND value = ?2",
+            params![kind.as_str(), value],
+        )?;
+        Ok(())
     }
 }
 
@@ -958,6 +1028,41 @@ mod tests {
         assert_eq!(apps[0].bundle_id, "com.apple.mail");
         assert_eq!(apps[0].captures, 3);
         assert_eq!(apps[1].app_name, "Anteckningar");
+    }
+
+    #[test]
+    fn exclusions_are_kept_and_matched_without_case() {
+        let tmp = TempDir::new();
+        let store = Store::open(&tmp.0).unwrap();
+        assert_eq!(store.exclusions().unwrap().apps.len(), 0);
+        store
+            .add_exclusion(ExclusionKind::App, "com.tinyspeck.slackmacgap")
+            .unwrap();
+        store
+            .add_exclusion(ExclusionKind::App, "COM.TINYSPECK.SLACKMACGAP")
+            .unwrap();
+        store
+            .add_exclusion(ExclusionKind::Site, "example.com")
+            .unwrap();
+        store
+            .add_exclusion(ExclusionKind::Title, "private chat")
+            .unwrap();
+        store
+            .add_exclusion(ExclusionKind::DefaultOff, "Klarna")
+            .unwrap();
+        drop(store);
+
+        let store = Store::open(&tmp.0).unwrap();
+        let exclusions = store.exclusions().unwrap();
+        assert_eq!(exclusions.apps, ["com.tinyspeck.slackmacgap"]);
+        assert_eq!(exclusions.sites, ["example.com"]);
+        assert_eq!(exclusions.title_patterns, ["private chat"]);
+        assert!(exclusions.re_enabled_defaults.contains("Klarna"));
+
+        store
+            .remove_exclusion(ExclusionKind::App, "Com.Tinyspeck.SlackMacGap")
+            .unwrap();
+        assert!(store.exclusions().unwrap().apps.is_empty());
     }
 
     #[test]
