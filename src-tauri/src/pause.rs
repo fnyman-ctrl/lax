@@ -119,6 +119,11 @@ impl Pause {
         self.state().is_paused()
     }
 
+    /// Takes over the state saved before Lax was last quit.
+    pub fn restore(&self, saved: CaptureState) {
+        self.set(saved);
+    }
+
     fn set(&self, new: CaptureState) {
         *self.lock() = new;
     }

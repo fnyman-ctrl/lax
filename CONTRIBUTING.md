@@ -18,6 +18,25 @@ changes, open an issue first so we can agree on the approach.
   [Architecture Decision Record](docs/adr/README.md).
 - Write commit messages in the imperative ("Add capture exclusions", not "Added…").
 
+## Logging
+
+Lax must never log captured content: no window text, titles, OCR output,
+transcripts, episodes or memory pages (GUARDRAILS §6). To make that hard to get
+wrong, all logging goes through `src-tauri/src/logging.rs`:
+
+- An entry is a fixed event name written in the code (`"capture.tick"`) plus
+  fields that can only hold counts, durations, ids, booleans and error kinds.
+  There is no way to log a string.
+- Log errors by kind (`ErrorKind::Database`), never by their message, which
+  can contain data.
+- `println!`, `eprintln!`, `print!`, `eprint!` and `dbg!` are denied by clippy, and a
+  test also rejects `io::stdout`, `io::stderr` and `leak(` (which could turn
+  captured text into an event name). Don't allow them to get a build through.
+
+Logs are written to `logs/lax.log` in the data folder
+(`~/Library/Application Support/io.github.fnyman-ctrl.lax/`), rotated at 1 MB with
+three old files kept. Debug builds also print them to the terminal.
+
 ## AI-assisted contributions
 
 Using AI tools is fine. You are responsible for every line you submit: you must
@@ -62,6 +81,10 @@ npm run tauri dev
 
 Lax starts in the menu bar without opening a window. Click the fish icon and
 choose **Open Lax** to show it.
+
+Until Lax has the Accessibility permission, it opens a window explaining why it
+needs it. During development macOS may tie the permission to the terminal that
+started Lax, and a rebuilt binary may need to be allowed again.
 
 npm install scripts are disabled in `.npmrc`. Don't turn them on.
 
