@@ -48,6 +48,9 @@ must keep its original copyright notice.
 - Xcode Command Line Tools: `xcode-select --install`
 - [rustup](https://rustup.rs). The exact Rust version is pinned in `rust-toolchain.toml`
   and installed automatically.
+  If you installed rustup with Homebrew, it isn't on your `PATH` by default, and
+  `npm run tauri dev` fails with "failed to run 'cargo metadata'". Add it once:
+  `echo 'export PATH="/opt/homebrew/opt/rustup/bin:$HOME/.cargo/bin:$PATH"' >> ~/.zprofile`
 - Node.js (version in `.nvmrc`)
 
 ### Run
