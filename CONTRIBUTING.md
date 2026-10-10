@@ -42,4 +42,32 @@ must keep its original copyright notice.
 
 ## Getting started
 
-Build instructions will be added once the app scaffold is in place.
+### Requirements
+
+- macOS on Apple Silicon (Intel may work but isn't tested)
+- Xcode Command Line Tools: `xcode-select --install`
+- [rustup](https://rustup.rs). The exact Rust version is pinned in `rust-toolchain.toml`
+  and installed automatically.
+- Node.js (version in `.nvmrc`)
+
+### Run
+
+```bash
+npm ci
+npm run tauri dev
+```
+
+npm install scripts are disabled in `.npmrc`. Don't turn them on.
+
+### Checks
+
+CI runs these on every pull request. Run them locally before pushing:
+
+```bash
+npm run typecheck
+cd src-tauri
+cargo fmt --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --locked
+cargo deny check   # brew install cargo-deny
+```

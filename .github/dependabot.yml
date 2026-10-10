@@ -1,4 +1,3 @@
-# Cargo and npm ecosystems are added together with the app scaffold.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -12,3 +11,23 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      cargo:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      npm:
+        update-types: [minor, patch]
