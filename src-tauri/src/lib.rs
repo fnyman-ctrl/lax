@@ -1,3 +1,5 @@
+#[allow(dead_code)] // Used by capture, which arrives in #6.
+mod exclusions;
 mod pause;
 mod tray;
 
