@@ -92,11 +92,33 @@ and links to the source. It does not vouch for them.
 
 ## 4. Capture
 
-- **Never capture secure fields.** Password fields (`AXSecureTextField`) are never read.
-- **Default exclusions:** password managers (1Password, Bitwarden, Keychain Access…),
-  private/incognito browser windows, and Lax itself. The user can add more apps,
-  websites and window titles.
-- **Pause** is one click in the menu bar, and also stops any pending processing.
+Exclusions come in three tiers:
+
+| Tier | What | Can the user change it? |
+|---|---|---|
+| **Never** | Password fields (`AXSecureTextField`), private/incognito browser windows, password managers (1Password, Bitwarden, Keychain Access, Passwords…), Lax itself | No. Not even in settings. |
+| **Excluded by default** | Banking and payments (e.g. Swedbank, SEB, Handelsbanken, Nordea, Klarna) and health (e.g. 1177) | Yes, but they start excluded |
+| **User-defined** | Any app, website or window title pattern, e.g. Messenger or a private chat | Yes |
+
+- **Private browsing is never captured**, whatever is typed or shown in it.
+- **Mail and chat are captured by default**, because that's where much of the
+  context about people and projects lives. Onboarding lists the mail and chat apps
+  that are installed and lets the user exclude any of them up front.
+- **Excluded means not read.** Lax checks exclusions *before* reading a window's
+  content, never after.
+- **Counted, never named.** Lax may count how often it skipped an excluded window
+  ("12 private windows skipped today"), but never records which ones.
+- **Only the site, not the address.** From browser URLs, Lax keeps only the host
+  (`figma.com`), never the path or query, which can contain searches, document
+  names, tokens and personal data.
+- **Secrets are redacted before they are stored.** Passwords, API keys, tokens,
+  private keys, payment card numbers and Swedish personal identity numbers are
+  masked at capture time and never reach the database, even though it is local.
+  Other personal data (names, emails, phone numbers) is kept locally because the
+  memory needs it, and is redacted before anything is sent to a remote provider (§3).
+- **Pause** is one click in the menu bar: for 15 minutes, 1 hour, until tomorrow, or
+  until resumed. While paused, Lax reads nothing at all, not even app names, and
+  stops any pending processing. The menu bar icon shows clearly that Lax is paused.
 - **Retention:** raw captures expire automatically (default 30 days, configurable).
   Episodes and memory pages are kept until the user deletes them.
 - **Forget:** the user can delete a time range, an app or an entity, and the deletion
@@ -158,6 +180,9 @@ Planned, not built. When built:
 - New dependencies need a reason in the pull request. Fewer is better.
 - Pull requests that touch **capture, network, storage or model providers** are
   labelled `security-sensitive` and need extra review against this document.
+- **Every guardrail is backed by a test.** [CLAIMS.md](CLAIMS.md) maps each promise
+  in this document to the code that keeps it and the test that checks it. A rule
+  without a test is a wish, not a guarantee.
 
 ## 10. Reporting vulnerabilities
 

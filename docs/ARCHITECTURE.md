@@ -18,7 +18,8 @@ previous one, so they can be built, tested and improved independently.
   after OCR.
 - Skip unchanged content (hash-based dedup) and anything on the exclude list
   (password managers, private browser windows, user-chosen apps).
-- Store as `captures` rows in SQLite: timestamp, app, window title, URL (if browser), text.
+- Redact secrets, then store as `captures` rows in SQLite: timestamp, app, window title,
+  site (host only, if browser), text.
 
 ## 2. Summarize
 

@@ -51,7 +51,8 @@ time tracking, and a local MCP server so other local tools can use your memory.
   and what was sent off your machine. You can pause, exclude apps or delete anything.
 - **No telemetry.** Ever.
 
-These principles are spelled out as concrete rules in [docs/GUARDRAILS.md](docs/GUARDRAILS.md).
+These principles are spelled out as concrete rules in [docs/GUARDRAILS.md](docs/GUARDRAILS.md),
+and [docs/CLAIMS.md](docs/CLAIMS.md) shows the test behind each one.
 
 ## Tech stack
 
@@ -72,7 +73,9 @@ To report a security or privacy problem, see [SECURITY.md](SECURITY.md).
 ## Acknowledgements
 
 Lax builds on ideas and code from [Handy](https://github.com/cjpais/Handy) by CJ Pais
-(MIT), a great offline speech-to-text app.
+(MIT), a great offline speech-to-text app, and on ideas from
+[Mason](https://github.com/Baltsar/mason) by Gustaf Garnow (MIT), a local memory
+of how you build with AI agents.
 
 ## License
 

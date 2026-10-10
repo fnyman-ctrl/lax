@@ -16,6 +16,7 @@
 - [ ] Secrets only in the macOS Keychain
 - [ ] New dependencies (if any) are justified below and AGPL-compatible
 - [ ] Captured content is treated as untrusted; model output is validated
+- [ ] `docs/CLAIMS.md` updated if a guardrail was implemented or changed
 
 **Touches capture, storage, network or model providers?** <!-- yes / no. If yes, explain how it complies with GUARDRAILS. -->
 
