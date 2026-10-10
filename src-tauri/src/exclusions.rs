@@ -45,42 +45,66 @@ pub enum Decision {
     Skip(SkipReason),
 }
 
-/// Apps that are never captured. Matched exactly, or as a prefix when the id
-/// ends with a dot, ignoring case.
+/// Apps that are never captured. Each entry also matches its family: the
+/// same id followed by `.something` (betas, helpers), ignoring case.
 const NEVER_APPS: &[&str] = &[
     LAX_BUNDLE_ID,
     // Password managers
     "com.apple.keychainaccess",
     "com.apple.Passwords",
-    "com.1password.",
-    "com.agilebits.",
+    "com.1password",
+    "com.agilebits",
     "com.bitwarden.desktop",
     "org.keepassxc.keepassxc",
     "com.lastpass.LastPass",
+    "com.markmcguill.strongbox",
+    "com.hicknhacksoftware.MacPass",
+    "in.sinew.Enpass-Desktop",
+    "me.proton.pass.electron",
     // System password and login prompts
     "com.apple.SecurityAgent",
     "com.apple.loginwindow",
+    // Every Tor Browser window is private.
+    "org.torproject.torbrowser",
 ];
 
-/// Browsers whose private windows must be skipped.
+/// Browsers whose private windows and password pages must be skipped. Each
+/// entry also matches its family (`com.google.Chrome.beta`,
+/// `com.microsoft.edgemac.Dev`…).
 const BROWSERS: &[&str] = &[
     "com.apple.Safari",
     "com.apple.SafariTechnologyPreview",
     "com.google.Chrome",
-    "com.google.Chrome.beta",
-    "com.google.Chrome.dev",
-    "com.google.Chrome.canary",
     "org.chromium.Chromium",
     "org.mozilla.firefox",
     "org.mozilla.firefoxdeveloperedition",
     "org.mozilla.nightly",
+    "net.waterfox.waterfox",
+    "io.gitlab.librewolf-community",
     "company.thebrowser.Browser",
     "com.microsoft.edgemac",
     "com.brave.Browser",
     "com.operasoftware.Opera",
+    "com.operasoftware.OperaGX",
     "com.vivaldi.Vivaldi",
     "app.zen-browser.zen",
+    "com.duckduckgo.macos.browser",
+    "com.kagi.kagimacOS",
+    "com.sigmaos.sigmaos.macos",
 ];
+
+/// Window titles of password pages in browsers and System Settings: Chrome's
+/// Password Manager, Safari's and Firefox's Passwords. Matched as whole words.
+const PASSWORD_PAGE_WORDS: &[&str] = &[
+    "password manager",
+    "passwords",
+    "lösenordshanteraren",
+    "lösenordshanterare",
+    "lösenord",
+];
+
+/// Apps besides browsers that can show saved passwords in a window.
+const PASSWORD_PAGE_APPS: &[&str] = &["com.apple.systempreferences"];
 
 /// Words that browsers put in the titles of private windows, in several
 /// languages. Deliberately broad: a normal page titled "Private equity" is
@@ -203,12 +227,21 @@ impl Exclusions {
         if let Decision::Skip(reason) = self.check_app(bundle_id) {
             return Decision::Skip(reason);
         }
-        if is_browser(bundle_id) && looks_private(title) {
+        let words: Vec<char> = title.to_lowercase().chars().collect();
+        let browser = is_browser(bundle_id);
+        if browser && looks_private(&words) {
+            return Decision::Skip(SkipReason::Never);
+        }
+        if (browser || matches_family(bundle_id, PASSWORD_PAGE_APPS))
+            && PASSWORD_PAGE_WORDS
+                .iter()
+                .any(|w| has_word(&words, w, true))
+        {
             return Decision::Skip(SkipReason::Never);
         }
         if self
             .active_defaults()
-            .any(|rule| rule.title_words.iter().any(|w| contains_word(title, w)))
+            .any(|rule| rule.title_words.iter().any(|w| has_word(&words, w, true)))
         {
             return Decision::Skip(SkipReason::ExcludedByDefault);
         }
@@ -241,9 +274,12 @@ impl Exclusions {
     }
 
     fn active_defaults(&self) -> impl Iterator<Item = &'static DefaultExclusion> + '_ {
-        DEFAULT_EXCLUSIONS
-            .iter()
-            .filter(|rule| !self.re_enabled_defaults.contains(rule.name))
+        DEFAULT_EXCLUSIONS.iter().filter(|rule| {
+            !self
+                .re_enabled_defaults
+                .iter()
+                .any(|name| name.trim().to_lowercase() == rule.name.to_lowercase())
+        })
     }
 }
 
@@ -254,52 +290,49 @@ pub fn is_secure_text_field(role: &str, subrole: Option<&str>) -> bool {
 }
 
 fn is_never_app(bundle_id: &str) -> bool {
-    let id = bundle_id.to_lowercase();
-    NEVER_APPS.iter().any(|never| {
-        let never = never.to_lowercase();
-        if never.ends_with('.') {
-            id.starts_with(&never)
-        } else {
-            id == never
-        }
-    })
+    matches_family(bundle_id, NEVER_APPS)
 }
 
 fn is_browser(bundle_id: &str) -> bool {
-    BROWSERS
-        .iter()
-        .any(|b| b.eq_ignore_ascii_case(bundle_id.trim()))
+    matches_family(bundle_id, BROWSERS)
 }
 
-fn looks_private(title: &str) -> bool {
+/// `bundle_id` is one of `ids`, or in its family (`id.` followed by more),
+/// ignoring case.
+fn matches_family(bundle_id: &str, ids: &[&str]) -> bool {
+    let bundle_id = bundle_id.trim();
+    ids.iter().any(|id| {
+        bundle_id
+            .get(..id.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(id))
+            && matches!(bundle_id.as_bytes().get(id.len()), None | Some(b'.'))
+    })
+}
+
+/// A word in the (lower-cased) title starts with a private-window marker
+/// ("privat" also matches "Privates Fenster" and "privata").
+fn looks_private(words: &[char]) -> bool {
     PRIVATE_WINDOW_MARKERS
         .iter()
-        .any(|marker| contains_word_prefix(title, marker))
+        .any(|marker| has_word(words, marker, false))
 }
 
 /// `host` is `domain` or a subdomain of it.
 fn host_matches(host: &str, domain: &str) -> bool {
     let domain = domain.trim().trim_end_matches('.').to_lowercase();
+    // "www.example.com" in a rule means the site, so it covers example.com
+    // and all its subdomains.
+    let domain = domain.strip_prefix("www.").unwrap_or(&domain);
     !domain.is_empty()
         && (host == domain
             || host
-                .strip_suffix(&domain)
+                .strip_suffix(domain)
                 .is_some_and(|rest| rest.ends_with('.')))
 }
 
-/// `phrase` appears in `text` as whole words, ignoring case.
-fn contains_word(text: &str, phrase: &str) -> bool {
-    find_word(text, phrase, true)
-}
-
-/// A word in `text` starts with `prefix`, ignoring case ("Privat" also
-/// matches "Privates Fenster" and "privata").
-fn contains_word_prefix(text: &str, prefix: &str) -> bool {
-    find_word(text, prefix, false)
-}
-
-fn find_word(text: &str, phrase: &str, whole: bool) -> bool {
-    let text: Vec<char> = text.to_lowercase().chars().collect();
+/// `phrase` starts at a word boundary in `text`, which must already be lower
+/// case. With `whole`, it must also end at one.
+fn has_word(text: &[char], phrase: &str, whole: bool) -> bool {
     let phrase: Vec<char> = phrase.to_lowercase().chars().collect();
     if phrase.is_empty() || phrase.len() > text.len() {
         return false;
@@ -384,6 +417,59 @@ mod tests {
             "com.lastpass.LastPass",
         ] {
             assert_eq!(none().check_app(app), SKIP_NEVER, "{app}");
+        }
+    }
+
+    #[test]
+    fn more_password_managers_and_families() {
+        for app in [
+            "com.markmcguill.strongbox",
+            "com.markmcguill.strongbox.mac",
+            "com.hicknhacksoftware.MacPass",
+            "in.sinew.Enpass-Desktop",
+            "me.proton.pass.electron",
+            "com.1password.1password-launcher",
+            "org.torproject.torbrowser",
+        ] {
+            assert_eq!(none().check_app(app), SKIP_NEVER, "{app}");
+        }
+    }
+
+    #[test]
+    fn browser_password_pages_are_never_captured() {
+        let cases = [
+            (
+                "com.google.Chrome",
+                "Google Password Manager - Google Chrome",
+            ),
+            ("com.apple.Safari", "Passwords"),
+            ("org.mozilla.firefox", "Passwords — Mozilla Firefox"),
+            ("com.google.Chrome", "Lösenordshanteraren"),
+            ("com.apple.systempreferences", "Passwords"),
+        ];
+        for (app, title) in cases {
+            assert_eq!(none().check_window(app, title), SKIP_NEVER, "{title}");
+        }
+        // Outside browsers and System Settings it's just a word.
+        assert_eq!(
+            none().check_window("com.apple.mail", "Re: New passwords policy"),
+            Decision::Capture
+        );
+    }
+
+    #[test]
+    fn private_windows_in_browser_betas_and_other_browsers() {
+        let cases = [
+            (
+                "com.microsoft.edgemac.Beta",
+                "Example - [InPrivate] - Microsoft Edge Beta",
+            ),
+            ("com.brave.Browser.nightly", "Example (Private)"),
+            ("com.duckduckgo.macos.browser", "Private Browsing"),
+            ("com.kagi.kagimacOS", "Private Browsing"),
+        ];
+        for (browser, title) in cases {
+            assert_eq!(none().check_window(browser, title), SKIP_NEVER, "{browser}");
         }
     }
 
@@ -547,6 +633,32 @@ mod tests {
             SKIP_USER
         );
         assert_eq!(settings.check_app("com.apple.mail"), Decision::Capture);
+    }
+
+    #[test]
+    fn user_sites_written_with_www_cover_the_whole_site() {
+        let settings = Exclusions {
+            sites: vec!["www.facebook.com".to_string()],
+            ..Exclusions::default()
+        };
+        assert_eq!(settings.check_site("facebook.com"), SKIP_USER);
+        assert_eq!(settings.check_site("www.facebook.com"), SKIP_USER);
+        assert_eq!(settings.check_site("m.facebook.com"), SKIP_USER);
+        assert_eq!(settings.check_site("notfacebook.com"), Decision::Capture);
+    }
+
+    #[test]
+    fn re_enabling_ignores_case() {
+        let mut settings = none();
+        settings.re_enabled_defaults.insert("  avanza ".to_string());
+        settings
+            .re_enabled_defaults
+            .insert("LÄNSFÖRSÄKRINGAR".to_string());
+        assert_eq!(settings.check_site("avanza.se"), Decision::Capture);
+        assert_eq!(
+            settings.check_site("lansforsakringar.se"),
+            Decision::Capture
+        );
     }
 
     #[test]
