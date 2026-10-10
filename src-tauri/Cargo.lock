@@ -1654,6 +1654,7 @@ dependencies = [
  "regex",
  "tauri",
  "tauri-build",
+ "url",
 ]
 
 [[package]]
