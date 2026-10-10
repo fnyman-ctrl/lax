@@ -232,9 +232,12 @@ impl Capturer {
         Outcome::Captured(snapshot)
     }
 
-    /// Takes over changed exclusions; they apply from the next tick.
+    /// Takes over changed exclusions; they apply from the next tick. Content
+    /// held back for storing is dropped, since it may come from what was
+    /// just excluded.
     pub fn set_exclusions(&mut self, exclusions: Exclusions) {
         self.exclusions = exclusions;
+        self.throttle.drop_held();
     }
 
     /// What to store after a tick with `outcome`, oldest first; see
@@ -343,6 +346,10 @@ impl Throttle {
 
     pub fn stored(&mut self, snapshot: &Snapshot, now: Instant) {
         self.last = Some((WindowKey::of(snapshot), now));
+    }
+
+    fn drop_held(&mut self) {
+        self.held = None;
     }
 }
 
@@ -1407,6 +1414,42 @@ mod tests {
             capturer.stored(snapshot, Instant::now());
         }
         outcome
+    }
+
+    #[test]
+    fn changed_exclusions_drop_held_content() {
+        let mut capturer = capturer();
+        let start = Instant::now();
+        let first = capturer.tick(&mut notes(), running);
+        let Outcome::Captured(snapshot) = &first else {
+            panic!("{first:?}")
+        };
+        capturer.stored(snapshot, start);
+        // Changed content, read too soon to be stored: held back.
+        let mut changed = FakeScreen::new(
+            "com.apple.Notes",
+            "Notes",
+            window("Q3 proposal", vec![text("a", "Secret plans")]),
+        );
+        let outcome = capturer.tick(&mut changed, running);
+        assert!(
+            capturer
+                .due(outcome, start + Duration::from_secs(5))
+                .is_empty()
+        );
+        // The user excludes Notes; switching away must not store the held note.
+        capturer.set_exclusions(Exclusions {
+            apps: vec!["com.apple.Notes".to_string()],
+            ..Exclusions::default()
+        });
+        assert!(
+            capturer
+                .due(
+                    Outcome::Skipped(SkipReason::Never),
+                    start + Duration::from_secs(6)
+                )
+                .is_empty()
+        );
     }
 
     #[test]

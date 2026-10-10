@@ -25,9 +25,13 @@ export function Exclusions({ onForgotten }: { onForgotten: () => void }) {
   const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const loadApps = () => {
+    invoke<AppItem[]>("captured_apps").then(setApps, () => setApps([]));
+  };
+
   useEffect(() => {
     invoke<ExclusionSettings>("exclusion_settings").then(setSettings, () => setSettings("failed"));
-    invoke<AppItem[]>("captured_apps").then(setApps, () => setApps([]));
+    loadApps();
   }, []);
 
   /** Runs a change and shows the settings it returns. */
@@ -60,6 +64,7 @@ export function Exclusions({ onForgotten }: { onForgotten: () => void }) {
                 error: false,
               });
               onForgotten();
+              loadApps();
             },
             (error) => setMessage({ text: String(error), error: true }),
           );
@@ -182,18 +187,22 @@ function AddApp({
   const [choice, setChoice] = useState("");
   const [typed, setTyped] = useState("");
   const [forget, setForget] = useState(false);
+  // Forgetting deletes, so it asks once more, like the Forget panel.
+  const [confirming, setConfirming] = useState(false);
   const isExcluded = (id: string) => excluded.some((e) => e.toLowerCase() === id.toLowerCase());
   const candidates = apps.filter((a) => !isExcluded(a.bundleId));
   const value = choice || typed.trim();
-  const hasCaptures = apps.some((a) => a.bundleId === value);
+  const app = apps.find((a) => a.bundleId === value);
+  const forgetting = forget && app !== undefined;
 
   const submit = () =>
-    onAdd("app", value, forget && hasCaptures ? value : undefined).then((ok) => {
+    onAdd("app", value, forgetting ? value : undefined).then((ok) => {
       if (ok) {
         setChoice("");
         setTyped("");
         setForget(false);
       }
+      setConfirming(false);
     });
 
   return (
@@ -221,15 +230,43 @@ function AddApp({
             aria-label="Bundle id"
           />
         )}
-        <button type="button" className="secondary" disabled={busy || !value} onClick={submit}>
+        <button
+          type="button"
+          className="secondary"
+          disabled={busy || !value || confirming}
+          onClick={forgetting ? () => setConfirming(true) : submit}
+        >
           Exclude app
         </button>
       </p>
-      {hasCaptures && (
+      {app && (
         <label className="muted">
-          <input type="checkbox" checked={forget} onChange={(e) => setForget(e.target.checked)} />{" "}
+          <input
+            type="checkbox"
+            checked={forget}
+            onChange={(e) => {
+              setForget(e.target.checked);
+              setConfirming(false);
+            }}
+          />{" "}
           Also forget what Lax already captured from it
         </label>
+      )}
+      {confirming && app && (
+        <div className="confirm" role="alertdialog" aria-label="Confirm">
+          <p>
+            Exclude {app.appName || app.bundleId} and forget its {app.captures}{" "}
+            {app.captures === 1 ? "capture" : "captures"}? This can't be undone.
+          </p>
+          <p className="buttons">
+            <button type="button" className="danger" disabled={busy} onClick={submit} autoFocus>
+              Exclude and forget
+            </button>
+            <button type="button" className="secondary" disabled={busy} onClick={() => setConfirming(false)}>
+              Cancel
+            </button>
+          </p>
+        </div>
       )}
     </div>
   );
