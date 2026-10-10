@@ -99,8 +99,9 @@ impl Default for Limits {
 }
 
 /// How deep below the window to look for an address field. Safari's sits at
-/// window → toolbar → group → field.
-const ADDRESS_FIELD_DEPTH: usize = 4;
+/// window → toolbar → group → field, and one level deeper in full screen
+/// (window → group → toolbar → group → field). Two levels to spare.
+const ADDRESS_FIELD_DEPTH: usize = 6;
 
 /// Roles whose subtree is never read. Toolbars hold the address field, whose
 /// value is the full address (GUARDRAILS §4 keeps only the host); menus are
@@ -1066,6 +1067,43 @@ mod tests {
         // The address field's description was read, never its value.
         assert!(screen.reads().contains(&"description:address".to_string()));
         assert!(!screen.reads().contains(&"text:address".to_string()));
+    }
+
+    #[test]
+    fn safari_full_screen_windows_are_read() {
+        // In full screen the toolbar sits inside an extra group.
+        let mut screen = FakeScreen::new(
+            "com.apple.Safari",
+            "Safari",
+            window(
+                "Example Domain",
+                vec![
+                    web_area("https://example.com/", vec![text("a", "Example Domain")]),
+                    Fake {
+                        children: vec![safari_toolbar("smart sökfält")],
+                        ..el("full-screen-group", "AXGroup")
+                    },
+                ],
+            ),
+        );
+        let snapshot = captured(capturer().tick(&mut screen, running));
+        assert_eq!(snapshot.text, "Example Domain");
+
+        let mut private = FakeScreen::new(
+            "com.apple.Safari",
+            "Safari",
+            window(
+                "Example Domain",
+                vec![Fake {
+                    children: vec![safari_toolbar("smart sökfält i ett privat fönster")],
+                    ..el("full-screen-group", "AXGroup")
+                }],
+            ),
+        );
+        assert_eq!(
+            capturer().tick(&mut private, running),
+            Outcome::Skipped(SkipReason::Never)
+        );
     }
 
     #[test]
