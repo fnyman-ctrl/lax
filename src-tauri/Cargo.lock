@@ -1688,6 +1688,7 @@ dependencies = [
  "rusqlite",
  "tauri",
  "tauri-build",
+ "url",
 ]
 
 [[package]]
