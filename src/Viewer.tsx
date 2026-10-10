@@ -2,6 +2,8 @@ import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Exclusions } from "./Exclusions";
 import { Forget } from "./Forget";
+// The app icon is the one source of the mascot (docs/BRAND.md).
+import laxIcon from "../src-tauri/icons/app-icon.svg";
 
 // Shapes returned by src-tauri/src/viewer.rs.
 type CaptureStatus = {
@@ -60,7 +62,10 @@ export function Viewer() {
   return (
     <main className="container viewer">
       <header className="viewer-header">
-        <h1>Lax</h1>
+        <div className="brand">
+          <img src={laxIcon} alt="" />
+          <h1>Lax</h1>
+        </div>
         <Status />
       </header>
       <nav className="tabs" aria-label="Sections">
@@ -350,12 +355,12 @@ function Detail({ detail }: { detail: CaptureDetail | null | "missing" | "failed
   }
   return (
     <div className="detail">
-      <p className="muted">
+      <p className="meta muted">
         {new Date(detail.capturedAt).toLocaleString()} · {detail.appName}
         {detail.site ? ` · ${detail.site}` : ""}
       </p>
       {detail.text ? (
-        <pre className="text">{detail.text}</pre>
+        <p className="text">{detail.text}</p>
       ) : (
         <p className="muted">No text, only the window title.</p>
       )}
@@ -481,7 +486,13 @@ function dayLabel(date: Date): string {
   if (date.toDateString() === yesterday.toDateString()) {
     return "Yesterday";
   }
-  return date.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
+  const label = date.toLocaleDateString(undefined, {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+  });
+  // Some languages write weekdays in lower case ("fredag 9 oktober").
+  return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
 function time(millis: number): string {

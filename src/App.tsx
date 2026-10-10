@@ -2,6 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Viewer } from "./Viewer";
+// The app icon is the one source of the mascot (docs/BRAND.md).
+import laxIcon from "../src-tauri/icons/app-icon.svg";
 
 // Must match CHANGED_EVENT in src-tauri/src/accessibility.rs.
 const ACCESSIBILITY_CHANGED = "accessibility-changed";
@@ -110,59 +112,79 @@ function Onboarding({ onShowCaptures }: { onShowCaptures: () => void }) {
   };
 
   return (
-    <main className="container">
-      <h1>Let Lax read your screen</h1>
+    <main className="container onboarding">
+      <header className="hero">
+        <img src={laxIcon} alt="" />
+        <div>
+          <h1>Let Lax read your screen</h1>
+          <p>A private memory of what you work on. Everything stays on this Mac.</p>
+        </div>
+      </header>
+
       <p>
-        Lax builds a private memory of what you work on. To do that it needs the macOS{" "}
-        <strong>Accessibility</strong> permission.
+        To remember what you do, Lax needs the macOS <strong>Accessibility</strong> permission.
+        Here is exactly what that means.
       </p>
 
-      <h2>What Lax reads</h2>
-      <p>
-        Every few seconds: the name of the app you're using, its window title, and the text
-        shown in that window.
-      </p>
+      <div className="cards">
+        <section className="card reads">
+          <h2>What Lax reads</h2>
+          <p>
+            Every few seconds: the app you're using, its window title, and the text shown in
+            that window. For websites, only the site's name, never the full address.
+          </p>
+        </section>
+        <section className="card never">
+          <h2>What Lax never reads</h2>
+          <ul>
+            <li>Password fields</li>
+            <li>Private and incognito browser windows</li>
+            <li>Password managers</li>
+            <li>Anything at all while capture is paused</li>
+          </ul>
+        </section>
+        <section className="card">
+          <h2>Where it goes</h2>
+          <p>
+            Nowhere. It stays on this Mac, in a folder only you can open. Nothing is sent
+            anywhere unless you turn on a remote AI model yourself.
+          </p>
+        </section>
+        <section className="card">
+          <h2>What you decide</h2>
+          <p>
+            Banking and health are excluded from the start. You can exclude any app, website
+            or window, pause from the menu bar, and forget anything.
+          </p>
+        </section>
+      </div>
 
-      <h2>What Lax never reads</h2>
-      <ul>
-        <li>Password fields</li>
-        <li>Private and incognito browser windows</li>
-        <li>Password managers</li>
-        <li>Anything at all while capture is paused</li>
-      </ul>
-      <p>
-        Banking and health apps are excluded by default, and you can exclude any other app or
-        website.
-      </p>
-
-      <h2>Where it goes</h2>
-      <p>
-        Everything stays on this Mac. Nothing is sent anywhere unless you turn on a remote AI
-        model yourself.
-      </p>
-
-      <h2>About the permission</h2>
-      <p>
-        macOS uses the same permission for reading what's on screen and for controlling other
-        apps. Lax only reads. Its source code is open, so anyone can check that.
-      </p>
-
-      <p className="actions">
-        <button type="button" onClick={openSettings}>
-          Open System Settings
-        </button>
-      </p>
-      {error && (
-        <p className="error" role="alert">
-          System Settings didn't open. Open it yourself and go to Privacy &amp; Security →
-          Accessibility.
+      <section className="steps">
+        <h2>Turn it on</h2>
+        <ol>
+          <li>Open System Settings with the button below.</li>
+          <li>
+            In <strong>Privacy &amp; Security → Accessibility</strong>, turn on Lax.
+          </li>
+          <li>Come back here. This window changes as soon as access is on.</li>
+        </ol>
+        <p className="actions">
+          <button type="button" onClick={openSettings}>
+            Open System Settings
+          </button>
         </p>
-      )}
+        {error && (
+          <p className="error" role="alert">
+            System Settings didn't open. Open it yourself and go to Privacy &amp; Security →
+            Accessibility.
+          </p>
+        )}
+      </section>
+
       <p className="muted">
-        In Privacy &amp; Security → Accessibility, turn on Lax. This window updates as soon as
-        access is granted. You can turn it off there at any time.
-      </p>
-      <p>
+        macOS uses the same permission for reading the screen and for controlling other apps.
+        Lax only reads, and its source code is open, so anyone can check. You can turn access
+        off at any time.{" "}
         <button type="button" className="link" onClick={onShowCaptures}>
           See what Lax has already captured
         </button>
