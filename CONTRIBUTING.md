@@ -60,6 +60,10 @@ npm run tauri dev
 Lax starts in the menu bar without opening a window. Click the fish icon and
 choose **Open Lax** to show it.
 
+Until Lax has the Accessibility permission, it opens a window explaining why it
+needs it. During development macOS may tie the permission to the terminal that
+started Lax, and a rebuilt binary may need to be allowed again.
+
 npm install scripts are disabled in `.npmrc`. Don't turn them on.
 
 ### Checks

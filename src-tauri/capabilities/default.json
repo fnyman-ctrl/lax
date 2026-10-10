@@ -3,5 +3,9 @@
   "identifier": "default",
   "description": "Minimal permissions for the main window. Add only what a feature needs.",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "allow-accessibility-status",
+    "allow-open-accessibility-settings"
+  ]
 }

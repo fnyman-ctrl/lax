@@ -139,7 +139,7 @@ fn tooltip(state: CaptureState) -> String {
     format!("Lax: {}", label(state))
 }
 
-fn open_window(app: &AppHandle) {
+pub fn open_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();

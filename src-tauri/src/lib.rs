@@ -1,3 +1,4 @@
+mod accessibility;
 mod pause;
 mod tray;
 
@@ -7,11 +8,26 @@ use tauri::WindowEvent;
 pub fn run() {
     tauri::Builder::default()
         .manage(pause::Pause::default())
+        .invoke_handler(tauri::generate_handler![
+            accessibility::accessibility_status,
+            accessibility::open_accessibility_settings,
+        ])
         .setup(|app| {
             // Lax lives in the menu bar, without a Dock icon.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             tray::create(app.handle())?;
+
+            // Without the Accessibility permission Lax can't capture anything,
+            // so show the onboarding window explaining why it's needed.
+            if !accessibility::is_granted() {
+                tray::open_window(app.handle());
+            }
+            accessibility::watch(app.handle().clone(), |app, granted| {
+                if !granted {
+                    tray::open_window(app);
+                }
+            });
             Ok(())
         })
         .on_window_event(|window, event| {
