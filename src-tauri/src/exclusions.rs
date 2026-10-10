@@ -156,6 +156,9 @@ pub const DEFAULT_EXCLUSIONS: &[DefaultExclusion] = &[
     bank("Klarna", &["Klarna"], &["klarna.com"]),
     bank("PayPal", &["PayPal"], &["paypal.com"]),
     bank("Revolut", &["Revolut"], &["revolut.com"]),
+    // "Lunar" is also an ordinary English word, so a page about a lunar
+    // eclipse is skipped too. That's the safe mistake.
+    bank("Lunar", &["Lunar"], &["lunar.app"]),
     health("1177", &["1177", "1177 Vårdguiden"], &["1177.se"]),
     health("Kry", &["Kry"], &["kry.se"]),
     health("Min Doktor", &["Min Doktor"], &["mindoktor.se"]),
@@ -553,6 +556,7 @@ mod tests {
             ("com.google.Chrome", "Mina sidor - Länsförsäkringar"),
             ("com.apple.Safari", "Inkorgen - 1177 Vårdguiden"),
             ("com.google.Chrome", "Betala med Klarna"),
+            ("com.apple.Safari", "Lunar – Logga in"),
         ];
         for (app, title) in cases {
             assert_eq!(none().check_window(app, title), SKIP_DEFAULT, "{title}");
@@ -562,6 +566,7 @@ mod tests {
             "online.swedbank.se",
             "e-tjanster.1177.se",
             "www.avanza.se",
+            "www.lunar.app",
         ] {
             assert_eq!(none().check_site(host), SKIP_DEFAULT, "{host}");
         }
