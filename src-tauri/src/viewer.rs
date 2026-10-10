@@ -7,7 +7,7 @@
 use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Local};
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
@@ -123,7 +123,7 @@ pub fn capture_status(app: AppHandle) -> CaptureStatus {
         paused: state.is_paused(),
         label: state.label(&Local::now()),
         permission: accessibility::is_granted(),
-        capturing: app.state::<Heartbeat>().alive(Utc::now(), max_gap),
+        capturing: app.state::<Heartbeat>().alive(max_gap),
         store_error: app
             .try_state::<StoreUnavailable>()
             .map(|unavailable| unavailable.0.clone()),

@@ -533,20 +533,49 @@ fn title_without_address(title: &str) -> String {
 
 /// When the capture loop last went round, so the window can tell whether
 /// capture is actually running.
-#[derive(Default)]
-pub struct Heartbeat(std::sync::atomic::AtomicI64);
+///
+/// Measured on the monotonic clock, which, like the loop's sleep, stands
+/// still while the Mac sleeps. On the wall clock, the loop would look dead
+/// for the whole sleep right after waking up.
+pub struct Heartbeat {
+    start: Instant,
+    /// Milliseconds after `start` of the last round, plus one; 0 = never.
+    last: std::sync::atomic::AtomicU64,
+}
+
+impl Default for Heartbeat {
+    fn default() -> Self {
+        Heartbeat {
+            start: Instant::now(),
+            last: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+}
 
 impl Heartbeat {
-    pub fn beat(&self, now: DateTime<Utc>) {
-        self.0
-            .store(now.timestamp_millis(), std::sync::atomic::Ordering::Relaxed);
+    pub fn beat(&self) {
+        self.beat_at(self.start.elapsed());
     }
 
-    /// Whether the loop went round within `max_gap` before `now`.
-    pub fn alive(&self, now: DateTime<Utc>, max_gap: Duration) -> bool {
-        let last = self.0.load(std::sync::atomic::Ordering::Relaxed);
-        let gap = now.timestamp_millis().saturating_sub(last);
-        last > 0 && u128::try_from(gap).is_ok_and(|gap| gap <= max_gap.as_millis())
+    /// Whether the loop went round within the last `max_gap`.
+    pub fn alive(&self, max_gap: Duration) -> bool {
+        self.alive_at(self.start.elapsed(), max_gap)
+    }
+
+    fn beat_at(&self, since_start: Duration) {
+        let millis = u64::try_from(since_start.as_millis()).unwrap_or(u64::MAX - 1);
+        self.last
+            .store(millis + 1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn alive_at(&self, since_start: Duration, max_gap: Duration) -> bool {
+        match self.last.load(std::sync::atomic::Ordering::Relaxed) {
+            0 => false,
+            last => {
+                let last = Duration::from_millis(last - 1);
+                since_start.saturating_sub(last) <= max_gap
+            }
+        }
     }
 }
 
@@ -587,7 +616,7 @@ mod run {
             let mut last_summary = Instant::now();
             loop {
                 let started = Instant::now();
-                app.state::<Heartbeat>().beat(chrono::Utc::now());
+                app.state::<Heartbeat>().beat();
                 if accessibility::is_granted() {
                     let pause = app.state::<Pause>();
                     let mut outcome = capturer.tick(&mut screen, || pause.is_paused());
@@ -1631,12 +1660,12 @@ mod tests {
     #[test]
     fn heartbeat_tells_whether_the_loop_runs() {
         let heartbeat = Heartbeat::default();
-        let now = Utc::now();
         let gap = Duration::from_secs(30);
-        assert!(!heartbeat.alive(now, gap), "never beat");
-        heartbeat.beat(now);
-        assert!(heartbeat.alive(now + chrono::TimeDelta::seconds(30), gap));
-        assert!(!heartbeat.alive(now + chrono::TimeDelta::seconds(31), gap));
+        let at = Duration::from_secs;
+        assert!(!heartbeat.alive_at(at(0), gap), "never beat");
+        heartbeat.beat_at(at(100));
+        assert!(heartbeat.alive_at(at(130), gap));
+        assert!(!heartbeat.alive_at(at(131), gap));
     }
 
     #[test]
