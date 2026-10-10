@@ -47,8 +47,10 @@ Text and backgrounds must meet WCAG contrast (4.5:1 for body text).
 - **Atkinson Hyperlegible** for body text, designed to be readable with low vision
 - **JetBrains Mono** for data and code
 
-All three use the SIL Open Font License. They must be bundled with the app, never
-loaded from Google Fonts at runtime (GUARDRAILS §7: no network requests).
+All three use the SIL Open Font License. They are bundled with the app in
+`src/fonts/` (sources, versions and licenses in `src/fonts/README.md`), never
+loaded from Google Fonts at runtime (GUARDRAILS §7: no network requests). The
+window's colours and fonts live in `src/styles.css`.
 
 ## Voice
 
