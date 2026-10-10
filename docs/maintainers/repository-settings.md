@@ -26,15 +26,19 @@ Ruleset **Protect main**, enforcement *Active*, target: default branch.
 - [x] Private vulnerability reporting
 - [x] Dependency graph
 - [x] Dependabot alerts
+- [x] Dependabot malware alerts
 - [x] Dependabot security updates
 - [x] Secret scanning
-- [x] Push protection
+  - [x] Push protection
+  - [x] Non-provider patterns
 - [x] CodeQL: uses the workflow in `.github/workflows/codeql.yml` (don't enable default setup)
 
 ## Actions (Settings → Actions → General)
 
 - Actions permissions: **Allow select actions**: GitHub-made actions, plus
-  `ossf/scorecard-action@*` and `zizmorcore/zizmor-action@*`
+  `ossf/scorecard-action@*` and `zizmorcore/zizmor-action@*`.
+  Docker actions (`docker://…`) are blocked by this policy. Download tools from
+  their official releases and verify a pinned checksum instead.
 - [x] Require actions to be pinned to a full-length commit SHA
 - Workflow permissions: **Read repository contents** (default `GITHUB_TOKEN` is read-only)
 - [ ] Allow GitHub Actions to create and approve pull requests: **off**
@@ -42,6 +46,7 @@ Ruleset **Protect main**, enforcement *Active*, target: default branch.
 
 ## General
 
-- [x] Allow squash merging only (disable merge commits and rebase merging)
+- [x] Allow squash merging only (disable merge commits and rebase merging).
+  Also set the ruleset's allowed merge method to *Squash* only.
 - [x] Automatically delete head branches
 - Features: Issues on, Wiki off, Projects as needed
