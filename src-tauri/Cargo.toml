@@ -21,6 +21,8 @@ tauri = { version = "2", features = ["tray-icon"] }
 # Local time for pause deadlines ("until tomorrow") and the menu label.
 # Already in the dependency tree through Tauri.
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# Pattern matching for secret redaction. Already in the dependency tree through Tauri.
+regex = "1"
 
 [lints.rust]
 unsafe_code = "warn"
