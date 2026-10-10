@@ -9,11 +9,11 @@ The idea comes from [Mason](https://github.com/Baltsar/mason/blob/main/docs/CLAI
 | Claim | Guardrail | Code | Test |
 |---|---|---|---|
 | A fresh install sends nothing anywhere | §1, §7 | Not yet implemented | None yet |
-| Password fields are never read | §4 | Not yet implemented | None yet |
-| Private browser windows are never captured | §4 | Not yet implemented | None yet |
-| Password managers are never captured | §4 | Not yet implemented | None yet |
-| Exclusions are checked before content is read | §4 | Not yet implemented | None yet |
-| Only the host of a URL is stored | §4 | Not yet implemented | None yet |
+| Password fields are never read | §4 | `is_secure_text_field` in `src-tauri/src/exclusions.rs`. Capture must check every element with it (#6) | `exclusions::tests::password_fields_are_never_read`. A test that capture skips them comes with #6 |
+| Private browser windows are never captured | §4 | `Exclusions::check_window` in `src-tauri/src/exclusions.rs`, by title markers in several languages. Safari puts no marker in the title, so a reliable per-browser signal is still needed (#6) | `exclusions::tests::private_browser_windows_are_never_captured` |
+| Password managers are never captured | §4 | `Exclusions::check_app` in `src-tauri/src/exclusions.rs` (also system password prompts and Lax itself) | `exclusions::tests::password_managers_are_never_captured`, `re_enabling_cannot_unlock_the_never_tier` |
+| Exclusions are checked before content is read | §4 | The order is defined in `src-tauri/src/exclusions.rs`: app, then title, then site, before any content. Capture must follow it (#6) | None yet. Comes with #6 |
+| Only the host of a URL is stored | §4 | `site_from_url` in `src-tauri/src/site.rs` keeps only the host of `http`/`https` addresses. Capture must store its result, never the address (#6, #8) | `site::tests` (paths, queries, fragments, credentials and ports dropped; other schemes keep nothing) |
 | Secrets are redacted before they are stored | §4 | Not yet implemented | None yet |
 | While paused, nothing is read | §4 | Pause state in `src-tauri/src/pause.rs` (`Pause::is_paused`). Capture must check it before every read; capture itself arrives in #6 | Pause, resume and expiry: `pause::tests`. A test that capture reads nothing while paused comes with #6 |
 | Lax warns when FileVault is off | §6 | `filevault_enabled` in `src-tauri/src/filevault.rs`, shown by `FileVaultWarning` in `src/App.tsx` | `filevault::tests` (reading the status). The banner itself has no automated test yet |

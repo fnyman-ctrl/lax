@@ -21,6 +21,9 @@ tauri = { version = "2", features = ["tray-icon"] }
 # Local time for pause deadlines ("until tomorrow") and the menu label.
 # Already in the dependency tree through Tauri.
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# Parsing browser addresses so only the host is kept. Already in the
+# dependency tree through Tauri.
+url = "2"
 
 [lints.rust]
 unsafe_code = "warn"
