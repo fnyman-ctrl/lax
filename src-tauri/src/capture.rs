@@ -197,8 +197,12 @@ impl Capturer {
             Err(Stop::Skipped(reason)) => return Outcome::Skipped(reason),
         };
 
+        let mut window_title = clean_title(&raw_title, &app.name, browser);
+        if browser {
+            window_title = title_without_address(&window_title);
+        }
         let snapshot = Snapshot {
-            window_title: clean_title(&raw_title, &app.name, browser),
+            window_title,
             app_name: app.name,
             bundle_id: app.bundle_id,
             site: content.site,
@@ -207,12 +211,17 @@ impl Capturer {
             nodes: content.nodes,
             skipped_frames: content.skipped_frames,
         };
-        let hash = fingerprint(&snapshot);
-        if self.last == Some(hash) {
+        if self.last == Some(fingerprint(&snapshot)) {
             return Outcome::Unchanged;
         }
-        self.last = Some(hash);
         Outcome::Captured(snapshot)
+    }
+
+    /// Tells the capturer that `snapshot` was stored, so the same content is
+    /// skipped until it changes. A snapshot that was dropped (a pause began)
+    /// or failed to store is not remembered, and is captured again.
+    pub fn stored(&mut self, snapshot: &Snapshot) {
+        self.last = Some(fingerprint(snapshot));
     }
 }
 
@@ -335,7 +344,8 @@ fn walk<N: Node>(
             if let Some(text) = node.text(&role, room.min(limits.max_element_chars)) {
                 let text = text.trim();
                 if !text.is_empty() && lines.last().is_none_or(|last| last != text) {
-                    chars += text.chars().count();
+                    // One more for the line break that joins it.
+                    chars += text.chars().count() + 1;
                     lines.push(text.to_string());
                 }
             }
@@ -350,7 +360,9 @@ fn walk<N: Node>(
         stack.extend(children.into_iter().rev().map(|c| (c, depth + 1, in_web)));
     }
 
-    content.text = truncate_chars(&lines.join("\n"), limits.max_chars);
+    let text = lines.join("\n");
+    content.text = truncate_chars(&text, limits.max_chars);
+    content.truncated |= content.text.len() < text.len();
     Ok(content)
 }
 
@@ -381,6 +393,26 @@ fn clean_title(title: &str, app_name: &str, browser: bool) -> String {
         }
     }
     title.to_string()
+}
+
+/// Browsers use the address as the title of a page without one
+/// ("example.com/reset?token=…"). Only its host may be kept (GUARDRAILS §4),
+/// so a title that reads as an address with a path, query or fragment is
+/// replaced by its host.
+fn title_without_address(title: &str) -> String {
+    let looks_like_address = !title.is_empty()
+        && !title.contains(char::is_whitespace)
+        && title.contains(['/', '?', '#']);
+    if !looks_like_address {
+        return title.to_string();
+    }
+    let address = if title.contains("://") {
+        title.to_string()
+    } else {
+        format!("https://{title}")
+    };
+    // Something that looks like an address but isn't one keeps nothing.
+    site_from_url(&address).unwrap_or_default()
 }
 
 #[cfg(target_os = "macos")]
@@ -426,7 +458,13 @@ mod run {
                     let stored = match &outcome {
                         // Paused while reading: what was read is dropped.
                         Outcome::Captured(_) if pause.is_paused() => None,
-                        Outcome::Captured(snapshot) => Some(store(&app, snapshot)),
+                        Outcome::Captured(snapshot) => {
+                            let stored = store(&app, snapshot);
+                            if stored {
+                                capturer.stored(snapshot);
+                            }
+                            Some(stored)
+                        }
                         _ => None,
                     };
                     stats.record(&outcome, stored, started.elapsed());
@@ -483,6 +521,7 @@ mod run {
         truncated: u64,
         skipped_frames: u64,
         store_errors: u64,
+        largest_window: u64,
         slowest: Duration,
         skips: SkipCounter,
     }
@@ -499,6 +538,7 @@ mod run {
                 Outcome::Captured(snapshot) => {
                     self.truncated += u64::from(snapshot.truncated);
                     self.skipped_frames += snapshot.skipped_frames as u64;
+                    self.largest_window = self.largest_window.max(snapshot.nodes as u64);
                     match stored {
                         Some(true) => self.captured += 1,
                         Some(false) => self.store_errors += 1,
@@ -526,6 +566,7 @@ mod run {
                         u64::from(skips.excluded_by_default),
                     ),
                     Field::Count("skipped_today_user", u64::from(skips.excluded_by_user)),
+                    Field::Count("largest_window_elements", self.largest_window),
                     Field::Duration("slowest", self.slowest),
                 ],
             );
@@ -1134,11 +1175,20 @@ mod tests {
         assert_eq!(snapshot.nodes, 4);
     }
 
+    /// Ticks and, like the capture loop, remembers what was stored.
+    fn tick_and_store(capturer: &mut Capturer, screen: &mut FakeScreen) -> Outcome {
+        let outcome = capturer.tick(screen, running);
+        if let Outcome::Captured(snapshot) = &outcome {
+            capturer.stored(snapshot);
+        }
+        outcome
+    }
+
     #[test]
     fn unchanged_content_is_skipped() {
         let mut capturer = capturer();
         assert!(matches!(
-            capturer.tick(&mut notes(), running),
+            tick_and_store(&mut capturer, &mut notes()),
             Outcome::Captured(_)
         ));
         assert_eq!(capturer.tick(&mut notes(), running), Outcome::Unchanged);
@@ -1149,14 +1199,81 @@ mod tests {
             window("Q3 proposal", vec![text("a", "Meeting moved")]),
         );
         assert!(matches!(
-            capturer.tick(&mut changed, running),
+            tick_and_store(&mut capturer, &mut changed),
             Outcome::Captured(_)
         ));
         // Back to the first content: it changed since the last capture.
         assert!(matches!(
+            tick_and_store(&mut capturer, &mut notes()),
+            Outcome::Captured(_)
+        ));
+    }
+
+    #[test]
+    fn content_that_was_not_stored_is_captured_again() {
+        // Dropped because a pause began, or the store failed: nothing was
+        // stored, so the next tick must not call it unchanged.
+        let mut capturer = capturer();
+        assert!(matches!(
             capturer.tick(&mut notes(), running),
             Outcome::Captured(_)
         ));
+        assert!(matches!(
+            capturer.tick(&mut notes(), running),
+            Outcome::Captured(_)
+        ));
+    }
+
+    #[test]
+    fn browser_titles_that_are_addresses_keep_only_the_host() {
+        let mut screen = FakeScreen::new(
+            "com.google.Chrome",
+            "Google Chrome",
+            window(
+                "intranet.example.com/reset?token=abc123 - Google Chrome",
+                vec![web_area(
+                    "https://intranet.example.com/reset?token=abc123",
+                    vec![text("a", "Reset")],
+                )],
+            ),
+        );
+        let snapshot = captured(capturer().tick(&mut screen, running));
+        assert_eq!(snapshot.window_title, "intranet.example.com");
+
+        assert_eq!(
+            title_without_address("https://docs.example.com/d/1x2y/edit#h"),
+            "docs.example.com"
+        );
+        assert_eq!(title_without_address("example.com/a"), "example.com");
+        // Ordinary titles are left alone, also with slashes in them.
+        for title in [
+            "Q3 proposal",
+            "Inbox (3)",
+            "fnyman-ctrl/lax: Lax",
+            "example.com",
+        ] {
+            assert_eq!(title_without_address(title), title);
+        }
+    }
+
+    #[test]
+    fn line_breaks_count_towards_the_text_limit() {
+        let limits = Limits {
+            max_chars: 10,
+            ..Limits::default()
+        };
+        let mut screen = FakeScreen::new(
+            "com.example.app",
+            "Example",
+            window(
+                "x",
+                vec![text("a", "abcd"), text("b", "efgh"), text("c", "ij")],
+            ),
+        );
+        let snapshot =
+            captured(Capturer::new(Exclusions::default(), limits).tick(&mut screen, running));
+        assert_eq!(snapshot.text, "abcd\nefgh");
+        assert!(snapshot.truncated);
     }
 
     #[test]

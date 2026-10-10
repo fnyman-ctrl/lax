@@ -107,9 +107,11 @@ impl Pause {
     }
 
     /// The current state. A timed pause that has run out is cleared here.
+    /// Capture asks before every element it reads, so this stays cheap: pause
+    /// ends are compared in UTC, without a time zone lookup.
     pub fn state(&self) -> CaptureState {
         let mut state = self.lock();
-        *state = state.at(&Local::now());
+        *state = state.at(&Utc::now());
         *state
     }
 

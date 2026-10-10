@@ -12,6 +12,7 @@
 use std::collections::HashSet;
 use std::ffi::c_void;
 use std::ptr::{self, NonNull};
+use std::rc::Rc;
 use std::time::Duration;
 
 use objc2::rc::autoreleasepool;
@@ -69,6 +70,48 @@ unsafe extern "C" {
     fn AXValueGetValue(value: &CFType, value_type: u32, out: *mut c_void) -> u8;
 }
 
+#[link(name = "CoreFoundation", kind = "framework")]
+unsafe extern "C" {
+    // Returns the URL's string without passing ownership ("Get" rule), or null.
+    fn CFURLGetString(url: &CFURL) -> *const CFString;
+}
+
+/// The attribute names Lax reads, made once instead of on every read.
+struct Names {
+    role: CFRetained<CFString>,
+    subrole: CFRetained<CFString>,
+    identifier: CFRetained<CFString>,
+    title: CFRetained<CFString>,
+    description: CFRetained<CFString>,
+    url: CFRetained<CFString>,
+    value: CFRetained<CFString>,
+    children: CFRetained<CFString>,
+    focused_window: CFRetained<CFString>,
+    manual_accessibility: CFRetained<CFString>,
+    visible_character_range: CFRetained<CFString>,
+    string_for_range: CFRetained<CFString>,
+}
+
+impl Names {
+    fn new() -> Self {
+        let name = CFString::from_static_str;
+        Names {
+            role: name("AXRole"),
+            subrole: name("AXSubrole"),
+            identifier: name("AXIdentifier"),
+            title: name("AXTitle"),
+            description: name("AXDescription"),
+            url: name("AXURL"),
+            value: name("AXValue"),
+            children: name("AXChildren"),
+            focused_window: name("AXFocusedWindow"),
+            manual_accessibility: name("AXManualAccessibility"),
+            visible_character_range: name("AXVisibleCharacterRange"),
+            string_for_range: name("AXStringForRange"),
+        }
+    }
+}
+
 /// Takes ownership of a reference returned by a "Create" or "Copy" function.
 ///
 /// # Safety
@@ -91,11 +134,21 @@ pub fn set_messaging_timeout(timeout: Duration) {
     unsafe { AXUIElementSetMessagingTimeout(&system, timeout.as_secs_f32()) };
 }
 
-/// The real screen, read through the Accessibility API.
-#[derive(Default)]
+/// The real screen, read through the Accessibility API. Lives on the capture
+/// thread.
 pub struct AxScreen {
+    names: Rc<Names>,
     /// Processes already asked to expose their accessibility tree.
     prepared: HashSet<i32>,
+}
+
+impl Default for AxScreen {
+    fn default() -> Self {
+        AxScreen {
+            names: Rc::new(Names::new()),
+            prepared: HashSet::new(),
+        }
+    }
 }
 
 /// Stop remembering prepared processes beyond this many; preparing a process
@@ -125,7 +178,10 @@ impl Screen for AxScreen {
 
     fn focused_window(&mut self, app: &App) -> Option<Element> {
         // SAFETY: any pid is accepted; returns a new element or null.
-        let element = Element(unsafe { owned(AXUIElementCreateApplication(app.pid)) }?);
+        let element = Element {
+            element: unsafe { owned(AXUIElementCreateApplication(app.pid)) }?,
+            names: self.names.clone(),
+        };
         if self.prepared.len() >= MAX_PREPARED {
             self.prepared.clear();
         }
@@ -133,22 +189,24 @@ impl Screen for AxScreen {
             // Chromium and Electron apps (Chrome, Slack, VS Code…) only build
             // their accessibility tree when asked. Asking is expensive for
             // them, so it's done once per process. Other apps ignore it.
-            element.set_true("AXManualAccessibility");
+            element.set_true(&self.names.manual_accessibility);
         }
-        element.element("AXFocusedWindow")
+        element.element(&self.names.focused_window)
     }
 }
 
 /// An element of another app's window.
-pub struct Element(CFRetained<CFType>);
+pub struct Element {
+    element: CFRetained<CFType>,
+    names: Rc<Names>,
+}
 
 impl Element {
-    fn copy(&self, attribute: &str) -> Option<CFRetained<CFType>> {
-        let attribute = CFString::from_str(attribute);
+    fn copy(&self, attribute: &CFString) -> Option<CFRetained<CFType>> {
         let mut value: *const CFType = ptr::null();
-        // SAFETY: `self.0` is an AXUIElement (checked when it was made),
-        // `attribute` a valid string and `value` a valid out pointer.
-        let error = unsafe { AXUIElementCopyAttributeValue(&self.0, &attribute, &mut value) };
+        // SAFETY: `self.element` is an AXUIElement (checked when it was
+        // made), `attribute` a valid string and `value` a valid out pointer.
+        let error = unsafe { AXUIElementCopyAttributeValue(&self.element, attribute, &mut value) };
         if error != AX_SUCCESS {
             return None;
         }
@@ -156,21 +214,24 @@ impl Element {
         unsafe { owned(value) }
     }
 
-    fn string(&self, attribute: &str) -> Option<String> {
+    fn string(&self, attribute: &CFString) -> Option<String> {
         let value = self.copy(attribute)?.downcast::<CFString>().ok()?;
         Some(value.to_string())
     }
 
-    fn element(&self, attribute: &str) -> Option<Element> {
-        Element::from_value(self.copy(attribute)?)
+    fn element(&self, attribute: &CFString) -> Option<Element> {
+        self.child(self.copy(attribute)?)
     }
 
-    fn from_value(value: CFRetained<CFType>) -> Option<Element> {
-        (CFGetTypeID(Some(&value)) == AXUIElementGetTypeID()).then_some(Element(value))
+    /// `value` as an element, if it is one.
+    fn child(&self, value: CFRetained<CFType>) -> Option<Element> {
+        (CFGetTypeID(Some(&value)) == AXUIElementGetTypeID()).then(|| Element {
+            element: value,
+            names: self.names.clone(),
+        })
     }
 
-    fn set_true(&self, attribute: &str) {
-        let attribute = CFString::from_str(attribute);
+    fn set_true(&self, attribute: &CFString) {
         // SAFETY: reading a static the framework provides.
         let Some(yes) = (unsafe { kCFBooleanTrue }) else {
             return;
@@ -178,13 +239,13 @@ impl Element {
         let yes: &CFBoolean = yes;
         // SAFETY: valid element, attribute and value. A failure (the app
         // doesn't support it) is ignored.
-        unsafe { AXUIElementSetAttributeValue(&self.0, &attribute, yes.as_ref()) };
+        unsafe { AXUIElementSetAttributeValue(&self.element, attribute, yes.as_ref()) };
     }
 
     /// The text currently visible in a text area, which can be far shorter
     /// than its whole value (a long document).
     fn visible_text(&self, max_chars: usize) -> Option<String> {
-        let range_value = self.copy("AXVisibleCharacterRange")?;
+        let range_value = self.copy(&self.names.visible_character_range)?;
         if CFGetTypeID(Some(&range_value)) != AXValueGetTypeID() {
             return None;
         }
@@ -212,11 +273,15 @@ impl Element {
                 (&raw const range).cast::<c_void>(),
             ))
         }?;
-        let attribute = CFString::from_str("AXStringForRange");
         let mut value: *const CFType = ptr::null();
         // SAFETY: valid element, attribute, parameter and out pointer.
         let error = unsafe {
-            AXUIElementCopyParameterizedAttributeValue(&self.0, &attribute, &parameter, &mut value)
+            AXUIElementCopyParameterizedAttributeValue(
+                &self.element,
+                &self.names.string_for_range,
+                &parameter,
+                &mut value,
+            )
         };
         if error != AX_SUCCESS {
             return None;
@@ -229,29 +294,37 @@ impl Element {
 
 impl Node for Element {
     fn role(&self) -> Option<String> {
-        self.string("AXRole")
+        self.string(&self.names.role)
     }
 
     fn subrole(&self) -> Option<String> {
-        self.string("AXSubrole")
+        self.string(&self.names.subrole)
     }
 
     fn identifier(&self) -> Option<String> {
-        self.string("AXIdentifier")
+        self.string(&self.names.identifier)
     }
 
     fn title(&self) -> Option<String> {
-        self.string("AXTitle")
+        self.string(&self.names.title)
     }
 
     fn description(&self) -> Option<String> {
-        self.string("AXDescription")
+        self.string(&self.names.description)
     }
 
     fn url(&self) -> Option<String> {
-        let value = self.copy("AXURL")?;
+        let value = self.copy(&self.names.url)?;
         match value.downcast::<CFURL>() {
-            Ok(url) => Some(url.string().to_string()),
+            Ok(url) => {
+                // SAFETY: `url` is a valid CFURL. The string is borrowed from
+                // it, so it is retained before `url` goes away. (CFURL::string
+                // would panic instead of returning nothing, and a panic quits
+                // Lax.)
+                let string = NonNull::new(unsafe { CFURLGetString(&url) }.cast_mut())?;
+                let string = unsafe { CFRetained::retain(string) };
+                Some(string.to_string())
+            }
             Err(value) => value.downcast::<CFString>().ok().map(|s| s.to_string()),
         }
     }
@@ -262,17 +335,17 @@ impl Node for Element {
         {
             return Some(text);
         }
-        Some(truncate_chars(&self.string("AXValue")?, max_chars))
+        Some(truncate_chars(&self.string(&self.names.value)?, max_chars))
     }
 
     fn children(&self, max: usize) -> Vec<Element> {
-        let attribute = CFString::from_str("AXChildren");
         let mut values: *const CFArray = ptr::null();
         let max = CFIndex::try_from(max).unwrap_or(CFIndex::MAX);
         // SAFETY: valid element, attribute and out pointer; at most `max`
         // values are returned.
-        let error =
-            unsafe { AXUIElementCopyAttributeValues(&self.0, &attribute, 0, max, &mut values) };
+        let error = unsafe {
+            AXUIElementCopyAttributeValues(&self.element, &self.names.children, 0, max, &mut values)
+        };
         if error != AX_SUCCESS {
             return Vec::new();
         }
@@ -286,6 +359,6 @@ impl Node for Element {
         // SAFETY: an array from CoreFoundation only holds CoreFoundation
         // objects; each one's type is checked below.
         let array = unsafe { CFRetained::cast_unchecked::<CFArray<CFType>>(array) };
-        array.iter().filter_map(Element::from_value).collect()
+        array.iter().filter_map(|value| self.child(value)).collect()
     }
 }
