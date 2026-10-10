@@ -8,6 +8,7 @@ mod exclusions;
 mod expiry;
 mod filevault;
 mod forget;
+mod journal;
 #[allow(dead_code)] // Some levels and fields have no user yet.
 mod logging;
 mod model_settings;
@@ -60,6 +61,9 @@ pub fn run() {
             outbox::delete_outbox,
             outbox::outbox_retention_days,
             outbox::set_outbox_retention_days,
+            journal::journal_status,
+            journal::set_journal_enabled,
+            journal::journal_episodes,
         ])
         .setup(|app| {
             // Lax lives in the menu bar, without a Dock icon.
@@ -94,6 +98,8 @@ pub fn run() {
                     let exclusions = store.exclusions();
                     app.manage(Mutex::new(store));
                     expiry::start(app.handle().clone());
+                    // Does nothing until the user turns the journal on.
+                    journal::start(app.handle().clone());
                     match exclusions {
                         Ok(exclusions) => {
                             app.state::<exclusions::Current>().set(exclusions);

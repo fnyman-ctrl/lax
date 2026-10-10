@@ -29,6 +29,9 @@ fn main() {
             "delete_outbox",
             "outbox_retention_days",
             "set_outbox_retention_days",
+            "journal_status",
+            "set_journal_enabled",
+            "journal_episodes",
         ]),
     ))
     .expect("failed to run tauri-build");

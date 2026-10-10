@@ -3,7 +3,7 @@
 
 mod client;
 mod endpoint;
-mod structured;
+pub(crate) mod structured;
 
 pub use client::{ChatMessage, ModelClient, Role};
 pub use endpoint::{Endpoint, Locality};

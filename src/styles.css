@@ -654,3 +654,40 @@ mark {
   padding: 0;
   list-style: none;
 }
+
+/* Journal (src/Journal.tsx) */
+
+.journal-status {
+  margin-top: 1.25rem;
+}
+
+.journal-status p {
+  margin: 0.25rem 0;
+}
+
+.episodes {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.episode {
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.episode .when {
+  margin: 0;
+  font-size: 0.85em;
+}
+
+.episode .when .time {
+  font-family: var(--font-mono);
+  color: var(--muted);
+}
+
+.episode .summary {
+  margin: 0.2rem 0 0;
+  font-size: 1.02rem;
+  line-height: 1.55;
+}
