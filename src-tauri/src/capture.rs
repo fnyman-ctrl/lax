@@ -543,6 +543,10 @@ fn title_without_address(title: &str) -> String {
     site_from_url(&address).unwrap_or_default()
 }
 
+/// Without keyboard or mouse input for this long, the user counts as away.
+pub const AWAY: Duration = Duration::from_secs(60);
+const LONG_AWAY: Duration = Duration::from_secs(10 * 60);
+
 /// How long to wait before the next read: the interval the user chose,
 /// longer while they are away from the keyboard or on battery (#11).
 ///
@@ -550,8 +554,6 @@ fn title_without_address(title: &str) -> String {
 /// what doesn't change isn't stored anyway, so reading less often loses
 /// little. Video and slides changing on their own are read less often.
 pub fn pace(interval: Duration, idle: Option<Duration>, on_battery: bool) -> Duration {
-    const AWAY: Duration = Duration::from_secs(60);
-    const LONG_AWAY: Duration = Duration::from_secs(10 * 60);
     const MAX: Duration = Duration::from_secs(300);
     let mut wait = match idle {
         Some(idle) if idle >= LONG_AWAY => interval.max(Duration::from_secs(60)),
@@ -574,39 +576,52 @@ pub struct Heartbeat {
     start: Instant,
     /// Milliseconds after `start` of the last round, plus one; 0 = never.
     last: std::sync::atomic::AtomicU64,
+    /// How long the loop said it would wait after that round, in ms.
+    wait: std::sync::atomic::AtomicU64,
 }
+
+/// Room on top of the announced wait for one slow round.
+const HEARTBEAT_SLACK: Duration = Duration::from_secs(15);
 
 impl Default for Heartbeat {
     fn default() -> Self {
         Heartbeat {
             start: Instant::now(),
             last: std::sync::atomic::AtomicU64::new(0),
+            wait: std::sync::atomic::AtomicU64::new(0),
         }
     }
 }
 
 impl Heartbeat {
-    pub fn beat(&self) {
-        self.beat_at(self.start.elapsed());
+    /// The loop went round and will wait about `next_wait` before the next.
+    pub fn beat(&self, next_wait: Duration) {
+        self.beat_at(self.start.elapsed(), next_wait);
     }
 
-    /// Whether the loop went round within the last `max_gap`.
-    pub fn alive(&self, max_gap: Duration) -> bool {
-        self.alive_at(self.start.elapsed(), max_gap)
+    /// Whether the loop went round when it said it would.
+    pub fn alive(&self) -> bool {
+        self.alive_at(self.start.elapsed())
     }
 
-    fn beat_at(&self, since_start: Duration) {
-        let millis = u64::try_from(since_start.as_millis()).unwrap_or(u64::MAX - 1);
-        self.last
-            .store(millis + 1, std::sync::atomic::Ordering::Relaxed);
+    fn beat_at(&self, since_start: Duration, next_wait: Duration) {
+        let millis = |d: Duration| u64::try_from(d.as_millis()).unwrap_or(u64::MAX - 1);
+        self.wait
+            .store(millis(next_wait), std::sync::atomic::Ordering::Relaxed);
+        self.last.store(
+            millis(since_start) + 1,
+            std::sync::atomic::Ordering::Relaxed,
+        );
     }
 
-    fn alive_at(&self, since_start: Duration, max_gap: Duration) -> bool {
+    fn alive_at(&self, since_start: Duration) -> bool {
         match self.last.load(std::sync::atomic::Ordering::Relaxed) {
             0 => false,
             last => {
                 let last = Duration::from_millis(last - 1);
-                since_start.saturating_sub(last) <= max_gap
+                let wait =
+                    Duration::from_millis(self.wait.load(std::sync::atomic::Ordering::Relaxed));
+                since_start.saturating_sub(last) <= wait + HEARTBEAT_SLACK
             }
         }
     }
@@ -652,7 +667,8 @@ mod run {
             let mut last_summary = Instant::now();
             loop {
                 let started = Instant::now();
-                app.state::<Heartbeat>().beat();
+                let interval = interval(&app);
+                app.state::<Heartbeat>().beat(interval);
                 if accessibility::is_granted() {
                     let pause = app.state::<Pause>();
                     if let Some((version, exclusions)) =
@@ -686,7 +702,10 @@ mod run {
                 let idle = crate::ax::idle_time();
                 let on_battery = crate::ax::on_battery().unwrap_or(false);
                 stats.record_pace(idle, on_battery);
-                thread::sleep(super::pace(interval(&app), idle, on_battery));
+                let wait = super::pace(interval, idle, on_battery);
+                app.state::<Heartbeat>().beat(wait);
+                let away = idle.is_some_and(|idle| idle >= super::AWAY);
+                sleep_until_due(wait, away);
             }
         });
     }
@@ -710,6 +729,18 @@ mod run {
                 text: &snapshot.text,
             })
             .is_ok()
+    }
+
+    /// Sleeps `wait`, in steps of a second. After being away, wakes up as
+    /// soon as the user is back, so their first minute back is read.
+    fn sleep_until_due(wait: Duration, away: bool) {
+        let start = Instant::now();
+        while start.elapsed() < wait {
+            thread::sleep((wait - start.elapsed()).min(Duration::from_secs(1)));
+            if away && crate::ax::idle_time().is_some_and(|idle| idle < super::AWAY) {
+                return;
+            }
+        }
     }
 
     fn interval(app: &AppHandle) -> Duration {
@@ -1801,12 +1832,21 @@ mod tests {
     #[test]
     fn heartbeat_tells_whether_the_loop_runs() {
         let heartbeat = Heartbeat::default();
-        let gap = Duration::from_secs(30);
         let at = Duration::from_secs;
-        assert!(!heartbeat.alive_at(at(0), gap), "never beat");
-        heartbeat.beat_at(at(100));
-        assert!(heartbeat.alive_at(at(130), gap));
-        assert!(!heartbeat.alive_at(at(131), gap));
+        assert!(!heartbeat.alive_at(at(0)), "never beat");
+        heartbeat.beat_at(at(100), at(5));
+        assert!(heartbeat.alive_at(at(100 + 5 + 15)));
+        assert!(!heartbeat.alive_at(at(100 + 5 + 16)));
+    }
+
+    #[test]
+    fn heartbeat_allows_the_longer_waits_while_away() {
+        let heartbeat = Heartbeat::default();
+        let at = Duration::from_secs;
+        // Away and on battery: the loop says it waits two minutes.
+        heartbeat.beat_at(at(100), at(120));
+        assert!(heartbeat.alive_at(at(100 + 120)));
+        assert!(!heartbeat.alive_at(at(100 + 120 + 16)));
     }
 
     #[test]

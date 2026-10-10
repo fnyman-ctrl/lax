@@ -5,7 +5,6 @@
 //! data to it, never HTML or instructions (GUARDRAILS §5).
 
 use std::sync::{Mutex, PoisonError};
-use std::time::Duration;
 
 use chrono::{DateTime, Local};
 use serde::Serialize;
@@ -14,7 +13,7 @@ use tauri::{AppHandle, Manager};
 use crate::accessibility;
 use crate::capture::Heartbeat;
 use crate::pause::Pause;
-use crate::store::{Capture, CaptureSummary, DEFAULT_CAPTURE_INTERVAL_SECONDS, SearchHit, Store};
+use crate::store::{Capture, CaptureSummary, SearchHit, Store};
 
 /// The most captures one request can return.
 const MAX_LIMIT: u32 = 200;
@@ -111,20 +110,11 @@ impl From<Capture> for CaptureDetail {
 #[tauri::command(async)]
 pub fn capture_status(app: AppHandle) -> CaptureStatus {
     let state = app.state::<Pause>().state();
-    let interval = app
-        .try_state::<Mutex<Store>>()
-        .and_then(|store| {
-            let store = store.lock().unwrap_or_else(PoisonError::into_inner);
-            store.capture_interval_seconds().ok()
-        })
-        .unwrap_or(DEFAULT_CAPTURE_INTERVAL_SECONDS);
-    // A few rounds missed, plus room for a slow window.
-    let max_gap = Duration::from_secs(u64::from(interval) * 3 + 10);
     CaptureStatus {
         paused: state.is_paused(),
         label: state.label(&Local::now()),
         permission: accessibility::is_granted(),
-        capturing: app.state::<Heartbeat>().alive(max_gap),
+        capturing: app.state::<Heartbeat>().alive(),
         store_error: app
             .try_state::<StoreUnavailable>()
             .map(|unavailable| unavailable.0.clone()),
