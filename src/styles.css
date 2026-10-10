@@ -300,9 +300,11 @@ select {
   margin: 0.25rem 0 0;
 }
 
+/* Laxrosa is too light for a meaningful mark on white (under 3:1), so the
+   never-mark uses the error red, which has contrast in both modes. */
 .card.never h2::before {
   content: "✕ ";
-  color: var(--laxrosa);
+  color: var(--error);
 }
 
 .card.reads h2::before {
@@ -520,12 +522,13 @@ mark {
   font-size: 0.85em;
 }
 
-/* Captured text: the lines as they were on screen, in the body font. */
+/* Captured text: the lines and spacing as they were on screen, in the body
+   font. */
 .detail .text {
   max-height: 26rem;
   margin: 0;
   overflow: auto;
-  white-space: pre-line;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: 1.6;
 }

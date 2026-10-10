@@ -2,7 +2,8 @@ import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Exclusions } from "./Exclusions";
 import { Forget } from "./Forget";
-import laxIcon from "./assets/lax.svg";
+// The app icon is the one source of the mascot (docs/BRAND.md).
+import laxIcon from "../src-tauri/icons/app-icon.svg";
 
 // Shapes returned by src-tauri/src/viewer.rs.
 type CaptureStatus = {
