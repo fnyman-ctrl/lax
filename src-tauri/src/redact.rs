@@ -288,6 +288,191 @@ fn shannon_entropy(s: &str) -> f64 {
         .sum()
 }
 
+// ---------------------------------------------------------------------------
+// Before anything is sent to a remote provider (GUARDRAILS §3, #18)
+// ---------------------------------------------------------------------------
+
+/// Masks what may never leave the machine, for one request to a remote
+/// provider: everything [`redact`] masks, plus email addresses, phone
+/// numbers and IBANs, which are kept locally because the memory needs them.
+///
+/// The same address or number gets the same placeholder (`[EMAIL_1]`,
+/// `[PHONE_2]`…) everywhere in one request, so the model can still tell
+/// people apart and refer to them. Use one `RemoteRedactor` per request.
+#[derive(Debug, Default)]
+pub struct RemoteRedactor {
+    emails: Vec<String>,
+    phones: Vec<String>,
+    ibans: Vec<String>,
+    numbers: Vec<String>,
+}
+
+/// How much was masked in a request, for the outbox log. Never what.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct RemoteCounts {
+    pub emails: usize,
+    pub phones: usize,
+    pub ibans: usize,
+    /// Long digit runs masked because they may hold phone or account numbers.
+    pub numbers: usize,
+}
+
+impl RemoteRedactor {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn redact(&mut self, text: &str) -> String {
+        let text = redact(text);
+        let text = EMAIL.replace_all(&text, |caps: &Captures| {
+            placeholder(&mut self.emails, "EMAIL", caps[0].to_lowercase())
+        });
+        let text = IBAN_CANDIDATE.replace_all(&text, |caps: &Captures| {
+            let compact: String = caps[0]
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect::<String>()
+                .to_uppercase();
+            if iban_valid(&compact) {
+                placeholder(&mut self.ibans, "IBAN", compact.to_uppercase())
+            } else {
+                caps[0].to_string()
+            }
+        });
+        let text = PHONE_CANDIDATE.replace_all(&text, |caps: &Captures| {
+            let digits: String = caps[0].chars().filter(char::is_ascii_digit).collect();
+            match classify_number(&caps[0], &digits) {
+                Number::Phone => {
+                    placeholder(&mut self.phones, "PHONE", phone_key(&caps[0], &digits))
+                }
+                // Too long for one phone number: perhaps two side by side,
+                // or an account number. Masked, since it may hold either.
+                Number::Long => placeholder(&mut self.numbers, "NUMBER", digits),
+                Number::NotPersonal => caps[0].to_string(),
+            }
+        });
+        text.into_owned()
+    }
+
+    pub fn counts(&self) -> RemoteCounts {
+        RemoteCounts {
+            emails: self.emails.len(),
+            phones: self.phones.len(),
+            ibans: self.ibans.len(),
+            numbers: self.numbers.len(),
+        }
+    }
+}
+
+/// `[KIND_n]`, the same n for the same value within one redactor.
+fn placeholder(seen: &mut Vec<String>, kind: &str, value: String) -> String {
+    let n = match seen.iter().position(|v| *v == value) {
+        Some(i) => i + 1,
+        None => {
+            seen.push(value);
+            seen.len()
+        }
+    };
+    format!("[{kind}_{n}]")
+}
+
+/// Letters in any script, so addresses at Swedish and other internationalised
+/// domains (anna@räksmörgås.se) are caught too.
+static EMAIL: LazyLock<Regex> =
+    LazyLock::new(|| regex(r"[\p{L}\p{N}._%+-]+@[\p{L}\p{N}-]+(?:\.[\p{L}\p{N}-]+)*\.\p{L}{2,}"));
+
+/// Two letters, two check digits, then 11–30 letters and digits, optionally
+/// in groups of four. Validated by [`iban_valid`].
+static IBAN_CANDIDATE: LazyLock<Regex> =
+    LazyLock::new(|| regex(r"(?i)\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]){11,30}\b"));
+
+/// A number that starts with `+`, `00`, `0` or a Swedish `46`, and goes on
+/// with digits, spaces, hyphens and brackets, taken whole. Validated by
+/// [`classify_number`].
+static PHONE_CANDIDATE: LazyLock<Regex> =
+    LazyLock::new(|| regex(r"(?:\+|\b0|\b46)\d[\d\s()\-]{5,}\d\b"));
+
+/// The ISO 13616 checksum: move the first four characters to the end, turn
+/// letters into numbers (A = 10 …), and the result mod 97 must be 1.
+fn iban_valid(compact: &str) -> bool {
+    if !(15..=34).contains(&compact.len()) || !compact.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return false;
+    }
+    let rearranged = compact[4..].chars().chain(compact[..4].chars());
+    let mut remainder: u32 = 0;
+    for c in rearranged {
+        let value = match c.to_digit(36) {
+            Some(v) => v,
+            None => return false,
+        };
+        for digit in value.to_string().chars() {
+            remainder = (remainder * 10 + digit.to_digit(10).unwrap_or(0)) % 97;
+        }
+    }
+    remainder == 1
+}
+
+enum Number {
+    Phone,
+    /// Starts like a phone number but has too many digits for one.
+    Long,
+    NotPersonal,
+}
+
+/// Swedish numbers (07x mobile, area codes 08, 031…), international ones with
+/// `+` or `00`, and Swedish ones written with `46` but no `+`. Dates, times,
+/// amounts and other numbers that only look like phone numbers are left
+/// alone; runs too long for one phone number are masked anyway.
+fn classify_number(candidate: &str, digits: &str) -> Number {
+    // ISO dates (2026-10-11) and ranges like 0800-1700 aren't phone numbers.
+    if DATE_LIKE.is_match(candidate.trim()) {
+        return Number::NotPersonal;
+    }
+    let plus = candidate.starts_with('+');
+    // 00 is an international prefix only if a country code follows, and
+    // country codes never start with 0; "0000 0583…" is a long number.
+    let double_zero = digits.starts_with("00") && !digits[2..].starts_with('0');
+    let (number, range) = if plus {
+        (digits, 8..=15)
+    } else if double_zero {
+        (&digits[2..], 8..=15)
+    } else if digits.starts_with("46") {
+        // Without + only a Swedish number: 46 and 8 or 9 more digits.
+        (digits, 10..=11)
+    } else {
+        // Swedish: a leading 0 and 8 to 10 digits in all.
+        (digits, 8..=10)
+    };
+    if plus && number.starts_with('0') {
+        return Number::NotPersonal;
+    }
+    if range.contains(&number.len()) {
+        Number::Phone
+    } else if number.len() > *range.end() && !digits.starts_with("46") {
+        Number::Long
+    } else {
+        Number::NotPersonal
+    }
+}
+
+static DATE_LIKE: LazyLock<Regex> = LazyLock::new(|| regex(r"^\d{4}-\d{2}-\d{2}$|^\d{4}-\d{4}$"));
+
+/// The same number written differently gets the same placeholder: +46 70…,
+/// 0046 70… and 070… are one Swedish number.
+fn phone_key(candidate: &str, digits: &str) -> String {
+    if candidate.starts_with('+') {
+        digits.to_string()
+    } else if let Some(rest) = digits.strip_prefix("00")
+        && !rest.starts_with('0')
+    {
+        rest.to_string()
+    } else if digits.starts_with("46") {
+        digits.to_string()
+    } else {
+        format!("46{}", &digits[1..])
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -578,5 +763,106 @@ mod tests {
         assert!(luhn_valid(&[7, 9, 9, 2, 7, 3, 9, 8, 7, 1, 3]));
         assert!(!luhn_valid(&[7, 9, 9, 2, 7, 3, 9, 8, 7, 1, 4]));
         assert!(!luhn_valid(&[]));
+    }
+
+    // --- before remote requests (#18) ---
+
+    fn remote(text: &str) -> String {
+        RemoteRedactor::new().redact(text)
+    }
+
+    #[test]
+    fn emails_get_numbered_placeholders() {
+        let mut redactor = RemoteRedactor::new();
+        let first = redactor.redact("Mail anna@example.com and erik.exempel@mail.example.se");
+        let second = redactor.redact("Reply to ANNA@example.com");
+        assert_eq!(first, "Mail [EMAIL_1] and [EMAIL_2]");
+        assert_eq!(second, "Reply to [EMAIL_1]");
+        assert_eq!(redactor.counts().emails, 2);
+    }
+
+    #[test]
+    fn swedish_and_international_phone_numbers_are_masked() {
+        let mut redactor = RemoteRedactor::new();
+        for (text, expected) in [
+            ("Ring 070-123 45 67", "Ring [PHONE_1]"),
+            ("eller +46 70 123 45 67", "eller [PHONE_1]"),
+            ("eller 0046 70 123 45 67", "eller [PHONE_1]"),
+            ("Växel 08-123 456 78", "Växel [PHONE_2]"),
+            ("Göteborg 031-12 34 56", "Göteborg [PHONE_3]"),
+            ("US +1 415 555 0100", "US [PHONE_4]"),
+            ("UK +44 20 7946 0958", "UK [PHONE_5]"),
+            ("utan plus 46701234567", "utan plus [PHONE_1]"),
+        ] {
+            assert_eq!(redactor.redact(text), expected, "{text}");
+        }
+    }
+
+    #[test]
+    fn numbers_that_only_look_like_phone_numbers_are_kept() {
+        for text in [
+            "Möte 2026-10-11 kl. 09:12",
+            "Priset är 48 000 kr exkl. moms",
+            "Leverans vecka 46",
+            "Order 123456-7890",
+            "Version 0.13.5",
+            "Öppet 0800-1700",
+            "Rum 0412",
+            "ISBN 978-91-0-012345-6",
+            "År 4600 och 46 personer",
+        ] {
+            assert_eq!(remote(text), text, "{text}");
+        }
+    }
+
+    #[test]
+    fn long_runs_that_may_hold_numbers_are_masked() {
+        // Two numbers side by side, or an account number: masked, not kept.
+        assert_eq!(
+            remote("Ring 070-123 45 67 08-123 456 78"),
+            "Ring [NUMBER_1]"
+        );
+        assert_eq!(remote("Konto 0000 0583 9825 7467"), "Konto [NUMBER_1]");
+    }
+
+    #[test]
+    fn emails_at_international_domains_are_masked() {
+        assert_eq!(
+            remote("Skriv till åsa@räksmörgås.se"),
+            "Skriv till [EMAIL_1]"
+        );
+    }
+
+    #[test]
+    fn ibans_are_masked_only_with_a_valid_checksum() {
+        assert_eq!(
+            remote("Betala till SE45 5000 0000 0583 9825 7466"),
+            "Betala till [IBAN_1]"
+        );
+        assert_eq!(remote("IBAN GB82WEST12345698765432"), "IBAN [IBAN_1]");
+        assert_eq!(
+            remote("iban se45 5000 0000 0583 9825 7466"),
+            "iban [IBAN_1]"
+        );
+        // One digit off: not an IBAN. Its long digit run is still masked.
+        assert_eq!(
+            remote("Kod SE45 5000 0000 0583 9825 7467"),
+            "Kod SE45 5000 [NUMBER_1]"
+        );
+    }
+
+    #[test]
+    fn everything_redact_masks_is_masked_too() {
+        let text =
+            remote("Personnummer 19811218-9876, kort 4111 1111 1111 1111, password: hunter2");
+        assert!(text.contains(PERSONAL_NUMBER), "{text}");
+        assert!(text.contains(CARD_NUMBER), "{text}");
+        assert!(!text.contains("hunter2"), "{text}");
+    }
+
+    #[test]
+    fn names_and_ordinary_text_are_kept() {
+        let text = "Anna Example från Exempelbolaget AB vill ha offerten före fredag.";
+        assert_eq!(remote(text), text);
     }
 }

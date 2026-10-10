@@ -3,6 +3,9 @@
 
 mod client;
 mod endpoint;
+mod structured;
 
 pub use client::{ChatMessage, ModelClient, Role};
 pub use endpoint::{Endpoint, Locality};
+#[allow(unused_imports)] // Used by the journal (Stage 3).
+pub use structured::{Captured, Entities, StructuredError, Validate, ask};
