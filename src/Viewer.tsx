@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Exclusions } from "./Exclusions";
 import { Forget } from "./Forget";
+import { Journal } from "./Journal";
 import { Models } from "./Models";
 import { Outbox } from "./Outbox";
 // The app icon is the one source of the mascot (docs/BRAND.md).
@@ -54,7 +55,9 @@ const MATCH_END = "\u0003";
  * only ever rendered as text, never as HTML.
  */
 export function Viewer() {
-  const [tab, setTab] = useState<"captures" | "exclusions" | "models" | "outbox">("captures");
+  const [tab, setTab] = useState<"journal" | "captures" | "exclusions" | "models" | "outbox">(
+    "journal",
+  );
   const [query, setQuery] = useState("");
   // Bumped after a deletion, so the lists start over from the database.
   const [version, setVersion] = useState(0);
@@ -71,6 +74,13 @@ export function Viewer() {
         <Status />
       </header>
       <nav className="tabs" aria-label="Sections">
+        <button
+          type="button"
+          aria-current={tab === "journal" ? "page" : undefined}
+          onClick={() => setTab("journal")}
+        >
+          Journal
+        </button>
         <button
           type="button"
           aria-current={tab === "captures" ? "page" : undefined}
@@ -100,7 +110,9 @@ export function Viewer() {
           Sent
         </button>
       </nav>
-      {tab === "outbox" ? (
+      {tab === "journal" ? (
+        <Journal onShowModels={() => setTab("models")} />
+      ) : tab === "outbox" ? (
         <Outbox />
       ) : tab === "models" ? (
         <Models />

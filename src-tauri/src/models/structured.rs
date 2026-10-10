@@ -177,7 +177,7 @@ impl Validate for Entities {
 
 /// Zero-width and text-direction characters, which can hide text or make
 /// one name look like another.
-fn is_invisible(c: char) -> bool {
+pub(crate) fn is_invisible(c: char) -> bool {
     matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}')
 }
 

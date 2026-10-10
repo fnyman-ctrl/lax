@@ -30,6 +30,9 @@
     "allow-outbox-payload",
     "allow-delete-outbox",
     "allow-outbox-retention-days",
-    "allow-set-outbox-retention-days"
+    "allow-set-outbox-retention-days",
+    "allow-journal-status",
+    "allow-set-journal-enabled",
+    "allow-journal-episodes"
   ]
 }

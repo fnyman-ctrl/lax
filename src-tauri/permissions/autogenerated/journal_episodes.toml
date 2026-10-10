@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-journal-episodes"
+description = "Enables the journal_episodes command without any pre-configured scope."
+commands.allow = ["journal_episodes"]
+
+[[permission]]
+identifier = "deny-journal-episodes"
+description = "Denies the journal_episodes command without any pre-configured scope."
+commands.deny = ["journal_episodes"]

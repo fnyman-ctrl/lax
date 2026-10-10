@@ -29,6 +29,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0002_settings.sql"),
     include_str!("../migrations/0003_exclusions.sql"),
     include_str!("../migrations/0004_outbox.sql"),
+    include_str!("../migrations/0005_journal.sql"),
 ];
 
 /// How long raw captures are kept unless the user chooses otherwise
@@ -46,6 +47,7 @@ pub const CAPTURE_INTERVAL_RANGE: std::ops::RangeInclusive<u32> = 2..=300;
 const RETENTION_KEY: &str = "retention_days";
 const CAPTURE_INTERVAL_KEY: &str = "capture_interval_seconds";
 const OUTBOX_RETENTION_KEY: &str = "outbox_retention_days";
+const JOURNAL_KEY: &str = "journal_enabled";
 /// How long the outbox log is kept unless the user chooses otherwise.
 pub const DEFAULT_OUTBOX_RETENTION_DAYS: u32 = 90;
 const PAUSE_KEY: &str = "paused_until";
@@ -315,6 +317,174 @@ impl ModelTask {
 pub struct ModelChoice {
     pub base_url: String,
     pub model: String,
+}
+
+/// An episode about to be stored, before it has an id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewEpisode {
+    pub summary: String,
+    pub model: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// A stored episode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Episode {
+    pub id: i64,
+    pub started_at: DateTime<Utc>,
+    pub ended_at: DateTime<Utc>,
+    pub summary: String,
+    pub app_names: Vec<String>,
+    pub captures: usize,
+}
+
+/// The journal (Stage 3).
+impl Store {
+    /// Captures not yet summarized, oldest first, captured before `before`.
+    pub fn unsummarized(&self, before: DateTime<Utc>, limit: usize) -> Result<Vec<Capture>> {
+        let mut statement = self.conn.prepare(
+            "SELECT id, captured_at, app_name, bundle_id, window_title, site, text
+             FROM captures
+             WHERE episode_id IS NULL AND captured_at < ?1
+             ORDER BY captured_at, id
+             LIMIT ?2",
+        )?;
+        let rows = statement.query_map(
+            params![before.timestamp_millis(), sql_limit(limit)],
+            capture_from_row,
+        )?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Whether the user turned the journal on. Off until they do.
+    pub fn journal_enabled(&self) -> Result<bool> {
+        Ok(self.setting(JOURNAL_KEY)?.as_deref() == Some("on"))
+    }
+
+    pub fn set_journal_enabled(&self, enabled: bool) -> Result<()> {
+        self.set_setting(JOURNAL_KEY, if enabled { "on" } else { "off" })
+    }
+
+    /// How many captures wait to be summarized.
+    pub fn unsummarized_count(&self) -> Result<usize> {
+        let count: i64 = self.conn.query_row(
+            "SELECT count(*) FROM captures WHERE episode_id IS NULL",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(usize::try_from(count).unwrap_or(0))
+    }
+
+    /// Stores `episode` as the summary of `captures` and marks them
+    /// summarized. Refused (`None`) if any of them is gone or already
+    /// summarized: the user may have forgotten them while the model was
+    /// writing, and nothing may be kept from them.
+    pub fn record_episode(
+        &mut self,
+        episode: &NewEpisode,
+        captures: &[i64],
+    ) -> Result<Option<i64>> {
+        if captures.is_empty() {
+            return Ok(None);
+        }
+        let tx = self.conn.transaction()?;
+        // Ids are numbers from the database, so joining them is safe.
+        let ids = captures
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let (present, started, ended): (i64, Option<i64>, Option<i64>) = tx.query_row(
+            &format!(
+                "SELECT count(*), min(captured_at), max(captured_at)
+                 FROM captures WHERE id IN ({ids}) AND episode_id IS NULL"
+            ),
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        let (Some(started), Some(ended)) = (started, ended) else {
+            return Ok(None);
+        };
+        if usize::try_from(present).unwrap_or(0) != captures.len() {
+            return Ok(None);
+        }
+        let mut apps: Vec<String> = Vec::new();
+        let mut names: Vec<String> = Vec::new();
+        {
+            let mut statement = tx.prepare(&format!(
+                "SELECT bundle_id, app_name FROM captures WHERE id IN ({ids})
+                 ORDER BY captured_at"
+            ))?;
+            let rows = statement.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (bundle_id, name) = row?;
+                if !apps.iter().any(|a| a.eq_ignore_ascii_case(&bundle_id)) {
+                    apps.push(bundle_id);
+                    names.push(name);
+                }
+            }
+        }
+        tx.execute(
+            "INSERT INTO episodes (started_at, ended_at, summary, apps, app_names, model, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                started,
+                ended,
+                episode.summary,
+                apps.join("\n"),
+                names.join("\n"),
+                episode.model,
+                episode.created_at.timestamp_millis(),
+            ],
+        )?;
+        let id = tx.last_insert_rowid();
+        tx.execute(
+            &format!("UPDATE captures SET episode_id = ?1 WHERE id IN ({ids})"),
+            [id],
+        )?;
+        tx.commit()?;
+        Ok(Some(id))
+    }
+
+    /// Episodes newest first, at most `limit`; `before` continues a listing.
+    pub fn episodes(
+        &self,
+        before: Option<(DateTime<Utc>, i64)>,
+        limit: usize,
+    ) -> Result<Vec<Episode>> {
+        let (before_ms, before_id) = before
+            .map(|(at, id)| (at.timestamp_millis(), id))
+            .unwrap_or((i64::MAX, i64::MAX));
+        let mut statement = self.conn.prepare(
+            "SELECT e.id, e.started_at, e.ended_at, e.summary, e.app_names,
+                    (SELECT count(*) FROM captures AS c WHERE c.episode_id = e.id)
+             FROM episodes AS e
+             WHERE (e.started_at, e.id) < (?1, ?2)
+             ORDER BY e.started_at DESC, e.id DESC
+             LIMIT ?3",
+        )?;
+        let rows = statement.query_map(params![before_ms, before_id, sql_limit(limit)], |row| {
+            let started: i64 = row.get(1)?;
+            let ended: i64 = row.get(2)?;
+            let names: String = row.get(4)?;
+            let count: i64 = row.get(5)?;
+            Ok(Episode {
+                id: row.get(0)?,
+                started_at: DateTime::from_timestamp_millis(started).unwrap_or_default(),
+                ended_at: DateTime::from_timestamp_millis(ended).unwrap_or_default(),
+                summary: row.get(3)?,
+                app_names: names
+                    .lines()
+                    .filter(|n| !n.is_empty())
+                    .map(String::from)
+                    .collect(),
+                captures: usize::try_from(count).unwrap_or(0),
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
 }
 
 /// One request to a remote provider, as it was sent (GUARDRAILS §3).
@@ -683,16 +853,43 @@ impl Store {
         // What was sent off the machine about the forgotten captures goes
         // too. (Everything already includes the outbox.)
         let outbox_deleted = self.forget_in_outbox(what)?;
+        let episodes_deleted = self.forget_in_journal(what)?;
         // Remembered once the rows are gone, so a failed delete refuses
         // nothing. The store is behind a lock, so no capture can be stored
         // in between.
         self.recent_forgets
             .borrow_mut()
             .push((what.clone(), Utc::now()));
-        if deleted + outbox_deleted > 0 {
+        if deleted + outbox_deleted + episodes_deleted > 0 {
             self.scrub()?;
         }
         Ok(deleted)
+    }
+
+    /// Episodes made from captures that `what` covers. Captures of other
+    /// apps or times in them are summarized again on the next run.
+    fn forget_in_journal(&self, what: &Forget) -> Result<usize> {
+        Ok(match what {
+            Forget::Before(t) => self.conn.execute(
+                "DELETE FROM episodes WHERE started_at < ?1",
+                [t.timestamp_millis()],
+            )?,
+            Forget::Since(t) => self.conn.execute(
+                "DELETE FROM episodes WHERE ended_at >= ?1",
+                [t.timestamp_millis()],
+            )?,
+            Forget::Between(from, to) => self.conn.execute(
+                "DELETE FROM episodes WHERE started_at < ?2 AND ended_at >= ?1",
+                [from.timestamp_millis(), to.timestamp_millis()],
+            )?,
+            Forget::App(bundle_id) => self.conn.execute(
+                "DELETE FROM episodes
+                 WHERE instr(char(10) || lower(apps) || char(10),
+                             char(10) || lower(?1) || char(10)) > 0",
+                [bundle_id],
+            )?,
+            Forget::Everything => 0,
+        })
     }
 
     /// Outbox entries made from captures that `what` covers.
@@ -759,8 +956,10 @@ impl Store {
                 [bundle_id],
             )?,
             Forget::Everything => {
-                // What was sent off the machine is part of "everything".
+                // What was sent off the machine, and the journal written
+                // from the captures, are part of "everything".
                 self.conn.execute("DELETE FROM outbox", [])?;
+                self.conn.execute("DELETE FROM episodes", [])?;
                 self.conn.execute("DELETE FROM captures", [])?
             }
         })
@@ -899,6 +1098,10 @@ impl Store {
         )?;
         self.conn.execute(
             "INSERT INTO outbox_fts (outbox_fts) VALUES ('optimize')",
+            [],
+        )?;
+        self.conn.execute(
+            "INSERT INTO episodes_fts (episodes_fts) VALUES ('optimize')",
             [],
         )?;
         self.conn.execute_batch("VACUUM")?;
@@ -1722,6 +1925,89 @@ mod tests {
             .unwrap();
         assert!(store.outbox(None, None, 10).unwrap().is_empty());
         assert!(store.set_outbox_retention_days(0, Utc::now()).is_err());
+    }
+
+    fn episode(summary: &str) -> NewEpisode {
+        NewEpisode {
+            summary: summary.to_string(),
+            model: "google/gemma-4-e4b".to_string(),
+            created_at: at(100),
+        }
+    }
+
+    #[test]
+    fn episodes_summarize_captures_once() {
+        let mut store = Store::open_in_memory().unwrap();
+        let a = insert_at(&store, 0, "Inbox", "Offert för Q3");
+        let b = insert_at(&store, 5, "Inbox", "Svar från Anna");
+        insert_at(&store, 30, "Inbox", "Later");
+        assert_eq!(store.unsummarized_count().unwrap(), 3);
+        let waiting = store.unsummarized(at(20), 10).unwrap();
+        assert_eq!(waiting.iter().map(|c| c.id).collect::<Vec<_>>(), [a, b]);
+
+        let id = store
+            .record_episode(&episode("Läste mejl om offerten för Q3."), &[a, b])
+            .unwrap()
+            .unwrap();
+        assert_eq!(store.unsummarized_count().unwrap(), 1);
+        let episodes = store.episodes(None, 10).unwrap();
+        assert_eq!(episodes.len(), 1);
+        assert_eq!(episodes[0].id, id);
+        assert_eq!(episodes[0].started_at, at(0));
+        assert_eq!(episodes[0].ended_at, at(5));
+        assert_eq!(episodes[0].app_names, ["Mail"]);
+        assert_eq!(episodes[0].captures, 2);
+        // Already summarized captures can't be summarized again.
+        assert_eq!(store.record_episode(&episode("again"), &[a]).unwrap(), None);
+    }
+
+    #[test]
+    fn an_episode_about_forgotten_captures_is_refused() {
+        let mut store = Store::open_in_memory().unwrap();
+        let a = insert_at(&store, 0, "Inbox", "text");
+        let b = insert_at(&store, 1, "Inbox", "text");
+        // The model is writing while the user forgets one of them.
+        store.forget(&Forget::Between(at(1), at(2))).unwrap();
+        assert_eq!(store.record_episode(&episode("x"), &[a, b]).unwrap(), None);
+        assert!(store.episodes(None, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn forgetting_captures_forgets_their_episodes() {
+        let mut store = Store::open_in_memory().unwrap();
+        let a = insert_at(&store, 0, "Inbox", "mail");
+        let notes = store
+            .insert(&NewCapture {
+                captured_at: at(1),
+                app_name: "Anteckningar",
+                bundle_id: "com.apple.Notes",
+                ..capture("Note", "note")
+            })
+            .unwrap()
+            .unwrap();
+        store
+            .record_episode(&episode("Mail och anteckning."), &[a, notes])
+            .unwrap();
+        let later = insert_at(&store, 60, "Inbox", "later mail");
+        store
+            .record_episode(&episode("Senare mejl."), &[later])
+            .unwrap();
+
+        store
+            .forget(&Forget::App("com.apple.notes".to_string()))
+            .unwrap();
+        let left: Vec<String> = store
+            .episodes(None, 10)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.summary)
+            .collect();
+        assert_eq!(left, ["Senare mejl."]);
+        // The mail from the forgotten episode waits to be summarized again.
+        assert_eq!(store.unsummarized(at(30), 10).unwrap()[0].id, a);
+
+        store.forget(&Forget::Everything).unwrap();
+        assert!(store.episodes(None, 10).unwrap().is_empty());
     }
 
     #[test]

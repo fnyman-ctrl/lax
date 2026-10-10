@@ -39,6 +39,9 @@ previous one, so they can be built, tested and improved independently.
 
 - Every ~15 minutes (and when idle), group recent captures into time blocks and
   ask the local LLM to write short **episodes**: what was done, in which app, with whom.
+  The journal is off until the user turns it on and has chosen a chat model
+  (`src-tauri/src/journal.rs`). It skips captures younger than two minutes, sends
+  each window once with its latest content, and stops while capture is paused.
 - Episodes are what the rest of the system reads. A raw capture expires only after
   it has been summarized, or at the maximum age (default 90 days, configurable).
 
