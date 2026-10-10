@@ -55,6 +55,9 @@ pub enum ModelError {
     /// The answer wasn't what an OpenAI-compatible server sends.
     InvalidResponse,
     TooLarge,
+    /// The model used up its token budget before giving an answer (reasoning
+    /// models can spend it all on thinking).
+    OutOfRoom,
 }
 
 impl fmt::Display for ModelError {
@@ -70,6 +73,9 @@ impl fmt::Display for ModelError {
                 f.write_str("The model server's answer wasn't in the expected format.")
             }
             ModelError::TooLarge => f.write_str("The model server's answer was too large."),
+            ModelError::OutOfRoom => {
+                f.write_str("The model ran out of room before it could answer.")
+            }
         }
     }
 }
@@ -144,6 +150,7 @@ impl ModelClient {
         #[derive(Deserialize)]
         struct Choice {
             message: Message,
+            finish_reason: Option<String>,
         }
         #[derive(Deserialize)]
         struct Message {
@@ -163,12 +170,16 @@ impl ModelClient {
                 CHAT_TIMEOUT,
             )
             .await?;
-        reply
+        let choice = reply
             .choices
             .into_iter()
             .next()
-            .and_then(|choice| choice.message.content)
-            .ok_or(ModelError::InvalidResponse)
+            .ok_or(ModelError::InvalidResponse)?;
+        match choice.message.content {
+            Some(content) if !content.trim().is_empty() => Ok(content),
+            _ if choice.finish_reason.as_deref() == Some("length") => Err(ModelError::OutOfRoom),
+            _ => Err(ModelError::InvalidResponse),
+        }
     }
 
     /// One embedding per input, in the order of `inputs`.
@@ -230,15 +241,19 @@ impl ModelClient {
                 Some(body) => self.http.post(url.clone()).json(body),
                 None => self.http.get(url.clone()),
             };
-            let outcome = match request.timeout(timeout).send().await {
-                Ok(response) => read(response).await,
-                Err(error) if error.is_timeout() => Err(ModelError::Timeout),
-                Err(_) => Err(ModelError::Unreachable),
+            // Only retry what didn't reach the server (a failed connection)
+            // or what the server turned down without handling (busy, down).
+            // Anything else may have been received, and sending it again
+            // would send its content again.
+            let (outcome, retry) = match request.timeout(timeout).send().await {
+                Ok(response) => {
+                    let outcome = read(response).await;
+                    let busy = matches!(outcome, Err(ModelError::Status(429 | 502 | 503 | 504)));
+                    (outcome, busy)
+                }
+                Err(error) if error.is_timeout() => (Err(ModelError::Timeout), false),
+                Err(error) => (Err(ModelError::Unreachable), error.is_connect()),
             };
-            let retry = matches!(
-                outcome,
-                Err(ModelError::Unreachable | ModelError::Status(429 | 500 | 502 | 503 | 504))
-            );
             match self.backoff.get(attempts - 1) {
                 Some(wait) if retry => tokio::time::sleep(*wait).await,
                 _ => break outcome,
@@ -424,6 +439,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn running_out_of_room_is_told_apart() {
+        let server = MockServer::start(vec![(
+            200,
+            r#"{"choices":[{"message":{"content":"","reasoning_content":"Let me think"},"finish_reason":"length"}]}"#,
+        )]);
+        let reply = server.client().chat("qwen", &[user("x")], Some(10)).await;
+        assert_eq!(reply, Err(ModelError::OutOfRoom));
+    }
+
+    #[tokio::test]
     async fn busy_servers_are_retried() {
         let server = MockServer::start(vec![
             (503, "{}"),
@@ -444,20 +469,10 @@ mod tests {
 
     #[tokio::test]
     async fn errors_never_carry_what_the_server_sent() {
-        let server = MockServer::start(vec![
-            (
-                500,
-                r#"{"error":"Anna Example's diagnosis was in the prompt"}"#,
-            ),
-            (
-                500,
-                r#"{"error":"Anna Example's diagnosis was in the prompt"}"#,
-            ),
-            (
-                500,
-                r#"{"error":"Anna Example's diagnosis was in the prompt"}"#,
-            ),
-        ]);
+        let server = MockServer::start(vec![(
+            500,
+            r#"{"error":"Anna Example's diagnosis was in the prompt"}"#,
+        )]);
         let error = server
             .client()
             .chat("m", &[user("x")], None)
@@ -465,7 +480,9 @@ mod tests {
             .unwrap_err();
         assert_eq!(error, ModelError::Status(500));
         assert!(!error.to_string().contains("Anna"));
-        assert_eq!(server.requests().len(), 3, "three attempts");
+        // A 500 may mean the server handled the request and failed, so it
+        // isn't sent again.
+        assert_eq!(server.requests().len(), 1);
     }
 
     #[tokio::test]
