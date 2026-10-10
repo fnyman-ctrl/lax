@@ -24,6 +24,7 @@
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
@@ -428,10 +429,11 @@ fn walk<N: Node>(
     let mut content = Content::default();
     let mut lines: Vec<String> = Vec::new();
     let mut chars = 0;
-    // (element, depth, inside a web area)
-    let mut stack = vec![(window, 0, false)];
+    // (element, depth, inside a web area, the address of the web area if
+    // the element is directly in one)
+    let mut stack: Vec<(N, usize, bool, Option<Rc<str>>)> = vec![(window, 0, false, None)];
 
-    while let Some((node, depth, in_web)) = stack.pop() {
+    while let Some((node, depth, in_web, page)) = stack.pop() {
         if paused() {
             return Err(Stop::Paused);
         }
@@ -457,9 +459,18 @@ fn walk<N: Node>(
             continue;
         }
 
+        if role == "AXLink"
+            && let Some(page) = &page
+            && node.url().is_some_and(|target| is_skip_link(page, &target))
+        {
+            continue;
+        }
+
         let mut in_web = in_web;
+        let mut page_address = None;
         if role == WEB_AREA {
             let address = node.url();
+            page_address = address.as_deref().map(Rc::from);
             let host = address.as_deref().and_then(site_from_url);
             if let Some(host) = &host
                 && let Decision::Skip(reason) = exclusions.check_site(host)
@@ -507,13 +518,26 @@ fn walk<N: Node>(
             continue;
         }
         let children = node.children(limits.max_children);
-        stack.extend(children.into_iter().rev().map(|c| (c, depth + 1, in_web)));
+        stack.extend(
+            children
+                .into_iter()
+                .rev()
+                .map(|c| (c, depth + 1, in_web, page_address.clone())),
+        );
     }
 
     let text = lines.join("\n");
     content.text = truncate_chars(&text, limits.max_chars);
     content.truncated |= content.text.len() < text.len();
     Ok(content)
+}
+
+/// A "skip to content" link: a link placed directly in a page that jumps to
+/// another place on the same page. Pages put one first, for keyboard users,
+/// so without this every capture would start with "Skip to content".
+fn is_skip_link(page: &str, target: &str) -> bool {
+    let without_fragment = |address: &str| address.split('#').next().unwrap_or("").to_string();
+    target.contains('#') && without_fragment(target) == without_fragment(page)
 }
 
 /// At most `max` characters of `text`, cut at a character boundary.
@@ -1433,6 +1457,56 @@ mod tests {
         );
         let snapshot = captured(capturer().tick(&mut screen, running));
         assert_eq!(snapshot.text, "Deliver by Friday");
+    }
+
+    #[test]
+    fn skip_to_content_links_are_skipped() {
+        let link = |name, url, label| Fake {
+            url: Some(url),
+            children: vec![text(label, label)],
+            ..el(name, "AXLink")
+        };
+        let mut screen = FakeScreen::new(
+            "com.apple.Safari",
+            "Safari",
+            window(
+                "Q3",
+                vec![
+                    web_area(
+                        "https://docs.example.com/q3",
+                        vec![
+                            link(
+                                "skip",
+                                "https://docs.example.com/q3#start-of-content",
+                                "Skip to content",
+                            ),
+                            link("other", "https://docs.example.com/q4", "Q4 report"),
+                            Fake {
+                                children: vec![link(
+                                    "toc",
+                                    "https://docs.example.com/q3#summary",
+                                    "Summary",
+                                )],
+                                ..el("main", "AXGroup")
+                            },
+                        ],
+                    ),
+                    safari_toolbar("smart sökfält"),
+                ],
+            ),
+        );
+        let snapshot = captured(capturer().tick(&mut screen, running));
+        // Links elsewhere, and in-page links deeper in the page, are kept.
+        assert_eq!(snapshot.text, "Q4 report\nSummary");
+        assert!(is_skip_link(
+            "https://a.example/x",
+            "https://a.example/x#main"
+        ));
+        assert!(!is_skip_link(
+            "https://a.example/x",
+            "https://a.example/y#main"
+        ));
+        assert!(!is_skip_link("https://a.example/x", "https://a.example/x"));
     }
 
     #[test]
