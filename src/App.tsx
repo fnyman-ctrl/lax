@@ -161,8 +161,10 @@ function Ready() {
       <p>A private, fully local memory for your Mac.</p>
       <p>✓ Accessibility access is on.</p>
       <p className="muted">
-        Nothing is captured yet. You can turn access off at any time in System Settings →
-        Privacy &amp; Security → Accessibility.
+        Lax reads the active window every few seconds and keeps everything on this Mac.
+        Password fields, private browser windows and password managers are never read. Pause
+        from the menu bar at any time, or turn access off in System Settings → Privacy &amp;
+        Security → Accessibility.
       </p>
     </main>
   );
