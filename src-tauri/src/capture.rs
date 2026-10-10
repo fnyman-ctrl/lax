@@ -56,6 +56,11 @@ pub trait Screen {
 pub trait Node: Sized {
     fn role(&self) -> Option<String>;
     fn subrole(&self) -> Option<String>;
+    /// Role and subrole together. The real screen reads both in one request,
+    /// which the walk does for every element.
+    fn role_and_subrole(&self) -> (Option<String>, Option<String>) {
+        (self.role(), self.subrole())
+    }
     fn identifier(&self) -> Option<String>;
     fn title(&self) -> Option<String>;
     fn description(&self) -> Option<String>;
@@ -436,16 +441,18 @@ fn walk<N: Node>(
         }
         content.nodes += 1;
 
-        let Some(role) = node.role() else { continue };
-        if SKIPPED_ROLES.contains(&role.as_str()) || is_secure_text_field(&role, None) {
+        // Neither is content: they say what kind of element this is.
+        let (role, subrole) = node.role_and_subrole();
+        let Some(role) = role else { continue };
+        if SKIPPED_ROLES.contains(&role.as_str()) || is_secure_text_field(&role, subrole.as_deref())
+        {
             continue;
         }
-
         if in_web
             && role == "AXGroup"
-            && node
-                .subrole()
-                .is_some_and(|subrole| SKIPPED_WEB_LANDMARKS.contains(&subrole.as_str()))
+            && subrole
+                .as_deref()
+                .is_some_and(|subrole| SKIPPED_WEB_LANDMARKS.contains(&subrole))
         {
             continue;
         }
@@ -477,10 +484,6 @@ fn walk<N: Node>(
             // In browsers only the page is read, never the browser's own
             // fields. Text elements are read whole, so their children are not.
             if browser && !in_web {
-                continue;
-            }
-            let subrole = node.subrole();
-            if is_secure_text_field(&role, subrole.as_deref()) {
                 continue;
             }
             let room = limits.max_chars.saturating_sub(chars);
