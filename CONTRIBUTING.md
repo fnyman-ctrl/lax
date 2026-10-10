@@ -92,7 +92,9 @@ npm install scripts are disabled in `.npmrc`. Don't turn them on.
 
 The journal and the Models tab need an OpenAI-compatible model server on your
 Mac. [LM Studio](https://lmstudio.ai) or [Ollama](https://ollama.com) both work;
-[docs/MODELS.md](docs/MODELS.md) lists the recommended models. With LM Studio:
+[docs/MODELS.md](docs/MODELS.md) lists the recommended models. With LM Studio's
+command-line tool `lms` (in `~/.lmstudio/bin`; `lms bootstrap` puts it on your
+PATH):
 
 ```bash
 lms server start
