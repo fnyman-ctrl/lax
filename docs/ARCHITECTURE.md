@@ -25,8 +25,8 @@ previous one, so they can be built, tested and improved independently.
 
 - Every ~15 minutes (and when idle), group recent captures into time blocks and
   ask the local LLM to write short **episodes**: what was done, in which app, with whom.
-- Episodes are what the rest of the system reads. Raw captures can expire after
-  a configurable retention period.
+- Episodes are what the rest of the system reads. A raw capture expires only after
+  it has been summarized, or at the maximum age (default 90 days, configurable).
 
 ## 3. Recognize
 
