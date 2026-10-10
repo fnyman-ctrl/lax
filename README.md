@@ -1,4 +1,6 @@
-# Lax 🐟
+<img src="src-tauri/icons/128x128@2x.png" width="96" alt="The Lax app icon: a friendly silver salmon">
+
+# Lax
 
 [![CI](https://github.com/fnyman-ctrl/lax/actions/workflows/ci.yml/badge.svg)](https://github.com/fnyman-ctrl/lax/actions/workflows/ci.yml)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/fnyman-ctrl/lax/badge)](https://scorecard.dev/viewer/?uri=github.com/fnyman-ctrl/lax)
@@ -63,7 +65,8 @@ and [docs/CLAIMS.md](docs/CLAIMS.md) shows the test behind each one.
 - Whisper for audio, building on the approach of [Handy](https://github.com/cjpais/Handy)
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details, and
-[docs/adr/](docs/adr/) for why things are built the way they are.
+[docs/adr/](docs/adr/) for why things are built the way they are. The look and the mascot are
+described in [docs/BRAND.md](docs/BRAND.md).
 
 ## Contributing
 

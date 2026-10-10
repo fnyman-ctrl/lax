@@ -14,7 +14,7 @@ use crate::pause::{CaptureState, Pause, PauseLength};
 const TRAY_ID: &str = "lax";
 
 // Template images: macOS recolours them to match the menu bar.
-// Drawn by icons/tray/generate.py.
+// Drawn from icons/tray/active.svg and paused.svg; run `npm run icons`.
 const ICON_RUNNING: Image<'_> = include_image!("icons/tray/active.png");
 const ICON_PAUSED: Image<'_> = include_image!("icons/tray/paused.png");
 
