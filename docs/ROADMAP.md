@@ -63,7 +63,7 @@ and every remote request is redacted and visible in the outbox.
 
 - Every ~15 minutes (and when idle), summarize recent captures into short episodes
 - A daily timeline view
-- Raw captures can expire once summarized
+- Raw captures expire only once summarized, or at the maximum age (default 90 days)
 
 **Done when:** the journal for a normal workday is accurate and useful to read back.
 
