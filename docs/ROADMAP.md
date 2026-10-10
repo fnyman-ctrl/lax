@@ -10,9 +10,9 @@ closer to them.
 | Stage | Goal | Status |
 |---|---|---|
 | 0 | Foundation | ✅ Done |
-| [1](https://github.com/fnyman-ctrl/lax/milestone/1) | Capture | 🚧 In progress |
-| [2](https://github.com/fnyman-ctrl/lax/milestone/2) | Model layer | Planned |
-| [3](https://github.com/fnyman-ctrl/lax/milestone/3) | Journal | Planned |
+| [1](https://github.com/fnyman-ctrl/lax/milestone/1) | Capture | 🚧 Almost done: a workday measurement is left (#11) |
+| [2](https://github.com/fnyman-ctrl/lax/milestone/2) | Model layer | 🚧 Local models done; remote providers next |
+| [3](https://github.com/fnyman-ctrl/lax/milestone/3) | Journal | 🚧 First version, opt-in |
 | [4](https://github.com/fnyman-ctrl/lax/milestone/4) | Learning memory ⭐ | Planned |
 | [5](https://github.com/fnyman-ctrl/lax/milestone/5) | Ask your memory | Planned |
 | [6](https://github.com/fnyman-ctrl/lax/milestone/6) | Release 0.1 | Planned |

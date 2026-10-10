@@ -88,6 +88,32 @@ started Lax, and a rebuilt binary may need to be allowed again.
 
 npm install scripts are disabled in `.npmrc`. Don't turn them on.
 
+### A local model
+
+The journal and the Models tab need an OpenAI-compatible model server on your
+Mac. [LM Studio](https://lmstudio.ai) or [Ollama](https://ollama.com) both work;
+[docs/MODELS.md](docs/MODELS.md) lists the recommended models. With LM Studio:
+
+```bash
+lms server start
+lms load google/gemma-4-e4b
+lms load text-embedding-nomic-embed-text-v1.5
+```
+
+Then choose the models under **Models** in the Lax window. A few tests talk to
+such a server and are skipped by default; run them with:
+
+```bash
+cd src-tauri
+LAX_LIVE_MODEL_URL=http://localhost:1234/v1 \
+LAX_LIVE_CHAT_MODEL=google/gemma-4-e4b \
+LAX_LIVE_EMBEDDING_MODEL=text-embedding-nomic-embed-text-v1.5 \
+LAX_LIVE_EXPECT_SERVER="LM Studio" \
+cargo test --locked -- --ignored
+```
+
+They send only fixed, synthetic text.
+
 ### Checks
 
 CI runs these on every pull request. Run them locally before pushing:

@@ -17,9 +17,10 @@ you decide it should.
 > Salmon (*lax* in Swedish) find their way back to the exact river they were born
 > in, years later and thousands of kilometres away. That's the kind of memory we're after.
 
-> ⚠️ **Status: early development.** Lax runs in the menu bar and capture can be paused,
-> but it doesn't capture anything yet. See the [roadmap](docs/ROADMAP.md), follow along
-> or help out!
+> ⚠️ **Status: early development.** Lax captures the text of the active window, lets you
+> see, search and forget everything it captured, and can write a journal of your day with
+> an AI model on your Mac (off until you turn it on). Learning who you work with comes
+> next. See the [roadmap](docs/ROADMAP.md), follow along or help out!
 
 ## Why
 
@@ -29,14 +30,19 @@ when the data itself is stored locally. Your screen is the most private thing yo
 default, so the privacy promise is simple: **your data stays on your Mac unless you
 decide otherwise.**
 
-## What it will do
+## What it does
 
-1. **Capture**: read the text of the active window (app, window title, content)
-   using macOS Accessibility APIs, with on-device OCR as fallback.
-2. **Summarize**: every few minutes a local LLM turns raw activity into short,
-   readable episodes ("Worked on the Q3 proposal in Google Docs, emailed Anna about delivery").
-3. **Recognize**: extract projects, people and organisations from those episodes.
-4. **Learn**: maintain a page per project and person, plus an *About me* page,
+1. **Capture** (works today): reads the text of the active window (app, window
+   title, content) through the macOS Accessibility API. Password fields, private
+   browser windows and password managers are never read, banking and health are
+   excluded from the start, and you can exclude any app, website or window.
+   On-device OCR as a fallback comes later.
+2. **Summarize** (works today, opt-in): every few minutes a model on your Mac turns
+   raw activity into short, readable episodes ("Read Anna's mail about the Q3 offer
+   and updated the roadmap"). See [docs/MODELS.md](docs/MODELS.md) for the
+   recommended local models.
+3. **Recognize** (next): extract projects, people and organisations from those episodes.
+4. **Learn** (next): maintain a page per project and person, plus an *About me* page,
    kept as plain **Markdown files** you can read, search and edit. When you
    correct a page, Lax learns from the correction.
 
