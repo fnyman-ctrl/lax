@@ -25,6 +25,11 @@
     "allow-model-settings",
     "allow-set-model",
     "allow-clear-model",
-    "allow-test-model"
+    "allow-test-model",
+    "allow-outbox-entries",
+    "allow-outbox-payload",
+    "allow-delete-outbox",
+    "allow-outbox-retention-days",
+    "allow-set-outbox-retention-days"
   ]
 }

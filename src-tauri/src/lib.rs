@@ -13,6 +13,7 @@ mod logging;
 mod model_settings;
 #[allow(dead_code)] // Embeddings and more are used by the journal (Stage 3).
 mod models;
+mod outbox;
 mod pause;
 mod redact;
 mod site;
@@ -53,6 +54,11 @@ pub fn run() {
             model_settings::set_model,
             model_settings::clear_model,
             model_settings::test_model,
+            outbox::outbox_entries,
+            outbox::outbox_payload,
+            outbox::delete_outbox,
+            outbox::outbox_retention_days,
+            outbox::set_outbox_retention_days,
         ])
         .setup(|app| {
             // Lax lives in the menu bar, without a Dock icon.
