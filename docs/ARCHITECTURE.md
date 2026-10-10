@@ -15,6 +15,13 @@ previous one, so they can be built, tested and improved independently.
 - Every few seconds, read the focused app, window title and visible text through
   the macOS Accessibility API (`AXUIElement`). This needs the Accessibility
   permission, which the user grants in System Settings after onboarding explains it.
+  The order is fixed: pause, app, window title, then the site of each web page,
+  and only then any text (`src-tauri/src/capture.rs`). Reading is bounded by
+  depth, element count, text length and time, and each request to another app
+  times out, so a hung app can't block Lax. All the macOS calls are in
+  `src-tauri/src/ax.rs`.
+- In browsers only the page is read, never the address field, which holds the
+  full address.
 - If an app exposes no accessible text, fall back to a screenshot of the window
   (ScreenCaptureKit) and on-device OCR (Apple Vision). The screenshot is discarded
   after OCR.
