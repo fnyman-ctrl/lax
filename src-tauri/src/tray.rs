@@ -1,5 +1,6 @@
 //! The menu bar icon and its menu.
 
+use std::sync::{Mutex, PoisonError};
 use std::thread;
 use std::time::Duration;
 
@@ -10,6 +11,7 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Manager, Wry, include_image};
 
 use crate::pause::{CaptureState, Pause, PauseLength};
+use crate::store::Store;
 
 const TRAY_ID: &str = "lax";
 
@@ -63,7 +65,19 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
         }
         _ => return,
     }
+    save_pause(app);
     refresh(app);
+}
+
+/// Saves the pause state so it still holds after Lax restarts. Returns
+/// whether it was saved. A failed save is retried by [`watch_for_resume`].
+fn save_pause(app: &AppHandle) -> bool {
+    let state = app.state::<Pause>().state();
+    let Some(store) = app.try_state::<Mutex<Store>>() else {
+        return false;
+    };
+    let store = store.lock().unwrap_or_else(PoisonError::into_inner);
+    store.set_pause_state(state).is_ok()
 }
 
 /// Updates the icon, tooltip and menu to match the pause state.
@@ -83,11 +97,19 @@ fn refresh(app: &AppHandle) {
 
 /// Keeps the menu bar current when a timed pause runs out, or when its label
 /// changes (for example "until 00:30 tomorrow" becoming "until 00:30").
+///
+/// It also keeps the saved pause state in step: a save that failed is retried
+/// here, and a timed pause that ran out is cleared from storage.
 fn watch_for_resume(app: AppHandle) {
     let mut shown = label(app.state::<Pause>().state());
+    let mut saved = None;
     loop {
         thread::sleep(REFRESH_INTERVAL);
-        let current = label(app.state::<Pause>().state());
+        let state = app.state::<Pause>().state();
+        if saved != Some(state) && save_pause(&app) {
+            saved = Some(state);
+        }
+        let current = label(state);
         if current != shown {
             refresh(&app);
             shown = current;
