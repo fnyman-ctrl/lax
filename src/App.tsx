@@ -36,7 +36,7 @@ function App() {
   if (granted === "unknown") {
     content = <CheckFailed />;
   } else if (granted || showViewer) {
-    content = <Viewer onShowOnboarding={() => setShowViewer(false)} />;
+    content = <Viewer />;
   } else {
     content = <Onboarding onShowCaptures={() => setShowViewer(true)} />;
   }

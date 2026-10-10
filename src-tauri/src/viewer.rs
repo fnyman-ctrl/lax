@@ -171,13 +171,17 @@ mod tests {
     #[test]
     fn the_web_ui_never_renders_text_as_html() {
         // Captured text is untrusted (GUARDRAILS §5). React escapes text, so
-        // the only ways to render it as HTML are these, and none may be used.
+        // rendering it as HTML takes one of these, and none may be used.
         let forbidden = [
             "dangerouslySetInnerHTML",
             "innerHTML",
             "outerHTML",
             "insertAdjacentHTML",
             "document.write",
+            "srcDoc",
+            "srcdoc",
+            "DOMParser",
+            "createContextualFragment",
         ];
         let ui = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../src");
         let mut dirs = vec![ui];

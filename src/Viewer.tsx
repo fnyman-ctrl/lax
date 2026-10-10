@@ -46,7 +46,7 @@ const MATCH_END = "\u0003";
  * can see everything that was captured). Captured text is untrusted: it is
  * only ever rendered as text, never as HTML.
  */
-export function Viewer({ onShowOnboarding }: { onShowOnboarding: () => void }) {
+export function Viewer() {
   const [query, setQuery] = useState("");
   const searching = query.trim() !== "";
 
@@ -54,7 +54,7 @@ export function Viewer({ onShowOnboarding }: { onShowOnboarding: () => void }) {
     <main className="container viewer">
       <header className="viewer-header">
         <h1>Lax</h1>
-        <Status onShowOnboarding={onShowOnboarding} />
+        <Status />
       </header>
       <label className="search">
         <span className="visually-hidden">Search what Lax has captured</span>
@@ -89,8 +89,9 @@ function useRefresh(refresh: () => void) {
   }, [refresh]);
 }
 
-function Status({ onShowOnboarding }: { onShowOnboarding: () => void }) {
+function Status() {
   const [status, setStatus] = useState<CaptureStatus | null | "failed">(null);
+  const [settingsFailed, setSettingsFailed] = useState(false);
 
   const refresh = useCallback(() => {
     invoke<CaptureStatus>("capture_status").then(setStatus, () => setStatus("failed"));
@@ -114,9 +115,17 @@ function Status({ onShowOnboarding }: { onShowOnboarding: () => void }) {
     return (
       <div className="status error">
         Accessibility access is off, so nothing is captured.{" "}
-        <button type="button" className="link" onClick={onShowOnboarding}>
-          Turn it on
+        <button
+          type="button"
+          className="link"
+          onClick={() => {
+            setSettingsFailed(false);
+            invoke("open_accessibility_settings").catch(() => setSettingsFailed(true));
+          }}
+        >
+          Turn it on in System Settings
         </button>
+        {settingsFailed && " (System Settings didn't open: go to Privacy & Security → Accessibility.)"}
       </div>
     );
   }
@@ -141,27 +150,26 @@ function Timeline() {
     setItems(next);
   };
 
-  // Fetches the newest page and puts any new captures on top, keeping older
-  // pages that were already loaded.
+  // Fetches the newest page and replaces what it covers, so new captures
+  // appear and deleted ones disappear. Older pages already loaded are kept.
   const refresh = useCallback(() => {
     invoke<CaptureItem[]>("recent_captures", { limit: PAGE }).then(
       (newest) => {
         setError(false);
-        const current = itemsRef.current;
-        if (current.length === 0) {
-          setMore(newest.length === PAGE);
+        if (newest.length < PAGE) {
+          // That is everything there is.
+          setMore(false);
           show(newest);
           return;
         }
-        const known = new Set(current.map((c) => c.id));
-        const fresh = newest.filter((c) => !known.has(c.id));
-        if (fresh.length === PAGE) {
-          // More arrived than one page: start over rather than leave a gap.
+        const last = newest[newest.length - 1];
+        const older = itemsRef.current.filter(
+          (c) => c.capturedAt < last.capturedAt || (c.capturedAt === last.capturedAt && c.id < last.id),
+        );
+        if (older.length === 0) {
           setMore(true);
-          show(newest);
-        } else if (fresh.length > 0) {
-          show([...fresh, ...current]);
         }
+        show([...newest, ...older]);
       },
       () => setError(true),
     );
@@ -247,7 +255,16 @@ function AppRun({ items }: { items: CaptureItem[] }) {
   );
 }
 
-function CaptureRow({ item, snippet }: { item: CaptureItem; snippet?: string }) {
+function CaptureRow({
+  item,
+  snippet,
+  context,
+}: {
+  item: CaptureItem;
+  snippet?: string;
+  /** A line above the row, for search results. */
+  context?: string;
+}) {
   const [open, setOpen] = useState(false);
   const [detail, setDetail] = useState<CaptureDetail | null | "missing" | "failed">(null);
 
@@ -264,6 +281,7 @@ function CaptureRow({ item, snippet }: { item: CaptureItem; snippet?: string }) 
 
   return (
     <li className="capture">
+      {context && <p className="hit-app muted">{context}</p>}
       <button type="button" className="row" aria-expanded={open} onClick={toggle}>
         <span className="time">{time(item.capturedAt)}</span>
         <span className="title">{item.windowTitle || "Untitled window"}</span>
@@ -343,21 +361,15 @@ function SearchResults({ query }: { query: string }) {
       </h2>
       <ul>
         {hits.map((hit) => (
-          <SearchRow key={hit.capture.id} hit={hit} />
+          <CaptureRow
+            key={hit.capture.id}
+            item={hit.capture}
+            snippet={hit.snippet}
+            context={`${hit.capture.appName} · ${new Date(hit.capture.capturedAt).toLocaleDateString()}`}
+          />
         ))}
       </ul>
     </section>
-  );
-}
-
-function SearchRow({ hit }: { hit: Hit }) {
-  return (
-    <>
-      <p className="hit-app muted">
-        {hit.capture.appName} · {new Date(hit.capture.capturedAt).toLocaleDateString()}
-      </p>
-      <CaptureRow item={hit.capture} snippet={hit.snippet} />
-    </>
   );
 }
 

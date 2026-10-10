@@ -176,6 +176,10 @@ button.row {
   border-radius: 0;
 }
 
+button.row:hover {
+  background: none;
+}
+
 button.row:hover .title {
   text-decoration: underline;
 }
@@ -212,7 +216,7 @@ button.row:hover .title {
 }
 
 .hit-app {
-  margin: 0.75rem 0 0;
+  margin: 0.4rem 0 0;
   font-size: 0.85em;
 }
 
