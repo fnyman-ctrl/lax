@@ -207,7 +207,30 @@ impl Store {
     /// When episodes and memory pages arrive, what is derived from the
     /// deleted captures must be deleted here too (GUARDRAILS §4).
     pub fn forget(&self, what: &Forget) -> Result<usize> {
-        let deleted = match what {
+        let deleted = self.delete(what)?;
+        if deleted > 0 {
+            self.scrub()?;
+        }
+        Ok(deleted)
+    }
+
+    /// Deletes captures older than the retention period.
+    ///
+    /// This runs every hour, so it skips the full rebuild that [`Store::forget`]
+    /// does. Deleted text is still gone from the files: `secure_delete`
+    /// overwrites the freed pages, FTS5 secure-delete removes it from the index,
+    /// and the checkpoint empties the write-ahead log.
+    pub fn expire(&self, now: DateTime<Utc>) -> Result<usize> {
+        let days = i64::from(self.retention_days()?);
+        let deleted = self.delete(&Forget::Before(now - TimeDelta::days(days)))?;
+        if deleted > 0 {
+            self.checkpoint()?;
+        }
+        Ok(deleted)
+    }
+
+    fn delete(&self, what: &Forget) -> Result<usize> {
+        Ok(match what {
             Forget::Before(t) => self.conn.execute(
                 "DELETE FROM captures WHERE captured_at < ?1",
                 [t.timestamp_millis()],
@@ -225,17 +248,7 @@ impl Store {
                 [bundle_id],
             )?,
             Forget::Everything => self.conn.execute("DELETE FROM captures", [])?,
-        };
-        if deleted > 0 {
-            self.scrub()?;
-        }
-        Ok(deleted)
-    }
-
-    /// Deletes captures older than the retention period.
-    pub fn expire(&self, now: DateTime<Utc>) -> Result<usize> {
-        let days = i64::from(self.retention_days()?);
-        self.forget(&Forget::Before(now - TimeDelta::days(days)))
+        })
     }
 
     pub fn retention_days(&self) -> Result<u32> {
@@ -255,7 +268,9 @@ impl Store {
             .unwrap_or(DEFAULT_RETENTION_DAYS))
     }
 
-    pub fn set_retention_days(&self, days: u32) -> Result<()> {
+    /// Changes the retention and applies it right away, so captures older
+    /// than a shorter retention are deleted now, not at the next hourly run.
+    pub fn set_retention_days(&self, days: u32, now: DateTime<Utc>) -> Result<()> {
         if !(1..=MAX_RETENTION_DAYS).contains(&days) {
             return Err(StoreError::InvalidRetention(days));
         }
@@ -264,6 +279,7 @@ impl Store {
              ON CONFLICT (key) DO UPDATE SET value = excluded.value",
             params![RETENTION_KEY, days.to_string()],
         )?;
+        self.expire(now)?;
         Ok(())
     }
 
@@ -277,6 +293,12 @@ impl Store {
             [],
         )?;
         self.conn.execute_batch("VACUUM")?;
+        self.checkpoint()
+    }
+
+    /// Moves everything from the write-ahead log into the database and
+    /// empties the log, which can still hold old copies of deleted pages.
+    fn checkpoint(&self) -> Result<()> {
         self.conn
             .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
         Ok(())
@@ -722,6 +744,40 @@ mod tests {
     }
 
     #[test]
+    fn expired_text_is_gone_from_the_files_on_disk() {
+        let tmp = TempDir::new();
+        let store = Store::open(&tmp.0).unwrap();
+        store.set_retention_days(1, at_minute(0)).unwrap();
+        let marker = "zebrafinkexpired";
+        for _ in 0..50 {
+            store_with(&store, &[(0, "com.apple.mail", marker)]);
+        }
+        store_with(&store, &[(3000, "com.apple.Safari", "keep")]);
+        assert_eq!(store.expire(at_minute(3000)).unwrap(), 50);
+
+        for entry in fs::read_dir(&tmp.0).unwrap() {
+            let path = entry.unwrap().path();
+            let bytes = fs::read(&path).unwrap();
+            let found = bytes.windows(marker.len()).any(|w| w == marker.as_bytes());
+            assert!(!found, "{} still contains expired text", path.display());
+        }
+    }
+
+    #[test]
+    fn lowering_the_retention_deletes_right_away() {
+        let store = Store::open_in_memory().unwrap();
+        store_with(
+            &store,
+            &[
+                (0, "com.apple.mail", "old"),
+                (3000, "com.apple.mail", "new"),
+            ],
+        );
+        store.set_retention_days(1, at_minute(3000)).unwrap();
+        assert_eq!(remaining(&store), ["new"]);
+    }
+
+    #[test]
     fn retention_defaults_to_30_days() {
         let store = Store::open_in_memory().unwrap();
         assert_eq!(store.retention_days().unwrap(), DEFAULT_RETENTION_DAYS);
@@ -731,15 +787,22 @@ mod tests {
     #[test]
     fn retention_can_be_changed_and_is_kept() {
         let tmp = TempDir::new();
-        Store::open(&tmp.0).unwrap().set_retention_days(7).unwrap();
+        Store::open(&tmp.0)
+            .unwrap()
+            .set_retention_days(7, Utc::now())
+            .unwrap();
         assert_eq!(Store::open(&tmp.0).unwrap().retention_days().unwrap(), 7);
     }
 
     #[test]
     fn retention_outside_the_limits_is_refused() {
         let store = Store::open_in_memory().unwrap();
-        assert!(store.set_retention_days(0).is_err());
-        assert!(store.set_retention_days(MAX_RETENTION_DAYS + 1).is_err());
+        assert!(store.set_retention_days(0, Utc::now()).is_err());
+        assert!(
+            store
+                .set_retention_days(MAX_RETENTION_DAYS + 1, Utc::now())
+                .is_err()
+        );
         assert_eq!(store.retention_days().unwrap(), DEFAULT_RETENTION_DAYS);
     }
 
@@ -759,7 +822,7 @@ mod tests {
     #[test]
     fn expire_deletes_captures_older_than_the_retention() {
         let store = Store::open_in_memory().unwrap();
-        store.set_retention_days(1).unwrap();
+        store.set_retention_days(1, Utc::now()).unwrap();
         store_with(
             &store,
             &[

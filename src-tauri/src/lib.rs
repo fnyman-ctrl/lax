@@ -22,9 +22,14 @@ pub fn run() {
 
             // All data lives in one private folder:
             // ~/Library/Application Support/io.github.fnyman-ctrl.lax
-            let store = store::Store::open(&app.path().app_data_dir()?)?;
-            app.manage(Mutex::new(store));
-            expiry::start(app.handle().clone());
+            // If the database can't be opened (damaged, from a newer Lax, disk
+            // full), Lax still starts so the user can pause and see what's
+            // wrong, but nothing can be stored. Showing the error in the
+            // window comes with the viewer (#10).
+            if let Ok(store) = store::Store::open(&app.path().app_data_dir()?) {
+                app.manage(Mutex::new(store));
+                expiry::start(app.handle().clone());
+            }
             Ok(())
         })
         .on_window_event(|window, event| {
