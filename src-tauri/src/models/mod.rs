@@ -4,5 +4,5 @@
 mod client;
 mod endpoint;
 
-pub use client::{ChatMessage, ModelClient, ModelError, Role};
-pub use endpoint::{Endpoint, EndpointError, Locality};
+pub use client::{ChatMessage, ModelClient, Role};
+pub use endpoint::{Endpoint, Locality};

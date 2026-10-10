@@ -20,6 +20,11 @@
     "allow-exclusion-settings",
     "allow-add-exclusion",
     "allow-remove-exclusion",
-    "allow-set-default-excluded"
+    "allow-set-default-excluded",
+    "allow-find-local-models",
+    "allow-model-settings",
+    "allow-set-model",
+    "allow-clear-model",
+    "allow-test-model"
   ]
 }

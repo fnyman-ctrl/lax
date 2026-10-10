@@ -19,6 +19,11 @@ fn main() {
             "add_exclusion",
             "remove_exclusion",
             "set_default_excluded",
+            "find_local_models",
+            "model_settings",
+            "set_model",
+            "clear_model",
+            "test_model",
         ]),
     ))
     .expect("failed to run tauri-build");
