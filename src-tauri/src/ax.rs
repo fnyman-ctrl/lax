@@ -70,6 +70,47 @@ unsafe extern "C" {
     fn AXValueGetValue(value: &CFType, value_type: u32, out: *mut c_void) -> u8;
 }
 
+// CoreGraphics is part of ApplicationServices.
+#[link(name = "ApplicationServices", kind = "framework")]
+unsafe extern "C" {
+    // SAFETY: plain values in and out; reads only how long ago the last
+    // input event of any kind happened, never which event it was.
+    safe fn CGEventSourceSecondsSinceLastEventType(source_state: i32, event_type: u32) -> f64;
+}
+
+/// `kCGEventSourceStateCombinedSessionState`.
+const COMBINED_SESSION_STATE: i32 = 0;
+/// `kCGAnyInputEventType`.
+const ANY_INPUT_EVENT: u32 = u32::MAX;
+
+#[link(name = "IOKit", kind = "framework")]
+unsafe extern "C" {
+    // Returns a new snapshot the caller owns ("Copy" rule), or null.
+    fn IOPSCopyPowerSourcesInfo() -> *mut CFType;
+    // Returns a string owned by the snapshot ("Get" rule), or null.
+    fn IOPSGetProvidingPowerSourceType(snapshot: &CFType) -> *const CFString;
+}
+
+/// How long since the user last pressed a key, moved the mouse, scrolled or
+/// clicked. Only the time is read, never what the input was, and macOS asks
+/// for no permission for it.
+pub fn idle_time() -> Option<Duration> {
+    let seconds = CGEventSourceSecondsSinceLastEventType(COMBINED_SESSION_STATE, ANY_INPUT_EVENT);
+    (seconds.is_finite() && seconds >= 0.0).then(|| Duration::from_secs_f64(seconds))
+}
+
+/// Whether the Mac runs on battery right now. `None` if it can't be read.
+pub fn on_battery() -> Option<bool> {
+    // SAFETY: no arguments; returns a new snapshot or null.
+    let snapshot = unsafe { owned(IOPSCopyPowerSourcesInfo()) }?;
+    // SAFETY: `snapshot` is a valid power source snapshot; the string is
+    // borrowed from it and retained before the snapshot goes away.
+    let source = NonNull::new(unsafe { IOPSGetProvidingPowerSourceType(&snapshot) }.cast_mut())?;
+    let source = unsafe { CFRetained::retain(source) };
+    // kIOPMBatteryPowerKey
+    Some(source.to_string() == "Battery Power")
+}
+
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
     // Returns the URL's string without passing ownership ("Get" rule), or null.
@@ -360,5 +401,20 @@ impl Node for Element {
         // objects; each one's type is checked below.
         let array = unsafe { CFRetained::cast_unchecked::<CFArray<CFType>>(array) };
         array.iter().filter_map(|value| self.child(value)).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn idle_time_and_power_source_can_be_read() {
+        // Reads only system state that needs no permission, so this runs on
+        // any Mac, including CI. The values themselves depend on the machine.
+        if let Some(idle) = idle_time() {
+            assert!(idle < Duration::from_secs(10 * 365 * 24 * 3600));
+        }
+        let _ = on_battery();
     }
 }

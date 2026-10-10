@@ -543,6 +543,27 @@ fn title_without_address(title: &str) -> String {
     site_from_url(&address).unwrap_or_default()
 }
 
+/// How long to wait before the next read: the interval the user chose,
+/// longer while they are away from the keyboard or on battery (#11).
+///
+/// While nobody types or moves the mouse, the screen rarely changes, and
+/// what doesn't change isn't stored anyway, so reading less often loses
+/// little. Video and slides changing on their own are read less often.
+pub fn pace(interval: Duration, idle: Option<Duration>, on_battery: bool) -> Duration {
+    const AWAY: Duration = Duration::from_secs(60);
+    const LONG_AWAY: Duration = Duration::from_secs(10 * 60);
+    const MAX: Duration = Duration::from_secs(300);
+    let mut wait = match idle {
+        Some(idle) if idle >= LONG_AWAY => interval.max(Duration::from_secs(60)),
+        Some(idle) if idle >= AWAY => interval.max(Duration::from_secs(15)),
+        _ => interval,
+    };
+    if on_battery {
+        wait = wait.saturating_mul(2);
+    }
+    wait.min(MAX.max(interval))
+}
+
 /// When the capture loop last went round, so the window can tell whether
 /// capture is actually running.
 ///
@@ -662,7 +683,10 @@ mod run {
                     };
                     last_summary = Instant::now();
                 }
-                thread::sleep(interval(&app));
+                let idle = crate::ax::idle_time();
+                let on_battery = crate::ax::on_battery().unwrap_or(false);
+                stats.record_pace(idle, on_battery);
+                thread::sleep(super::pace(interval(&app), idle, on_battery));
             }
         });
     }
@@ -712,6 +736,10 @@ mod run {
         skipped_frames: u64,
         store_errors: u64,
         largest_window: u64,
+        /// Rounds while the user was away from the keyboard (a minute or
+        /// more), and while on battery.
+        away: u64,
+        battery: u64,
         slowest: Duration,
         skips: SkipCounter,
     }
@@ -731,6 +759,15 @@ mod run {
                     self.skipped_frames += snapshot.skipped_frames as u64;
                     self.largest_window = self.largest_window.max(snapshot.nodes as u64);
                 }
+            }
+        }
+
+        fn record_pace(&mut self, idle: Option<Duration>, on_battery: bool) {
+            if idle.is_some_and(|idle| idle >= Duration::from_secs(60)) {
+                self.away += 1;
+            }
+            if on_battery {
+                self.battery += 1;
             }
         }
 
@@ -762,6 +799,8 @@ mod run {
                     ),
                     Field::Count("skipped_today_user", u64::from(skips.excluded_by_user)),
                     Field::Count("largest_window_elements", self.largest_window),
+                    Field::Count("away", self.away),
+                    Field::Count("battery", self.battery),
                     Field::Duration("slowest", self.slowest),
                 ],
             );
@@ -1735,6 +1774,28 @@ mod tests {
             clean_title("Notes - Notes", "Notes", false),
             "Notes - Notes"
         );
+    }
+
+    #[test]
+    fn reading_slows_down_when_the_user_is_away() {
+        let s = Duration::from_secs;
+        let five = s(5);
+        assert_eq!(pace(five, None, false), five);
+        assert_eq!(pace(five, Some(s(30)), false), five);
+        assert_eq!(pace(five, Some(s(60)), false), s(15));
+        assert_eq!(pace(five, Some(s(600)), false), s(60));
+        // A longer chosen interval is never shortened.
+        assert_eq!(pace(s(120), Some(s(60)), false), s(120));
+    }
+
+    #[test]
+    fn reading_slows_down_on_battery() {
+        let s = Duration::from_secs;
+        assert_eq!(pace(s(5), None, true), s(10));
+        assert_eq!(pace(s(5), Some(s(600)), true), s(120));
+        // Capped at five minutes, unless the user chose longer.
+        assert_eq!(pace(s(200), None, true), s(300));
+        assert_eq!(pace(s(300), None, true), s(300));
     }
 
     #[test]

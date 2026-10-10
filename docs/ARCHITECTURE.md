@@ -22,6 +22,9 @@ previous one, so they can be built, tested and improved independently.
   `src-tauri/src/ax.rs`.
 - In browsers only the page is read, never the address field, which holds the
   full address.
+- Reading slows down while the user is away from the keyboard or on battery,
+  and a window whose text keeps changing is stored at most every 30 seconds.
+  See [PERFORMANCE.md](PERFORMANCE.md).
 - If an app exposes no accessible text, fall back to a screenshot of the window
   (ScreenCaptureKit) and on-device OCR (Apple Vision). The screenshot is discarded
   after OCR.
