@@ -73,11 +73,15 @@ impl std::fmt::Display for StructuredError {
 
 /// Asks `model` to do `task` on `captured` and answer as `T`, described by
 /// `shape` (for example `{"people": [string]}`).
+///
+/// `task` and `shape` are `'static`: instructions are written in the code,
+/// never built from captured or other outside text, which may only go in
+/// through `captured`.
 pub async fn ask<T: DeserializeOwned + Validate>(
     client: &ModelClient,
     model: &str,
-    task: &str,
-    shape: &str,
+    task: &'static str,
+    shape: &'static str,
     captured: &[Captured<'_>],
     max_tokens: u32,
 ) -> Result<T, StructuredError> {
@@ -128,6 +132,10 @@ fn strip_fence(reply: &str) -> &str {
 
 /// People, organisations and projects named in captured text: the first
 /// structured answer Lax asks for (Stage 4 builds on it).
+///
+/// The names come from captured text through a model, so they are still
+/// untrusted: shown as text only, and put into any later prompt only
+/// through [`Captured`].
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Entities {
@@ -158,13 +166,19 @@ impl Validate for Entities {
                 if length == 0 || length > MAX_NAME_CHARS {
                     return Err("a name was empty or too long");
                 }
-                if name.chars().any(char::is_control) {
-                    return Err("a name had control characters");
+                if name.chars().any(|c| c.is_control() || is_invisible(c)) {
+                    return Err("a name had control or invisible characters");
                 }
             }
         }
         Ok(())
     }
+}
+
+/// Zero-width and text-direction characters, which can hide text or make
+/// one name look like another.
+fn is_invisible(c: char) -> bool {
+    matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{FEFF}')
 }
 
 #[cfg(test)]
@@ -226,6 +240,8 @@ mod tests {
             long.as_str(),
             r#"{"people":["  "],"organisations":[],"projects":[]}"#,
             r#"{"people":["Anna\u0007"],"organisations":[],"projects":[]}"#,
+            r#"{"people":["Anna\u202eelpmaxE"],"organisations":[],"projects":[]}"#,
+            r#"{"people":["An\u200bna"],"organisations":[],"projects":[]}"#,
         ] {
             assert!(
                 matches!(entities(reply), Err(StructuredError::Invalid(_))),
