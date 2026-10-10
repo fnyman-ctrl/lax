@@ -1,0 +1,1242 @@
+//! Capture: what's in the active window, read through the macOS Accessibility
+//! API (GUARDRAILS §4).
+//!
+//! Every few seconds, [`Capturer::tick`] goes through these steps and stops at
+//! the first one that says no:
+//!
+//! 1. **Pause.** While paused nothing is read, not even the app name. The
+//!    pause is checked again before every later step, and before every element.
+//! 2. **The app.** The frontmost app's bundle id, checked with
+//!    [`Exclusions::check_app`].
+//! 3. **The window.** The focused window's title, checked with
+//!    [`Exclusions::check_window`]. For Safari also the description (never the
+//!    value) of the address field, checked with
+//!    [`Exclusions::check_address_field`].
+//! 4. **The content.** The window is walked within [`Limits`]. Password fields
+//!    are never read, and toolbars, which hold the address field, are skipped.
+//!    A web area's host is checked with [`Exclusions::check_site`] before
+//!    anything in it is read, and in browsers only web areas are read.
+//! 5. **Unchanged?** Content identical to the last capture is skipped. The
+//!    rest is handed to the store, which redacts it.
+//!
+//! The platform code is in `ax.rs`. This module only sees the [`Screen`] and
+//! [`Node`] traits, so the order above is tested with synthetic windows.
+
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+use std::time::{Duration, Instant};
+
+use crate::exclusions::{
+    Decision, Exclusions, SkipReason, address_field_identifier, is_browser, is_secure_text_field,
+};
+use crate::site::site_from_url;
+
+/// The frontmost app.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct App {
+    pub pid: i32,
+    /// Empty if the app has none; such apps are never captured.
+    pub bundle_id: String,
+    pub name: String,
+}
+
+/// Where capture reads from: the Accessibility API, or a synthetic screen in
+/// tests.
+pub trait Screen {
+    type Node: Node;
+    fn frontmost_app(&mut self) -> Option<App>;
+    /// The focused window of `app`. Only called once the app was checked.
+    fn focused_window(&mut self, app: &App) -> Option<Self::Node>;
+}
+
+/// An element in a window. Each method reads one attribute, and only when
+/// called, so the order in [`Capturer::tick`] is the order of reading.
+pub trait Node: Sized {
+    fn role(&self) -> Option<String>;
+    fn subrole(&self) -> Option<String>;
+    fn identifier(&self) -> Option<String>;
+    fn title(&self) -> Option<String>;
+    fn description(&self) -> Option<String>;
+    /// The address shown in a web area.
+    fn url(&self) -> Option<String>;
+    /// The visible text of an element with a text `role`, at most
+    /// `max_chars` characters. This is content: it is only called once the
+    /// element is known not to be a password field and everything around it
+    /// was checked.
+    fn text(&self, role: &str, max_chars: usize) -> Option<String>;
+    /// At most `max` children.
+    fn children(&self, max: usize) -> Vec<Self>;
+}
+
+/// Bounds on how much of a window is read, so a huge or hung app can't stall
+/// capture or fill the database.
+#[derive(Debug, Clone, Copy)]
+pub struct Limits {
+    pub max_depth: usize,
+    pub max_nodes: usize,
+    /// Children read per element.
+    pub max_children: usize,
+    /// Characters per capture.
+    pub max_chars: usize,
+    /// Characters per element, so one long document doesn't crowd out the
+    /// rest of the window.
+    pub max_element_chars: usize,
+    /// Wall time for reading one window.
+    pub time_budget: Duration,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Limits {
+            max_depth: 60,
+            max_nodes: 3000,
+            max_children: 400,
+            max_chars: 20_000,
+            max_element_chars: 5_000,
+            time_budget: Duration::from_millis(1000),
+        }
+    }
+}
+
+/// How deep below the window to look for an address field. Safari's sits at
+/// window → toolbar → group → field.
+const ADDRESS_FIELD_DEPTH: usize = 4;
+
+/// Roles whose subtree is never read. Toolbars hold the address field, whose
+/// value is the full address (GUARDRAILS §4 keeps only the host); menus are
+/// app chrome.
+const SKIPPED_ROLES: &[&str] = &["AXToolbar", "AXMenuBar", "AXMenu", "AXMenuItem"];
+
+/// Roles whose text is read.
+const TEXT_ROLES: &[&str] = &["AXStaticText", "AXTextArea", "AXTextField", "AXComboBox"];
+
+const WEB_AREA: &str = "AXWebArea";
+
+/// What was read from a window, before redaction (the store redacts it).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Snapshot {
+    pub app_name: String,
+    pub bundle_id: String,
+    pub window_title: String,
+    /// The host only.
+    pub site: Option<String>,
+    pub text: String,
+    /// A limit was hit, so some of the window wasn't read.
+    pub truncated: bool,
+    pub nodes: usize,
+    /// Frames inside the page whose host was excluded.
+    pub skipped_frames: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    Paused,
+    NoApp,
+    NoWindow,
+    Skipped(SkipReason),
+    Unchanged,
+    Captured(Snapshot),
+}
+
+pub struct Capturer {
+    exclusions: Exclusions,
+    limits: Limits,
+    last: Option<u64>,
+}
+
+impl Capturer {
+    pub fn new(exclusions: Exclusions, limits: Limits) -> Self {
+        Capturer {
+            exclusions,
+            limits,
+            last: None,
+        }
+    }
+
+    /// Reads the active window once. `paused` must return the current pause
+    /// state; it is asked before every read.
+    pub fn tick<S: Screen>(&mut self, screen: &mut S, paused: impl Fn() -> bool) -> Outcome {
+        if paused() {
+            return Outcome::Paused;
+        }
+        let Some(app) = screen.frontmost_app() else {
+            return Outcome::NoApp;
+        };
+        if let Decision::Skip(reason) = self.exclusions.check_app(&app.bundle_id) {
+            return Outcome::Skipped(reason);
+        }
+
+        if paused() {
+            return Outcome::Paused;
+        }
+        let Some(window) = screen.focused_window(&app) else {
+            return Outcome::NoWindow;
+        };
+        let raw_title = window.title().unwrap_or_default();
+        if let Decision::Skip(reason) = self.exclusions.check_window(&app.bundle_id, &raw_title) {
+            return Outcome::Skipped(reason);
+        }
+        if let Some(identifier) = address_field_identifier(&app.bundle_id) {
+            if paused() {
+                return Outcome::Paused;
+            }
+            let description = find_by_identifier(&window, identifier, &self.limits)
+                .and_then(|field| field.description());
+            if let Decision::Skip(reason) = self
+                .exclusions
+                .check_address_field(&app.bundle_id, description.as_deref())
+            {
+                return Outcome::Skipped(reason);
+            }
+        }
+
+        let browser = is_browser(&app.bundle_id);
+        let content = match walk(window, browser, &self.exclusions, &self.limits, &paused) {
+            Ok(content) => content,
+            Err(Stop::Paused) => return Outcome::Paused,
+            Err(Stop::Skipped(reason)) => return Outcome::Skipped(reason),
+        };
+
+        let snapshot = Snapshot {
+            window_title: clean_title(&raw_title, &app.name, browser),
+            app_name: app.name,
+            bundle_id: app.bundle_id,
+            site: content.site,
+            text: content.text,
+            truncated: content.truncated,
+            nodes: content.nodes,
+            skipped_frames: content.skipped_frames,
+        };
+        let hash = fingerprint(&snapshot);
+        if self.last == Some(hash) {
+            return Outcome::Unchanged;
+        }
+        self.last = Some(hash);
+        Outcome::Captured(snapshot)
+    }
+}
+
+/// Unchanged content is recognised by this hash. It only lives in memory.
+fn fingerprint(snapshot: &Snapshot) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    (
+        &snapshot.bundle_id,
+        &snapshot.window_title,
+        &snapshot.site,
+        &snapshot.text,
+    )
+        .hash(&mut hasher);
+    hasher.finish()
+}
+
+/// The first element below `root` with this accessibility identifier, not
+/// looking inside web areas. Reads only roles and identifiers.
+fn find_by_identifier<N: Node>(root: &N, identifier: &str, limits: &Limits) -> Option<N> {
+    let mut level = root.children(limits.max_children);
+    for _ in 0..ADDRESS_FIELD_DEPTH {
+        let mut next = Vec::new();
+        for node in level {
+            if node.role().as_deref() == Some(WEB_AREA) {
+                continue;
+            }
+            if node.identifier().as_deref() == Some(identifier) {
+                return Some(node);
+            }
+            next.extend(node.children(limits.max_children));
+        }
+        level = next;
+    }
+    None
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Stop {
+    Paused,
+    Skipped(SkipReason),
+}
+
+#[derive(Debug, Default)]
+struct Content {
+    site: Option<String>,
+    text: String,
+    truncated: bool,
+    nodes: usize,
+    skipped_frames: usize,
+}
+
+/// Reads the text of `window`, depth first, in reading order.
+fn walk<N: Node>(
+    window: N,
+    browser: bool,
+    exclusions: &Exclusions,
+    limits: &Limits,
+    paused: &impl Fn() -> bool,
+) -> Result<Content, Stop> {
+    let deadline = Instant::now() + limits.time_budget;
+    let mut content = Content::default();
+    let mut lines: Vec<String> = Vec::new();
+    let mut chars = 0;
+    // (element, depth, inside a web area)
+    let mut stack = vec![(window, 0, false)];
+
+    while let Some((node, depth, in_web)) = stack.pop() {
+        if paused() {
+            return Err(Stop::Paused);
+        }
+        if content.nodes >= limits.max_nodes || Instant::now() >= deadline {
+            content.truncated = true;
+            break;
+        }
+        content.nodes += 1;
+
+        let Some(role) = node.role() else { continue };
+        if SKIPPED_ROLES.contains(&role.as_str()) || is_secure_text_field(&role, None) {
+            continue;
+        }
+
+        let mut in_web = in_web;
+        if role == WEB_AREA {
+            let address = node.url();
+            let host = address.as_deref().and_then(site_from_url);
+            if let Some(host) = &host
+                && let Decision::Skip(reason) = exclusions.check_site(host)
+            {
+                if in_web {
+                    // A frame inside an allowed page: skip only the frame.
+                    content.skipped_frames += 1;
+                    continue;
+                }
+                return Err(Stop::Skipped(reason));
+            }
+            if browser && !in_web && address.is_none() {
+                // A browser page whose address can't be read can't be
+                // checked, so it is skipped.
+                return Err(Stop::Skipped(SkipReason::Never));
+            }
+            if !in_web && content.site.is_none() {
+                content.site = host;
+            }
+            in_web = true;
+        } else if TEXT_ROLES.contains(&role.as_str()) {
+            // In browsers only the page is read, never the browser's own
+            // fields. Text elements are read whole, so their children are not.
+            if browser && !in_web {
+                continue;
+            }
+            let subrole = node.subrole();
+            if is_secure_text_field(&role, subrole.as_deref()) {
+                continue;
+            }
+            let room = limits.max_chars.saturating_sub(chars);
+            if room == 0 {
+                content.truncated = true;
+                break;
+            }
+            if let Some(text) = node.text(&role, room.min(limits.max_element_chars)) {
+                let text = text.trim();
+                if !text.is_empty() && lines.last().is_none_or(|last| last != text) {
+                    chars += text.chars().count();
+                    lines.push(text.to_string());
+                }
+            }
+            continue;
+        }
+
+        if depth >= limits.max_depth {
+            content.truncated = true;
+            continue;
+        }
+        let children = node.children(limits.max_children);
+        stack.extend(children.into_iter().rev().map(|c| (c, depth + 1, in_web)));
+    }
+
+    content.text = truncate_chars(&lines.join("\n"), limits.max_chars);
+    Ok(content)
+}
+
+/// At most `max` characters of `text`, cut at a character boundary.
+pub fn truncate_chars(text: &str, max: usize) -> String {
+    match text.char_indices().nth(max) {
+        Some((end, _)) => text[..end].to_string(),
+        None => text.to_string(),
+    }
+}
+
+/// Browsers end window titles with their own name, and Chrome and Edge add
+/// the profile name after it ("Q3 - Google Chrome - Anna"). Both are dropped.
+fn clean_title(title: &str, app_name: &str, browser: bool) -> String {
+    let title = title.trim();
+    if !browser || app_name.trim().is_empty() {
+        return title.to_string();
+    }
+    let names = [
+        app_name.trim().to_string(),
+        format!("Mozilla {}", app_name.trim()),
+    ];
+    for name in &names {
+        for separator in [" - ", " — ", " – "] {
+            if let Some(end) = title.rfind(&format!("{separator}{name}")) {
+                return title[..end].trim_end().to_string();
+            }
+        }
+    }
+    title.to_string()
+}
+
+#[cfg(target_os = "macos")]
+pub use run::start;
+
+/// The capture loop of the running app.
+#[cfg(target_os = "macos")]
+mod run {
+    use std::sync::{Mutex, PoisonError};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use chrono::{Local, Utc};
+    use tauri::{AppHandle, Manager};
+
+    use super::{Capturer, Limits, Outcome};
+    use crate::accessibility;
+    use crate::ax::AxScreen;
+    use crate::exclusions::{Exclusions, SkipCounter};
+    use crate::logging::{self, ErrorKind, Field};
+    use crate::pause::Pause;
+    use crate::store::{NewCapture, Store};
+
+    /// How long another app may take to answer one Accessibility request.
+    const MESSAGING_TIMEOUT: Duration = Duration::from_millis(250);
+
+    /// How often a summary of what capture did (counts only) is logged.
+    const SUMMARY_INTERVAL: Duration = Duration::from_secs(10 * 60);
+
+    pub fn start(app: AppHandle) {
+        thread::spawn(move || {
+            crate::ax::set_messaging_timeout(MESSAGING_TIMEOUT);
+            let mut screen = AxScreen::default();
+            // User-defined exclusions arrive with the settings window.
+            let mut capturer = Capturer::new(Exclusions::default(), Limits::default());
+            let mut stats = Stats::default();
+            let mut last_summary = Instant::now();
+            loop {
+                let started = Instant::now();
+                if accessibility::is_granted() {
+                    let pause = app.state::<Pause>();
+                    let outcome = capturer.tick(&mut screen, || pause.is_paused());
+                    let stored = match &outcome {
+                        // Paused while reading: what was read is dropped.
+                        Outcome::Captured(_) if pause.is_paused() => None,
+                        Outcome::Captured(snapshot) => Some(store(&app, snapshot)),
+                        _ => None,
+                    };
+                    stats.record(&outcome, stored, started.elapsed());
+                }
+                if last_summary.elapsed() >= SUMMARY_INTERVAL {
+                    stats.log();
+                    stats = Stats {
+                        skips: std::mem::take(&mut stats.skips),
+                        ..Stats::default()
+                    };
+                    last_summary = Instant::now();
+                }
+                thread::sleep(interval(&app));
+            }
+        });
+    }
+
+    fn store(app: &AppHandle, snapshot: &super::Snapshot) -> bool {
+        let Some(store) = app.try_state::<Mutex<Store>>() else {
+            return false;
+        };
+        let store = store.lock().unwrap_or_else(PoisonError::into_inner);
+        store
+            .insert(&NewCapture {
+                captured_at: Utc::now(),
+                app_name: &snapshot.app_name,
+                bundle_id: &snapshot.bundle_id,
+                window_title: &snapshot.window_title,
+                site: snapshot.site.as_deref(),
+                text: &snapshot.text,
+            })
+            .is_ok()
+    }
+
+    fn interval(app: &AppHandle) -> Duration {
+        let seconds = app
+            .try_state::<Mutex<Store>>()
+            .and_then(|store| {
+                let store = store.lock().unwrap_or_else(PoisonError::into_inner);
+                store.capture_interval_seconds().ok()
+            })
+            .unwrap_or(crate::store::DEFAULT_CAPTURE_INTERVAL_SECONDS);
+        Duration::from_secs(u64::from(seconds))
+    }
+
+    /// Counts and timings since the last summary. Never what was captured.
+    #[derive(Default)]
+    struct Stats {
+        ticks: u64,
+        captured: u64,
+        unchanged: u64,
+        paused: u64,
+        no_window: u64,
+        truncated: u64,
+        skipped_frames: u64,
+        store_errors: u64,
+        slowest: Duration,
+        skips: SkipCounter,
+    }
+
+    impl Stats {
+        fn record(&mut self, outcome: &Outcome, stored: Option<bool>, elapsed: Duration) {
+            self.ticks += 1;
+            self.slowest = self.slowest.max(elapsed);
+            match outcome {
+                Outcome::Paused => self.paused += 1,
+                Outcome::NoApp | Outcome::NoWindow => self.no_window += 1,
+                Outcome::Skipped(reason) => self.skips.record(*reason, Local::now().date_naive()),
+                Outcome::Unchanged => self.unchanged += 1,
+                Outcome::Captured(snapshot) => {
+                    self.truncated += u64::from(snapshot.truncated);
+                    self.skipped_frames += snapshot.skipped_frames as u64;
+                    match stored {
+                        Some(true) => self.captured += 1,
+                        Some(false) => self.store_errors += 1,
+                        None => self.paused += 1,
+                    }
+                }
+            }
+        }
+
+        fn log(&mut self) {
+            let skips = self.skips.counts(Local::now().date_naive());
+            logging::info(
+                "capture.summary",
+                &[
+                    Field::Count("ticks", self.ticks),
+                    Field::Count("captured", self.captured),
+                    Field::Count("unchanged", self.unchanged),
+                    Field::Count("paused", self.paused),
+                    Field::Count("no_window", self.no_window),
+                    Field::Count("truncated", self.truncated),
+                    Field::Count("skipped_frames", self.skipped_frames),
+                    Field::Count("skipped_today_never", u64::from(skips.never)),
+                    Field::Count(
+                        "skipped_today_default",
+                        u64::from(skips.excluded_by_default),
+                    ),
+                    Field::Count("skipped_today_user", u64::from(skips.excluded_by_user)),
+                    Field::Duration("slowest", self.slowest),
+                ],
+            );
+            if self.store_errors > 0 {
+                logging::warn(
+                    "capture.store_failed",
+                    &[
+                        Field::Count("failures", self.store_errors),
+                        Field::Error(ErrorKind::Database),
+                    ],
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    /// Every attribute read, in order, as "attribute:element".
+    type Reads = Rc<RefCell<Vec<String>>>;
+
+    #[derive(Clone, Default)]
+    struct Fake {
+        name: &'static str,
+        role: &'static str,
+        subrole: Option<&'static str>,
+        identifier: Option<&'static str>,
+        title: Option<&'static str>,
+        description: Option<&'static str>,
+        url: Option<&'static str>,
+        text: Option<String>,
+        children: Vec<Fake>,
+    }
+
+    struct FakeNode {
+        fake: Fake,
+        reads: Reads,
+    }
+
+    impl FakeNode {
+        fn read(&self, attribute: &str) {
+            self.reads
+                .borrow_mut()
+                .push(format!("{attribute}:{}", self.fake.name));
+        }
+    }
+
+    impl Node for FakeNode {
+        fn role(&self) -> Option<String> {
+            self.read("role");
+            Some(self.fake.role.to_string())
+        }
+        fn subrole(&self) -> Option<String> {
+            self.read("subrole");
+            self.fake.subrole.map(String::from)
+        }
+        fn identifier(&self) -> Option<String> {
+            self.read("identifier");
+            self.fake.identifier.map(String::from)
+        }
+        fn title(&self) -> Option<String> {
+            self.read("title");
+            self.fake.title.map(String::from)
+        }
+        fn description(&self) -> Option<String> {
+            self.read("description");
+            self.fake.description.map(String::from)
+        }
+        fn url(&self) -> Option<String> {
+            self.read("url");
+            self.fake.url.map(String::from)
+        }
+        fn text(&self, _role: &str, max_chars: usize) -> Option<String> {
+            self.read("text");
+            self.fake
+                .text
+                .as_deref()
+                .map(|t| truncate_chars(t, max_chars))
+        }
+        fn children(&self, max: usize) -> Vec<Self> {
+            self.read("children");
+            self.fake
+                .children
+                .iter()
+                .take(max)
+                .map(|c| FakeNode {
+                    fake: c.clone(),
+                    reads: self.reads.clone(),
+                })
+                .collect()
+        }
+    }
+
+    struct FakeScreen {
+        app: Option<App>,
+        window: Option<Fake>,
+        reads: Reads,
+    }
+
+    impl FakeScreen {
+        fn new(bundle_id: &str, name: &str, window: Fake) -> Self {
+            FakeScreen {
+                app: Some(App {
+                    pid: 42,
+                    bundle_id: bundle_id.to_string(),
+                    name: name.to_string(),
+                }),
+                window: Some(window),
+                reads: Reads::default(),
+            }
+        }
+
+        fn reads(&self) -> Vec<String> {
+            self.reads.borrow().clone()
+        }
+
+        /// Whether any content (text) was read at all.
+        fn read_text(&self) -> bool {
+            self.reads().iter().any(|r| r.starts_with("text:"))
+        }
+    }
+
+    impl Screen for FakeScreen {
+        type Node = FakeNode;
+        fn frontmost_app(&mut self) -> Option<App> {
+            self.reads.borrow_mut().push("app".to_string());
+            self.app.clone()
+        }
+        fn focused_window(&mut self, _app: &App) -> Option<FakeNode> {
+            self.reads.borrow_mut().push("window".to_string());
+            self.window.clone().map(|fake| FakeNode {
+                fake,
+                reads: self.reads.clone(),
+            })
+        }
+    }
+
+    fn el(name: &'static str, role: &'static str) -> Fake {
+        Fake {
+            name,
+            role,
+            ..Fake::default()
+        }
+    }
+
+    fn text(name: &'static str, value: &str) -> Fake {
+        Fake {
+            text: Some(value.to_string()),
+            ..el(name, "AXStaticText")
+        }
+    }
+
+    fn window(title: &'static str, children: Vec<Fake>) -> Fake {
+        Fake {
+            title: Some(title),
+            children,
+            ..el("window", "AXWindow")
+        }
+    }
+
+    fn web_area(url: &'static str, children: Vec<Fake>) -> Fake {
+        Fake {
+            url: Some(url),
+            children,
+            ..el("page", WEB_AREA)
+        }
+    }
+
+    fn safari_toolbar(description: &'static str) -> Fake {
+        Fake {
+            children: vec![Fake {
+                children: vec![Fake {
+                    identifier: Some("WEB_BROWSER_ADDRESS_AND_SEARCH_FIELD"),
+                    description: Some(description),
+                    text: Some("https://www.example.com/secret-path?q=anna".to_string()),
+                    ..el("address", "AXTextField")
+                }],
+                ..el("group", "AXGroup")
+            }],
+            ..el("toolbar", "AXToolbar")
+        }
+    }
+
+    fn capturer() -> Capturer {
+        Capturer::new(Exclusions::default(), Limits::default())
+    }
+
+    fn running() -> bool {
+        false
+    }
+
+    fn captured(outcome: Outcome) -> Snapshot {
+        match outcome {
+            Outcome::Captured(snapshot) => snapshot,
+            other => panic!("expected a capture, got {other:?}"),
+        }
+    }
+
+    fn notes() -> FakeScreen {
+        FakeScreen::new(
+            "com.apple.Notes",
+            "Notes",
+            window(
+                "Q3 proposal",
+                vec![
+                    text("a", "Meeting with Anna Example"),
+                    text("b", "Deliver by Friday"),
+                ],
+            ),
+        )
+    }
+
+    #[test]
+    fn captures_app_title_and_text() {
+        let mut screen = notes();
+        let snapshot = captured(capturer().tick(&mut screen, running));
+        assert_eq!(snapshot.app_name, "Notes");
+        assert_eq!(snapshot.bundle_id, "com.apple.Notes");
+        assert_eq!(snapshot.window_title, "Q3 proposal");
+        assert_eq!(
+            snapshot.text,
+            "Meeting with Anna Example\nDeliver by Friday"
+        );
+        assert_eq!(snapshot.site, None);
+        assert!(!snapshot.truncated);
+    }
+
+    #[test]
+    fn while_paused_nothing_is_read() {
+        let mut screen = notes();
+        assert_eq!(capturer().tick(&mut screen, || true), Outcome::Paused);
+        assert!(screen.reads().is_empty(), "{:?}", screen.reads());
+    }
+
+    #[test]
+    fn a_pause_during_reading_stops_it() {
+        let mut screen = notes();
+        let calls = std::cell::Cell::new(0);
+        // Running for the first few checks, then paused.
+        let paused = || {
+            calls.set(calls.get() + 1);
+            calls.get() > 3
+        };
+        assert_eq!(capturer().tick(&mut screen, paused), Outcome::Paused);
+        assert!(!screen.read_text());
+    }
+
+    #[test]
+    fn password_managers_are_not_read_at_all() {
+        let mut screen = FakeScreen::new(
+            "com.1password.1password",
+            "1Password",
+            window("Vault", vec![text("a", "hunter2")]),
+        );
+        assert_eq!(
+            capturer().tick(&mut screen, running),
+            Outcome::Skipped(SkipReason::Never)
+        );
+        assert_eq!(screen.reads(), vec!["app"]);
+    }
+
+    #[test]
+    fn apps_without_a_bundle_id_are_not_read() {
+        let mut screen = FakeScreen::new("", "Unknown", window("x", vec![text("a", "y")]));
+        assert_eq!(
+            capturer().tick(&mut screen, running),
+            Outcome::Skipped(SkipReason::Never)
+        );
+        assert_eq!(screen.reads(), vec!["app"]);
+    }
+
+    #[test]
+    fn exclusions_are_checked_before_content_is_read() {
+        // Excluded by title (tier 2): only the title was read.
+        let mut screen = FakeScreen::new(
+            "com.apple.mail",
+            "Mail",
+            window("Ditt kontoutdrag från Swedbank", vec![text("a", "Saldo")]),
+        );
+        assert_eq!(
+            capturer().tick(&mut screen, running),
+            Outcome::Skipped(SkipReason::ExcludedByDefault)
+        );
+        assert_eq!(screen.reads(), vec!["app", "window", "title:window"]);
+
+        // Excluded by the user.
+        let exclusions = Exclusions {
+            title_patterns: vec!["private chat".to_string()],
+            ..Exclusions::default()
+        };
+        let mut screen = FakeScreen::new(
+            "com.tinyspeck.slackmacgap",
+            "Slack",
+            window("Private chat with Anna", vec![text("a", "hi")]),
+        );
+        let mut capturer = Capturer::new(exclusions, Limits::default());
+        assert_eq!(
+            capturer.tick(&mut screen, running),
+            Outcome::Skipped(SkipReason::ExcludedByUser)
+        );
+        assert!(!screen.read_text());
+    }
+
+    #[test]
+    fn excluded_sites_are_not_read() {
+        let mut screen = FakeScreen::new(
+            "com.google.Chrome",
+            "Google Chrome",
+            window(
+                "Logga in - Google Chrome",
+                vec![web_area(
+                    "https://online.swedbank.se/app/login",
+                    vec![text("a", "Saldo 1 234 kr")],
+                )],
+            ),
+        );
+        assert_eq!(
+            capturer().tick(&mut screen, running),
+            Outcome::Skipped(SkipReason::ExcludedByDefault)
+        );
+        assert!(!screen.read_text());
+    }
+
+    #[test]
+    fn excluded_frames_inside_a_page_are_not_read() {
+        let mut screen = FakeScreen::new(
+            "com.google.Chrome",
+            "Google Chrome",
+            window(
+                "Shop - Google Chrome",
+                vec![web_area(
+                    "https://shop.example.com/checkout",
+                    vec![
+                        text("a", "Your order"),
+                        Fake {
+                            name: "frame",
+                            ..web_area(
+                                "https://checkout.klarna.com/pay",
+                                vec![text("b", "Card details")],
+                            )
+                        },
+                    ],
+                )],
+            ),
+        );
+        let snapshot = captured(capturer().tick(&mut screen, running));
+        assert_eq!(snapshot.text, "Your order");
+        assert_eq!(snapshot.skipped_frames, 1);
+        assert!(!screen.reads().contains(&"text:b".to_string()));
+    }
+
+    #[test]
+    fn private_browser_windows_are_not_read() {
+        let mut screen = FakeScreen::new(
+            "com.google.Chrome",
+            "Google Chrome",
+            window(
+                "New Tab - Google Chrome (Incognito)",
+                vec![web_area("https://example.com/", vec![text("a", "x")])],
+            ),
+        );
+        assert_eq!(
+            capturer().tick(&mut screen, running),
+            Outcome::Skipped(SkipReason::Never)
+        );
+        assert_eq!(screen.reads(), vec!["app", "window", "title:window"]);
+    }
+
+    #[test]
+    fn safari_private_windows_are_not_read() {
+        // Even if the title had no marker, the address field says private.
+        let mut screen = FakeScreen::new(
+            "com.apple.Safari",
+            "Safari",
+            window(
+                "Example Domain",
+                vec![
+                    web_area("https://example.com/", vec![text("a", "Example Domain")]),
+                    safari_toolbar("smart sökfält i ett privat fönster"),
+                ],
+            ),
+        );
+        assert_eq!(
+            capturer().tick(&mut screen, running),
+            Outcome::Skipped(SkipReason::Never)
+        );
+        assert!(!screen.read_text());
+        // The address field's description was read, never its value.
+        assert!(screen.reads().contains(&"description:address".to_string()));
+        assert!(!screen.reads().contains(&"text:address".to_string()));
+    }
+
+    #[test]
+    fn safari_windows_without_an_address_field_are_not_read() {
+        let mut screen = FakeScreen::new(
+            "com.apple.Safari",
+            "Safari",
+            window(
+                "Example Domain",
+                vec![web_area("https://example.com/", vec![text("a", "x")])],
+            ),
+        );
+        assert_eq!(
+            capturer().tick(&mut screen, running),
+            Outcome::Skipped(SkipReason::Never)
+        );
+        assert!(!screen.read_text());
+    }
+
+    #[test]
+    fn normal_safari_windows_keep_only_the_host_and_the_page() {
+        let mut screen = FakeScreen::new(
+            "com.apple.Safari",
+            "Safari",
+            window(
+                "Example Domain",
+                vec![
+                    web_area(
+                        "https://www.example.com/docs/q3?token=abc",
+                        vec![text("a", "Example Domain")],
+                    ),
+                    safari_toolbar("smart sökfält"),
+                ],
+            ),
+        );
+        let snapshot = captured(capturer().tick(&mut screen, running));
+        assert_eq!(snapshot.site.as_deref(), Some("www.example.com"));
+        assert_eq!(snapshot.text, "Example Domain");
+        assert!(!snapshot.text.contains("secret-path"));
+        assert!(!screen.reads().contains(&"text:address".to_string()));
+    }
+
+    #[test]
+    fn browser_pages_whose_address_cannot_be_read_are_skipped() {
+        let mut screen = FakeScreen::new(
+            "com.google.Chrome",
+            "Google Chrome",
+            window(
+                "Example - Google Chrome",
+                vec![Fake {
+                    children: vec![text("a", "x")],
+                    ..el("page", WEB_AREA)
+                }],
+            ),
+        );
+        assert_eq!(
+            capturer().tick(&mut screen, running),
+            Outcome::Skipped(SkipReason::Never)
+        );
+        assert!(!screen.read_text());
+    }
+
+    #[test]
+    fn browsers_read_only_the_page() {
+        let mut screen = FakeScreen::new(
+            "com.google.Chrome",
+            "Google Chrome",
+            window(
+                "Example - Google Chrome",
+                vec![
+                    Fake {
+                        text: Some("https://example.com/full/path".to_string()),
+                        ..el("omnibox", "AXTextField")
+                    },
+                    web_area("https://example.com/full/path", vec![text("a", "Hello")]),
+                ],
+            ),
+        );
+        let snapshot = captured(capturer().tick(&mut screen, running));
+        assert_eq!(snapshot.text, "Hello");
+        assert_eq!(snapshot.site.as_deref(), Some("example.com"));
+        assert!(!screen.reads().contains(&"text:omnibox".to_string()));
+    }
+
+    #[test]
+    fn password_fields_are_never_read() {
+        let mut screen = FakeScreen::new(
+            "com.example.app",
+            "Example",
+            window(
+                "Sign in",
+                vec![
+                    text("label", "Password"),
+                    Fake {
+                        subrole: Some("AXSecureTextField"),
+                        text: Some("hunter2".to_string()),
+                        ..el("by-subrole", "AXTextField")
+                    },
+                    Fake {
+                        text: Some("hunter2".to_string()),
+                        children: vec![text("inside", "hunter2")],
+                        ..el("by-role", "AXSecureTextField")
+                    },
+                    Fake {
+                        text: Some("anna@example.com".to_string()),
+                        ..el("email", "AXTextField")
+                    },
+                ],
+            ),
+        );
+        let snapshot = captured(capturer().tick(&mut screen, running));
+        assert_eq!(snapshot.text, "Password\nanna@example.com");
+        let reads = screen.reads();
+        for name in ["by-subrole", "by-role", "inside"] {
+            assert!(!reads.contains(&format!("text:{name}")), "{name}");
+        }
+    }
+
+    #[test]
+    fn toolbars_and_menus_are_not_read() {
+        let mut screen = FakeScreen::new(
+            "com.example.app",
+            "Example",
+            window(
+                "Doc",
+                vec![
+                    Fake {
+                        children: vec![text("search", "my search")],
+                        ..el("toolbar", "AXToolbar")
+                    },
+                    Fake {
+                        children: vec![text("item", "Recent: secret.pdf")],
+                        ..el("menu", "AXMenu")
+                    },
+                    text("body", "Body"),
+                ],
+            ),
+        );
+        let snapshot = captured(capturer().tick(&mut screen, running));
+        assert_eq!(snapshot.text, "Body");
+    }
+
+    fn deep(depth: usize) -> Fake {
+        let mut node = text("leaf", "deep text");
+        for _ in 0..depth {
+            node = Fake {
+                children: vec![node],
+                ..el("group", "AXGroup")
+            };
+        }
+        node
+    }
+
+    #[test]
+    fn depth_is_limited() {
+        let limits = Limits {
+            max_depth: 5,
+            ..Limits::default()
+        };
+        let mut screen = FakeScreen::new("com.example.app", "Example", window("x", vec![deep(10)]));
+        let snapshot =
+            captured(Capturer::new(Exclusions::default(), limits).tick(&mut screen, running));
+        assert!(snapshot.truncated);
+        assert_eq!(snapshot.text, "");
+    }
+
+    #[test]
+    fn node_count_is_limited() {
+        let limits = Limits {
+            max_nodes: 10,
+            ..Limits::default()
+        };
+        let many: Vec<Fake> = (0..100).map(|_| text("t", "line")).collect();
+        let mut screen = FakeScreen::new("com.example.app", "Example", window("x", many));
+        let snapshot =
+            captured(Capturer::new(Exclusions::default(), limits).tick(&mut screen, running));
+        assert!(snapshot.truncated);
+        assert_eq!(snapshot.nodes, 10);
+    }
+
+    #[test]
+    fn text_length_is_limited() {
+        let limits = Limits {
+            max_chars: 30,
+            max_element_chars: 20,
+            ..Limits::default()
+        };
+        let long = "å".repeat(100);
+        let long = long.as_str();
+        let mut screen = FakeScreen::new(
+            "com.example.app",
+            "Example",
+            window("x", vec![text("a", long), text("b", long), text("c", long)]),
+        );
+        let snapshot =
+            captured(Capturer::new(Exclusions::default(), limits).tick(&mut screen, running));
+        assert_eq!(snapshot.text.chars().count(), 30);
+        assert!(snapshot.truncated);
+        assert!(!screen.reads().contains(&"text:c".to_string()));
+    }
+
+    #[test]
+    fn children_per_element_are_limited() {
+        let limits = Limits {
+            max_children: 3,
+            ..Limits::default()
+        };
+        let many: Vec<Fake> = (0..10).map(|_| text("t", "line")).collect();
+        let mut screen = FakeScreen::new("com.example.app", "Example", window("x", many));
+        let snapshot =
+            captured(Capturer::new(Exclusions::default(), limits).tick(&mut screen, running));
+        assert_eq!(snapshot.nodes, 4);
+    }
+
+    #[test]
+    fn unchanged_content_is_skipped() {
+        let mut capturer = capturer();
+        assert!(matches!(
+            capturer.tick(&mut notes(), running),
+            Outcome::Captured(_)
+        ));
+        assert_eq!(capturer.tick(&mut notes(), running), Outcome::Unchanged);
+
+        let mut changed = FakeScreen::new(
+            "com.apple.Notes",
+            "Notes",
+            window("Q3 proposal", vec![text("a", "Meeting moved")]),
+        );
+        assert!(matches!(
+            capturer.tick(&mut changed, running),
+            Outcome::Captured(_)
+        ));
+        // Back to the first content: it changed since the last capture.
+        assert!(matches!(
+            capturer.tick(&mut notes(), running),
+            Outcome::Captured(_)
+        ));
+    }
+
+    #[test]
+    fn repeated_lines_are_kept_once() {
+        let mut screen = FakeScreen::new(
+            "com.example.app",
+            "Example",
+            window(
+                "x",
+                vec![text("a", "Same"), text("b", " Same "), text("c", "")],
+            ),
+        );
+        assert_eq!(captured(capturer().tick(&mut screen, running)).text, "Same");
+    }
+
+    #[test]
+    fn no_window_reads_nothing_more() {
+        let mut screen = notes();
+        screen.window = None;
+        assert_eq!(capturer().tick(&mut screen, running), Outcome::NoWindow);
+        assert_eq!(screen.reads(), vec!["app", "window"]);
+    }
+
+    #[test]
+    fn browser_names_and_profiles_are_dropped_from_titles() {
+        let clean = |t, app| clean_title(t, app, true);
+        assert_eq!(
+            clean("Q3 - Google Docs - Google Chrome", "Google Chrome"),
+            "Q3 - Google Docs"
+        );
+        assert_eq!(clean("Q3 - Google Chrome - Anna", "Google Chrome"), "Q3");
+        assert_eq!(clean("Example — Mozilla Firefox", "Firefox"), "Example");
+        assert_eq!(
+            clean("Example - Microsoft Edge", "Microsoft Edge"),
+            "Example"
+        );
+        assert_eq!(clean("Example Domain", "Safari"), "Example Domain");
+        // Other apps keep their titles as they are.
+        assert_eq!(
+            clean_title("Notes - Notes", "Notes", false),
+            "Notes - Notes"
+        );
+    }
+
+    #[test]
+    fn truncation_keeps_whole_characters() {
+        assert_eq!(truncate_chars("åäö", 2), "åä");
+        assert_eq!(truncate_chars("abc", 10), "abc");
+        assert_eq!(truncate_chars("", 1), "");
+    }
+
+    #[test]
+    fn stored_captures_are_redacted_and_keep_only_the_host() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        let mut screen = FakeScreen::new(
+            "com.google.Chrome",
+            "Google Chrome",
+            window(
+                "Settings - Google Chrome",
+                vec![web_area(
+                    "https://console.example.com/keys?id=7",
+                    vec![text("a", "Personnummer 19811218-9876")],
+                )],
+            ),
+        );
+        let snapshot = captured(capturer().tick(&mut screen, running));
+        store
+            .insert(&crate::store::NewCapture {
+                captured_at: chrono::Utc::now(),
+                app_name: &snapshot.app_name,
+                bundle_id: &snapshot.bundle_id,
+                window_title: &snapshot.window_title,
+                site: snapshot.site.as_deref(),
+                text: &snapshot.text,
+            })
+            .unwrap();
+        let rows = store.search("Personnummer", 10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].site.as_deref(), Some("console.example.com"));
+        assert_eq!(rows[0].window_title, "Settings");
+        assert!(!rows[0].text.contains("19811218-9876"), "{}", rows[0].text);
+    }
+}

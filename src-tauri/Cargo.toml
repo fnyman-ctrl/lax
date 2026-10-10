@@ -30,6 +30,15 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 # dependency tree through Tauri.
 url = "2"
 
+# Reading other apps' windows through the Accessibility API (capture, #6).
+# All already in the dependency tree through Tauri; only the features used
+# are turned on.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSRunningApplication", "NSWorkspace"] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFArray", "CFNumber", "CFString", "CFURL"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }
+
 [lints.rust]
 unsafe_code = "warn"
 

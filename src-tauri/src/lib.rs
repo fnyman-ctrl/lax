@@ -1,16 +1,17 @@
 mod accessibility;
-#[allow(dead_code)] // Used by capture, which arrives in #6.
+#[cfg(target_os = "macos")]
+mod ax;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // The loop is macOS only.
+mod capture;
 mod exclusions;
 mod expiry;
 mod filevault;
-#[allow(dead_code)] // Most levels and fields are first used by capture (#6).
+#[allow(dead_code)] // Some levels and fields have no user yet.
 mod logging;
 mod pause;
-#[allow(dead_code)] // Used by capture, which arrives in #6.
 mod redact;
-#[allow(dead_code)] // Used by capture, which arrives in #6.
 mod site;
-#[allow(dead_code)] // Writing and searching are used by capture (#6) and the viewer (#10).
+#[allow(dead_code)] // Searching and forgetting are used by the viewer (#10).
 mod store;
 mod tray;
 
@@ -57,6 +58,10 @@ pub fn run() {
                     pause.restore(store.pause_state().unwrap_or(paused_until_resumed));
                     app.manage(Mutex::new(store));
                     expiry::start(app.handle().clone());
+                    // Capture checks the pause and the Accessibility
+                    // permission before every read, so it can start now.
+                    #[cfg(target_os = "macos")]
+                    capture::start(app.handle().clone());
                 }
                 Err(_) => pause.restore(paused_until_resumed),
             }

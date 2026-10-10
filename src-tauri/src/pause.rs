@@ -114,7 +114,6 @@ impl Pause {
     }
 
     /// Must be checked immediately before anything is read from the screen.
-    #[allow(dead_code)] // Used by capture, which arrives in #6.
     pub fn is_paused(&self) -> bool {
         self.state().is_paused()
     }

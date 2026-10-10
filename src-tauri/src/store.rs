@@ -34,7 +34,13 @@ pub const DEFAULT_RETENTION_DAYS: u32 = 90;
 /// The longest retention the user can choose: ten years.
 pub const MAX_RETENTION_DAYS: u32 = 3650;
 
+/// How often capture reads the active window unless the user chooses
+/// otherwise, and the range they can choose from.
+pub const DEFAULT_CAPTURE_INTERVAL_SECONDS: u32 = 5;
+pub const CAPTURE_INTERVAL_RANGE: std::ops::RangeInclusive<u32> = 2..=300;
+
 const RETENTION_KEY: &str = "retention_days";
+const CAPTURE_INTERVAL_KEY: &str = "capture_interval_seconds";
 const PAUSE_KEY: &str = "paused_until";
 const PAUSED_UNTIL_RESUMED: &str = "resumed";
 
@@ -44,6 +50,8 @@ pub enum StoreError {
     Sqlite(rusqlite::Error),
     /// Retention must be between 1 and [`MAX_RETENTION_DAYS`] days.
     InvalidRetention(u32),
+    /// The capture interval must be in [`CAPTURE_INTERVAL_RANGE`].
+    InvalidCaptureInterval(u32),
     /// The database was created by a newer version of Lax.
     NewerSchema {
         found: i64,
@@ -59,6 +67,12 @@ impl fmt::Display for StoreError {
             StoreError::InvalidRetention(days) => write!(
                 f,
                 "retention of {days} days is outside 1 to {MAX_RETENTION_DAYS}"
+            ),
+            StoreError::InvalidCaptureInterval(seconds) => write!(
+                f,
+                "capture interval of {seconds} seconds is outside {} to {}",
+                CAPTURE_INTERVAL_RANGE.start(),
+                CAPTURE_INTERVAL_RANGE.end()
             ),
             StoreError::NewerSchema { found, supported } => write!(
                 f,
@@ -152,7 +166,7 @@ impl Store {
     }
 
     #[cfg(test)]
-    fn open_in_memory() -> Result<Self> {
+    pub(crate) fn open_in_memory() -> Result<Self> {
         Self::init(Connection::open_in_memory()?)
     }
 
@@ -274,6 +288,22 @@ impl Store {
         self.set_setting(RETENTION_KEY, &days.to_string())?;
         self.expire(now)?;
         Ok(())
+    }
+
+    /// How many seconds capture waits between reads of the active window.
+    pub fn capture_interval_seconds(&self) -> Result<u32> {
+        let value = self.setting(CAPTURE_INTERVAL_KEY)?;
+        Ok(value
+            .and_then(|v| v.parse().ok())
+            .filter(|seconds| CAPTURE_INTERVAL_RANGE.contains(seconds))
+            .unwrap_or(DEFAULT_CAPTURE_INTERVAL_SECONDS))
+    }
+
+    pub fn set_capture_interval_seconds(&self, seconds: u32) -> Result<()> {
+        if !CAPTURE_INTERVAL_RANGE.contains(&seconds) {
+            return Err(StoreError::InvalidCaptureInterval(seconds));
+        }
+        self.set_setting(CAPTURE_INTERVAL_KEY, &seconds.to_string())
     }
 
     /// The pause state saved by [`Store::set_pause_state`], so a pause
@@ -851,6 +881,42 @@ mod tests {
                 .is_err()
         );
         assert_eq!(store.retention_days().unwrap(), DEFAULT_RETENTION_DAYS);
+    }
+
+    #[test]
+    fn capture_interval_defaults_and_can_be_changed() {
+        let tmp = TempDir::new();
+        let store = Store::open(&tmp.0).unwrap();
+        assert_eq!(
+            store.capture_interval_seconds().unwrap(),
+            DEFAULT_CAPTURE_INTERVAL_SECONDS
+        );
+        store.set_capture_interval_seconds(10).unwrap();
+        assert_eq!(
+            Store::open(&tmp.0)
+                .unwrap()
+                .capture_interval_seconds()
+                .unwrap(),
+            10
+        );
+    }
+
+    #[test]
+    fn capture_interval_outside_the_range_is_refused() {
+        let store = Store::open_in_memory().unwrap();
+        assert!(store.set_capture_interval_seconds(1).is_err());
+        assert!(store.set_capture_interval_seconds(301).is_err());
+        store
+            .conn
+            .execute(
+                "INSERT INTO settings (key, value) VALUES ('capture_interval_seconds', '0')",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            store.capture_interval_seconds().unwrap(),
+            DEFAULT_CAPTURE_INTERVAL_SECONDS
+        );
     }
 
     #[test]

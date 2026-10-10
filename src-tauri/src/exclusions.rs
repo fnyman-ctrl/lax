@@ -14,7 +14,8 @@
 //! 1. [`Exclusions::check_app`] with the bundle id, before reading anything
 //!    from the app.
 //! 2. [`Exclusions::check_window`] with the window title, before reading any
-//!    content.
+//!    content, and for browsers that have one, [`Exclusions::check_address_field`]
+//!    with the description of the address field (never its value).
 //! 3. [`Exclusions::check_site`] with the host of a browser window, before
 //!    reading any content.
 //! 4. [`is_secure_text_field`] for every element, so password fields are
@@ -131,6 +132,7 @@ pub enum Category {
 pub struct DefaultExclusion {
     /// Shown in settings, and the key used to re-enable it.
     pub name: &'static str,
+    #[allow(dead_code)] // Groups the list in the settings window (#7).
     pub category: Category,
     /// Matched as whole words in window titles, ignoring case.
     title_words: &'static [&'static str],
@@ -286,6 +288,60 @@ impl Exclusions {
     }
 }
 
+/// Browsers whose address field says whether the window is private. Each
+/// entry also matches its family. Safari's field is found by its
+/// accessibility identifier, which is the same in every language, and its
+/// description ends in "i ett privat fönster" / "in a private window" in
+/// private windows.
+const ADDRESS_FIELD_BROWSERS: &[(&str, &str)] = &[
+    ("com.apple.Safari", "WEB_BROWSER_ADDRESS_AND_SEARCH_FIELD"),
+    (
+        "com.apple.SafariTechnologyPreview",
+        "WEB_BROWSER_ADDRESS_AND_SEARCH_FIELD",
+    ),
+];
+
+/// The accessibility identifier of the address field that tells whether a
+/// window of this browser is private, if Lax knows one. For these browsers
+/// capture must call [`Exclusions::check_address_field`] before reading any
+/// content.
+pub fn address_field_identifier(bundle_id: &str) -> Option<&'static str> {
+    ADDRESS_FIELD_BROWSERS
+        .iter()
+        .find(|(browser, _)| matches_family(bundle_id, &[browser]))
+        .map(|(_, identifier)| *identifier)
+}
+
+impl Exclusions {
+    /// Step 2b, for browsers with an [`address_field_identifier`]: the
+    /// description of that field, or `None` if it wasn't found. A window
+    /// without the field can't be shown to be normal, so it is skipped
+    /// (this also skips Safari web apps, which is the safe mistake).
+    pub fn check_address_field(&self, bundle_id: &str, description: Option<&str>) -> Decision {
+        if address_field_identifier(bundle_id).is_none() {
+            return Decision::Capture;
+        }
+        match description {
+            None => Decision::Skip(SkipReason::Never),
+            Some(description) => {
+                let words: Vec<char> = description.to_lowercase().chars().collect();
+                if looks_private(&words) {
+                    Decision::Skip(SkipReason::Never)
+                } else {
+                    Decision::Capture
+                }
+            }
+        }
+    }
+}
+
+/// Browsers keep a window's address in a field Lax never reads. Their page
+/// content is read only from the web area, after its host was checked with
+/// [`Exclusions::check_site`].
+pub fn is_browser(bundle_id: &str) -> bool {
+    matches_family(bundle_id, BROWSERS)
+}
+
 /// Step 4: password fields are never read, in any app.
 pub fn is_secure_text_field(role: &str, subrole: Option<&str>) -> bool {
     const SECURE: &str = "AXSecureTextField";
@@ -294,10 +350,6 @@ pub fn is_secure_text_field(role: &str, subrole: Option<&str>) -> bool {
 
 fn is_never_app(bundle_id: &str) -> bool {
     matches_family(bundle_id, NEVER_APPS)
-}
-
-fn is_browser(bundle_id: &str) -> bool {
-    matches_family(bundle_id, BROWSERS)
 }
 
 /// `bundle_id` is one of `ids`, or in its family (`id.` followed by more),
@@ -533,6 +585,66 @@ mod tests {
         for (browser, title) in cases {
             assert_eq!(none().check_window(browser, title), SKIP_NEVER, "{title}");
         }
+    }
+
+    #[test]
+    fn safari_private_windows_are_never_captured() {
+        // As Safari 26 shows them in Swedish and English.
+        assert_eq!(
+            none().check_window("com.apple.Safari", "Aftonbladet, privat surfning"),
+            SKIP_NEVER
+        );
+        assert_eq!(
+            none().check_window("com.apple.Safari", "Example Domain, Private Browsing"),
+            SKIP_NEVER
+        );
+        for description in [
+            "smart sökfält i ett privat fönster",
+            "smart search field in a private window",
+        ] {
+            assert_eq!(
+                none().check_address_field("com.apple.Safari", Some(description)),
+                SKIP_NEVER,
+                "{description}"
+            );
+        }
+    }
+
+    #[test]
+    fn safari_windows_without_an_address_field_are_skipped() {
+        assert_eq!(
+            none().check_address_field("com.apple.Safari", None),
+            SKIP_NEVER
+        );
+        assert_eq!(
+            none().check_address_field("com.apple.SafariTechnologyPreview", None),
+            SKIP_NEVER
+        );
+    }
+
+    #[test]
+    fn normal_safari_windows_are_captured() {
+        assert_eq!(
+            none().check_window("com.apple.Safari", "Example Domain"),
+            Decision::Capture
+        );
+        assert_eq!(
+            none().check_address_field("com.apple.Safari", Some("smart sökfält")),
+            Decision::Capture
+        );
+    }
+
+    #[test]
+    fn other_apps_need_no_address_field() {
+        assert_eq!(address_field_identifier("com.google.Chrome"), None);
+        assert_eq!(
+            none().check_address_field("com.google.Chrome", None),
+            Decision::Capture
+        );
+        assert_eq!(
+            address_field_identifier("com.apple.Safari"),
+            Some("WEB_BROWSER_ADDRESS_AND_SEARCH_FIELD")
+        );
     }
 
     #[test]
