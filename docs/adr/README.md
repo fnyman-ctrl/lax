@@ -16,3 +16,4 @@ chat logs.
 | [0003](0003-agpl-license.md) | AGPL-3.0 license | Accepted |
 | [0004](0004-openai-compatible-model-providers.md) | OpenAI-compatible model providers, local by default | Accepted |
 | [0005](0005-memory-as-markdown.md) | Memory pages stored as Markdown files | Accepted |
+| [0006](0006-sqlite-with-rusqlite.md) | SQLite through rusqlite, with SQLite compiled in | Accepted |

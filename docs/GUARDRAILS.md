@@ -119,8 +119,12 @@ Exclusions come in three tiers:
 - **Pause** is one click in the menu bar: for 15 minutes, 1 hour, until tomorrow, or
   until resumed. While paused, Lax reads nothing at all, not even app names, and
   stops any pending processing. The menu bar icon shows clearly that Lax is paused.
-- **Retention:** raw captures expire automatically (default 30 days, configurable).
-  Episodes and memory pages are kept until the user deletes them.
+- **Retention:** Lax is meant to remember everything you do, and it does so in
+  episodes and memory pages, which are kept until the user deletes them. Raw
+  captures, the most sensitive data, expire automatically (default 90 days,
+  configurable). Once the journal exists (Stage 3), a raw capture expires only
+  after it has been summarized, or when it reaches the maximum age, so nothing is
+  lost before Lax has learned from it.
 - **Forget:** the user can delete a time range, an app or an entity, and the deletion
   includes everything derived from it.
 - Screenshots used for OCR are processed in memory and **never written to disk**.
