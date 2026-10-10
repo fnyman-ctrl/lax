@@ -17,7 +17,7 @@ The idea comes from [Mason](https://github.com/Baltsar/mason/blob/main/docs/CLAI
 | Secrets are redacted before they are stored | §4 | Not yet implemented | None yet |
 | While paused, nothing is read | §4 | Pause state in `src-tauri/src/pause.rs` (`Pause::is_paused`). Capture must check it before every read; capture itself arrives in #6 | Pause, resume and expiry: `pause::tests`. A test that capture reads nothing while paused comes with #6 |
 | Lax warns when FileVault is off | §6 | `filevault_enabled` in `src-tauri/src/filevault.rs`, shown by `FileVaultWarning` in `src/App.tsx` | `filevault::tests` (reading the status). The banner itself has no automated test yet |
-| Captured content never appears in logs | §6 | Not yet implemented | None yet |
+| Captured content never appears in logs | §6 | `src-tauri/src/logging.rs`: entries hold only fixed names and numbers, so text can't be logged; clippy denies printing anywhere else (`Cargo.toml`) | `logging::tests`, including `nothing_prints_outside_this_module` and `names_outside_the_allowed_characters_are_replaced` |
 | Remote requests are redacted and logged in the outbox | §3 | Not yet implemented | None yet |
 | API keys are only stored in the macOS Keychain | §3 | Not yet implemented | None yet |
 | Model output is schema-validated before use | §5 | Not yet implemented | None yet |
