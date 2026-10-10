@@ -17,7 +17,8 @@ pub fn run() {
 
             // Logs live in the private data folder:
             // ~/Library/Application Support/io.github.fnyman-ctrl.lax/logs
-            logging::init(&app.path().app_data_dir()?)?;
+            // If the log can't be opened, Lax runs without one.
+            let _ = logging::init(&app.path().app_data_dir()?);
             logging::info("app.started", &[]);
             Ok(())
         })

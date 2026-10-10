@@ -29,8 +29,9 @@ wrong, all logging goes through `src-tauri/src/logging.rs`:
   There is no way to log a string.
 - Log errors by kind (`ErrorKind::Database`), never by their message, which
   can contain data.
-- `println!`, `eprintln!`, `print!`, `eprint!` and `dbg!` are denied by clippy and
-  by a test. Don't allow them to get a build through.
+- `println!`, `eprintln!`, `print!`, `eprint!` and `dbg!` are denied by clippy, and a
+  test also rejects `io::stdout`, `io::stderr` and `leak(` (which could turn
+  captured text into an event name). Don't allow them to get a build through.
 
 Logs are written to `logs/lax.log` in the data folder
 (`~/Library/Application Support/io.github.fnyman-ctrl.lax/`), rotated at 1 MB with

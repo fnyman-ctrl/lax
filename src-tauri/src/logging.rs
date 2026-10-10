@@ -107,17 +107,43 @@ pub fn error(event: &'static str, fields: &[Field]) {
 }
 
 fn log(level: Level, event: &'static str, fields: &[Field]) {
+    let logger = LOGGER.get();
+    let to_file =
+        logger.is_some_and(|l| level >= l.lock().unwrap_or_else(PoisonError::into_inner).min_level);
+    // Release builds only write to the file, so skip the work for entries
+    // below its level.
+    if !to_file && !cfg!(debug_assertions) {
+        return;
+    }
     let line = format_line(&timestamp(), level, event, fields);
     #[cfg(debug_assertions)]
     #[allow(clippy::print_stderr)] // The one sanctioned place; see the module docs.
     {
         eprintln!("{line}");
     }
-    if let Some(logger) = LOGGER.get() {
+    if let (true, Some(logger)) = (to_file, logger) {
         let mut logger = logger.lock().unwrap_or_else(PoisonError::into_inner);
         // Logging must never take Lax down; a failed write is dropped.
         let _ = logger.write(level, &line);
     }
+}
+
+/// Deletes all log files, for "Delete all data". Logs hold no captured
+/// content, but their timestamps show when Lax was in use.
+pub fn delete_all(data_dir: &Path) -> std::io::Result<()> {
+    let dir = data_dir.join(LOG_DIR);
+    if let Some(logger) = LOGGER.get() {
+        let mut logger = logger.lock().unwrap_or_else(PoisonError::into_inner);
+        logger.file = open_log_truncated(&dir.join(LOG_FILE))?;
+        logger.size = 0;
+    }
+    for n in 1..=KEPT_FILES {
+        match fs::remove_file(dir.join(format!("{LOG_FILE}.{n}"))) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn timestamp() -> String {
@@ -190,8 +216,17 @@ impl Logger {
         Ok(())
     }
 
-    /// lax.log → lax.log.1 → lax.log.2 …, dropping the oldest.
+    /// lax.log → lax.log.1 → lax.log.2 …, dropping the oldest. If that fails,
+    /// the current file is emptied instead, so logging carries on.
     fn rotate(&mut self) -> std::io::Result<()> {
+        if self.shift_files().is_err() {
+            self.file = open_log_truncated(&self.dir.join(LOG_FILE))?;
+            self.size = 0;
+        }
+        Ok(())
+    }
+
+    fn shift_files(&mut self) -> std::io::Result<()> {
         let path = |n: usize| {
             if n == 0 {
                 self.dir.join(LOG_FILE)
@@ -209,6 +244,17 @@ impl Logger {
         self.size = 0;
         Ok(())
     }
+}
+
+fn open_log_truncated(path: &Path) -> std::io::Result<File> {
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    fs::set_permissions(path, Permissions::from_mode(0o600))?;
+    Ok(file)
 }
 
 fn open_log(path: &Path) -> std::io::Result<File> {
@@ -325,10 +371,51 @@ mod tests {
     }
 
     #[test]
+    fn delete_all_removes_rotated_files() {
+        let tmp = TempDir::new();
+        let dir = tmp.0.join(LOG_DIR);
+        let mut logger = Logger::new(&dir, Level::Info).unwrap();
+        logger.write(Level::Info, "x").unwrap();
+        logger.rotate().unwrap();
+        assert!(dir.join(format!("{LOG_FILE}.1")).exists());
+        delete_all(&tmp.0).unwrap();
+        assert!(!dir.join(format!("{LOG_FILE}.1")).exists());
+    }
+
+    #[test]
+    fn failed_rotation_keeps_logging() {
+        let tmp = TempDir::new();
+        let mut logger = Logger::new(&tmp.0, Level::Info).unwrap();
+        // lax.log.2 can't be moved onto a non-empty directory at lax.log.3,
+        // so shifting the files fails.
+        fs::write(tmp.0.join(format!("{LOG_FILE}.2")), "old").unwrap();
+        fs::create_dir_all(tmp.0.join(format!("{LOG_FILE}.3")).join("blocker")).unwrap();
+        logger.write(Level::Info, "before").unwrap();
+        logger.rotate().unwrap();
+        logger.write(Level::Info, "after").unwrap();
+        assert!(
+            !tmp.0.join(format!("{LOG_FILE}.1")).exists(),
+            "files were not shifted"
+        );
+        let content = fs::read_to_string(tmp.0.join(LOG_FILE)).unwrap();
+        assert_eq!(content, "after\n");
+    }
+
+    #[test]
     fn nothing_prints_outside_this_module() {
         // Clippy denies these too; this also covers code clippy doesn't see,
         // such as tests and code behind other cfgs.
-        let forbidden = ["println!", "eprintln!", "print!(", "eprint!(", "dbg!("];
+        let forbidden = [
+            "println!",
+            "eprintln!",
+            "print!(",
+            "eprint!(",
+            "dbg!(",
+            "io::stdout",
+            "io::stderr",
+            ".leak(",
+            "Box::leak",
+        ];
         let mut dirs = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
         while let Some(dir) = dirs.pop() {
             for entry in fs::read_dir(dir).unwrap() {
