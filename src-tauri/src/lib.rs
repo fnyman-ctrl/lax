@@ -29,7 +29,6 @@ pub fn run() {
             // Lax lives in the menu bar, without a Dock icon.
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
-            tray::create(app.handle())?;
 
             // Logs live in the private data folder:
             // ~/Library/Application Support/io.github.fnyman-ctrl.lax/logs
@@ -39,14 +38,27 @@ pub fn run() {
 
             // All data lives in one private folder:
             // ~/Library/Application Support/io.github.fnyman-ctrl.lax
+            //
+            // A pause set before Lax was quit still holds. It is restored before
+            // anything else starts, so nothing is read in between. If it can't
+            // be read, capture stays paused: stopping by mistake is safer than
+            // capturing by mistake.
+            //
             // If the database can't be opened (damaged, from a newer Lax, disk
-            // full), Lax still starts so the user can pause and see what's
-            // wrong, but nothing can be stored. Showing the error in the
-            // window comes with the viewer (#10).
-            if let Ok(store) = store::Store::open(&app.path().app_data_dir()?) {
-                app.manage(Mutex::new(store));
-                expiry::start(app.handle().clone());
+            // full), Lax still starts so the user can see what's wrong, but
+            // nothing can be stored. Showing the error in the window comes with
+            // the viewer (#10).
+            let paused_until_resumed = pause::CaptureState::Paused { until: None };
+            let pause = app.state::<pause::Pause>();
+            match store::Store::open(&app.path().app_data_dir()?) {
+                Ok(store) => {
+                    pause.restore(store.pause_state().unwrap_or(paused_until_resumed));
+                    app.manage(Mutex::new(store));
+                    expiry::start(app.handle().clone());
+                }
+                Err(_) => pause.restore(paused_until_resumed),
             }
+            tray::create(app.handle())?;
 
             // Without the Accessibility permission Lax can't capture anything,
             // so show the onboarding window explaining why it's needed.
