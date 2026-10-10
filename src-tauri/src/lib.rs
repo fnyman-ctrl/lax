@@ -16,6 +16,7 @@ mod model_settings;
 mod models;
 mod outbox;
 mod pause;
+#[allow(dead_code)] // RemoteRedactor is used by remote providers (#16).
 mod redact;
 mod site;
 #[allow(dead_code)] // Plain search and setting the capture interval await the settings window.
