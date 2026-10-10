@@ -35,6 +35,7 @@ pub fn redact(text: &str) -> String {
         }
     });
     let text = LABELLED_SECRET.replace_all(&text, format!("${{label}}{SECRET}"));
+    let text = XML_SECRET.replace_all(&text, format!("${{open}}{SECRET}${{close}}"));
     let text = SPOKEN_PASSWORD.replace_all(&text, format!("${{label}}{SECRET}"));
     let text = PERSONAL_NUMBER_CANDIDATE.replace_all(&text, |caps: &Captures| {
         if is_personal_number(caps) {
@@ -43,13 +44,7 @@ pub fn redact(text: &str) -> String {
             caps[0].to_string()
         }
     });
-    let text = CARD_CANDIDATE.replace_all(&text, |caps: &Captures| {
-        if is_card_number(&caps[0]) {
-            CARD_NUMBER.to_string()
-        } else {
-            caps[0].to_string()
-        }
-    });
+    let text = CARD_CANDIDATE.replace_all(&text, |caps: &Captures| mask_card_numbers(&caps[0]));
     let text = LONG_STRING.replace_all(&text, |caps: &Captures| {
         if looks_random(&caps[0]) {
             SECRET.to_string()
@@ -76,9 +71,10 @@ static SLACK_WEBHOOK: LazyLock<Regex> = LazyLock::new(|| {
     regex(r"https://hooks\.slack\.com/(?:services|workflows|triggers)/[A-Za-z0-9/_-]+")
 });
 
-/// `scheme://user:password@host`: the user and password are masked.
+/// `scheme://user:password@host`: the user and password are masked. The
+/// password runs to the last `@`, since passwords can contain `@` and `/`.
 static URL_CREDENTIALS: LazyLock<Regex> =
-    LazyLock::new(|| regex(r"(?i)\b(?P<scheme>[a-z][a-z0-9+.-]*://)[^\s/@:]+:[^\s/@]+@"));
+    LazyLock::new(|| regex(r"(?i)\b(?P<scheme>[a-z][a-z0-9+.-]*://)[^\s/@:]+:[^\s]*@"));
 
 /// Tokens recognisable by their format.
 static KNOWN_TOKEN: LazyLock<Regex> = LazyLock::new(|| {
@@ -98,16 +94,26 @@ static KNOWN_TOKEN: LazyLock<Regex> = LazyLock::new(|| {
 static BEARER_TOKEN: LazyLock<Regex> =
     LazyLock::new(|| regex(r"(?i)(?P<prefix>\bbearer\s+)(?P<token>[A-Za-z0-9._~+/=-]{12,})"));
 
-/// `password: …`, `api_key = …`, `DB_PASSWORD=…`, `token: "…"`. The label
-/// is kept.
+/// `password: …`, `api_key = …`, `DB_PASSWORD=…`, `token: "…"`, and JSON
+/// keys like `"password": "…"`. The label is kept.
 static LABELLED_SECRET: LazyLock<Regex> = LazyLock::new(|| {
     regex(concat!(
         r"(?i)(?P<label>(?:\b|_)(?:",
-        r"password|passwd|pwd|passphrase|passcode|lösenord|lösen|pin|pinkod|pin-kod|pin code",
+        r"password|passwd|pwd|passphrase|passcode|lösenord|lösenordet|lösen",
+        r"|pin|pinkod|pinkoden|pin-kod|pin-koden|pin code",
         r"|secret|client[_ -]?secret|secret[_ -]?key|private[_ -]?key",
         r"|api[_ -]?key|access[_ -]?key|access[_ -]?token|auth[_ -]?token|refresh[_ -]?token|token",
-        r")\b[ \t]*(?:=>|[:=])[ \t]*)",
+        r#")\b["']?[ \t]*(?:=>|[:=])[ \t]*)"#,
         r#"(?:"[^"\n]*"|'[^'\n]*'|[^\s,;]+)"#,
+    ))
+});
+
+/// `<password>…</password>` and similar XML elements. The tags are kept.
+static XML_SECRET: LazyLock<Regex> = LazyLock::new(|| {
+    regex(concat!(
+        r"(?i)(?P<open><(?:password|passwd|pwd|secret|client[_-]?secret|api[_-]?key",
+        r"|access[_-]?key|secret[_-]?key|private[_-]?key|token|access[_-]?token|auth[_-]?token)>)",
+        r"[^<]*(?P<close></)",
     ))
 });
 
@@ -117,18 +123,22 @@ static SPOKEN_PASSWORD: LazyLock<Regex> = LazyLock::new(|| {
     regex(concat!(
         r"(?i)(?P<label>\b(?:password|passphrase|passcode|lösenord|lösenordet|lösen|pinkod|pinkoden)",
         r"\s+(?:is|was|är|var)\s+)",
-        r#"(?:"[^"\n]*"|'[^'\n]*'|[^\s,;.]+)"#,
+        // Dots inside the value are kept in the mask; a final full stop isn't.
+        r#"(?:"[^"\n]*"|'[^'\n]*'|[^\s,;]*[^\s,;.])"#,
     ))
 });
 
-/// YYMMDD-NNNN, YYMMDD+NNNN, YYMMDDNNNN, YYYYMMDD-NNNN and YYYYMMDDNNNN.
+/// YYMMDD-NNNN, YYMMDD+NNNN, YYMMDD NNNN, YYMMDDNNNN, and the same with the
+/// century (YYYYMMDD-NNNN …).
 /// Validated by [`is_personal_number`].
-static PERSONAL_NUMBER_CANDIDATE: LazyLock<Regex> =
-    LazyLock::new(|| regex(r"\b(?P<century>\d{2})?(?P<date>\d{6})(?P<sep>[-+]?)(?P<last>\d{4})\b"));
+static PERSONAL_NUMBER_CANDIDATE: LazyLock<Regex> = LazyLock::new(|| {
+    regex(r"\b(?P<century>\d{2})?(?P<date>\d{6})(?P<sep>[-+ ]?)(?P<last>\d{4})\b")
+});
 
-/// 13 to 19 digits, optionally grouped by single spaces or hyphens.
-/// Validated by [`is_card_number`].
-static CARD_CANDIDATE: LazyLock<Regex> = LazyLock::new(|| regex(r"\b\d(?:[ -]?\d){12,18}\b"));
+/// 13 or more digits, optionally grouped by single spaces or hyphens. A run
+/// can hold a card number next to other numbers ("4111 1111 1111 1111 12/27"),
+/// so [`mask_card_numbers`] looks for the card number inside it.
+static CARD_CANDIDATE: LazyLock<Regex> = LazyLock::new(|| regex(r"\b\d(?:[ -]?\d){12,}\b"));
 
 /// Long runs of key-like characters. Validated by [`looks_random`].
 static LONG_STRING: LazyLock<Regex> = LazyLock::new(|| regex(r"[A-Za-z0-9+/_=-]{32,}"));
@@ -154,6 +164,49 @@ fn is_personal_number(caps: &Captures) -> bool {
         .filter_map(|c| c.to_digit(10))
         .collect();
     luhn_valid(&digits)
+}
+
+/// Masks card numbers made of whole digit groups in `run`, such as the card
+/// in "1 4111 1111 1111 1111 12". Groups that aren't part of a card are kept.
+fn mask_card_numbers(run: &str) -> String {
+    // Byte ranges of the digit groups between separators.
+    let mut groups = Vec::new();
+    let mut start = None;
+    for (i, c) in run.char_indices().chain(std::iter::once((run.len(), ' '))) {
+        match (c.is_ascii_digit(), start) {
+            (true, None) => start = Some(i),
+            (false, Some(s)) => {
+                groups.push((s, i));
+                start = None;
+            }
+            _ => {}
+        }
+    }
+    let mut out = String::new();
+    let mut kept_until = 0;
+    let mut first = 0;
+    while first < groups.len() {
+        // The longest card number that starts with this group. Grouped card
+        // numbers are written in blocks of 3 to 6 digits (4-4-4-4, 4-6-5).
+        let card_end = (first..groups.len()).rev().find(|&last| {
+            let blocks_ok = first == last
+                || groups[first..=last]
+                    .iter()
+                    .all(|&(s, e)| (3..=6).contains(&(e - s)));
+            blocks_ok && is_card_number(&run[groups[first].0..groups[last].1])
+        });
+        match card_end {
+            Some(last) => {
+                out.push_str(&run[kept_until..groups[first].0]);
+                out.push_str(CARD_NUMBER);
+                kept_until = groups[last].1;
+                first = last + 1;
+            }
+            None => first += 1,
+        }
+    }
+    out.push_str(&run[kept_until..]);
+    out
 }
 
 fn is_card_number(candidate: &str) -> bool {
@@ -274,6 +327,10 @@ mod tests {
             "Lösenordet är [secret] tills vidare"
         );
         assert_eq!(redact("lösen är fisk123."), "lösen är [secret].");
+        assert_eq!(
+            redact("The password is abc.Def123! ok"),
+            "The password is [secret] ok"
+        );
     }
 
     #[test]
@@ -299,6 +356,16 @@ mod tests {
             "export OPENAI_API_KEY=[secret]"
         );
         assert_eq!(redact("csrf_token: abc123"), "csrf_token: [secret]");
+        assert_eq!(
+            redact(r#"{"password": "Sommar2026", "client_secret":"abc123"}"#),
+            r#"{"password": [secret], "client_secret":[secret]}"#
+        );
+        assert_eq!(
+            redact("<password>hunter2</password>"),
+            "<password>[secret]</password>"
+        );
+        assert_eq!(redact("Lösenordet: Sommar2026"), "Lösenordet: [secret]");
+        assert_eq!(redact("PIN-koden: 4821"), "PIN-koden: [secret]");
         assert_unchanged("passwordless: true");
     }
 
@@ -367,7 +434,12 @@ mod tests {
             redact("postgres://anna:s3cret@db.example.com/app"),
             "postgres://[secret]@db.example.com/app"
         );
+        assert_eq!(
+            redact("postgres://anna:p@ss/w0rd@db.example.com/app"),
+            "postgres://[secret]@db.example.com/app"
+        );
         assert_unchanged("https://example.com/path?q=1");
+        assert_unchanged("https://medium.com/@anna/post");
         assert_unchanged("mailto:anna@example.com");
     }
 
@@ -390,6 +462,8 @@ mod tests {
             "8112189876",
             "19811218-9876",
             "198112189876",
+            "811218 9876",
+            "19811218 9876",
         ] {
             assert_eq!(
                 redact(&format!("pnr {number} ok")),
@@ -437,6 +511,19 @@ mod tests {
                 "{number}"
             );
         }
+    }
+
+    #[test]
+    fn card_numbers_next_to_other_numbers() {
+        assert_eq!(
+            redact("4111 1111 1111 1111 12/27 123"),
+            "[card number] 12/27 123"
+        );
+        assert_eq!(redact("1 4111 1111 1111 1111"), "1 [card number]");
+        assert_eq!(
+            redact("Qty 3 5555 5555 5555 4444 2026"),
+            "Qty 3 [card number] 2026"
+        );
     }
 
     #[test]
