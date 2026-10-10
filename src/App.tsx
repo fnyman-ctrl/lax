@@ -5,11 +5,14 @@ import { listen } from "@tauri-apps/api/event";
 // Must match CHANGED_EVENT in src-tauri/src/accessibility.rs.
 const ACCESSIBILITY_CHANGED = "accessibility-changed";
 
+/** `null` while loading; "unknown" if the check itself failed. */
+type Access = boolean | null | "unknown";
+
 function App() {
-  const [granted, setGranted] = useState<boolean | null>(null);
+  const [granted, setGranted] = useState<Access>(null);
 
   const refresh = useCallback(() => {
-    invoke<boolean>("accessibility_status").then(setGranted, () => setGranted(false));
+    invoke<boolean>("accessibility_status").then(setGranted, () => setGranted("unknown"));
   }, []);
 
   useEffect(() => {
@@ -25,7 +28,25 @@ function App() {
   if (granted === null) {
     return null;
   }
+  if (granted === "unknown") {
+    return <CheckFailed />;
+  }
   return granted ? <Ready /> : <Onboarding />;
+}
+
+function CheckFailed() {
+  return (
+    <main className="container">
+      <h1>Lax</h1>
+      <p className="error" role="alert">
+        Lax couldn't check whether it has Accessibility access.
+      </p>
+      <p className="muted">
+        You can see and change it in System Settings → Privacy &amp; Security → Accessibility.
+        Lax checks again when you come back to this window.
+      </p>
+    </main>
+  );
 }
 
 function Onboarding() {

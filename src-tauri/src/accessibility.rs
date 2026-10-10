@@ -18,8 +18,11 @@ const SETTINGS_URL: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility";
 
 /// How often to check whether the user granted or revoked the permission.
-/// macOS sends no notification for this, and the check is cheap.
-const POLL_INTERVAL: Duration = Duration::from_secs(2);
+/// macOS sends no notification for this. While it's missing, check often so
+/// the window updates soon after the user turns it on; once granted, a
+/// revoke only needs to be noticed within a few seconds.
+const POLL_WHILE_MISSING: Duration = Duration::from_secs(2);
+const POLL_WHILE_GRANTED: Duration = Duration::from_secs(10);
 
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)] // The only foreign declaration here; see SAFETY below.
@@ -53,24 +56,27 @@ pub fn accessibility_status() -> bool {
 /// Lax on or off. The URL is fixed; nothing from the web UI is passed on.
 #[tauri::command(async)]
 pub fn open_accessibility_settings() -> Result<(), String> {
-    let status = Command::new("/usr/bin/open")
+    Command::new("/usr/bin/open")
         .arg(SETTINGS_URL)
         .status()
-        .map_err(|_| "Could not open System Settings".to_string())?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err("Could not open System Settings".to_string())
-    }
+        .ok()
+        .filter(|status| status.success())
+        .map(|_| ())
+        .ok_or_else(|| "Could not open System Settings".to_string())
 }
 
-/// Watches for the permission being granted or revoked while Lax runs. Tells
-/// the web UI and calls `on_change` with the new state.
-pub fn watch(app: AppHandle, on_change: impl Fn(&AppHandle, bool) + Send + 'static) {
+/// Watches for the permission being granted or revoked while Lax runs,
+/// starting from `granted`, the state the caller already acted on. Tells the
+/// web UI and calls `on_change` with the new state.
+pub fn watch(app: AppHandle, granted: bool, on_change: impl Fn(&AppHandle, bool) + Send + 'static) {
     thread::spawn(move || {
-        let mut watcher = Watcher::new(is_granted);
+        let mut watcher = Watcher::new(is_granted, granted);
         loop {
-            thread::sleep(POLL_INTERVAL);
+            thread::sleep(if watcher.last {
+                POLL_WHILE_GRANTED
+            } else {
+                POLL_WHILE_MISSING
+            });
             if let Some(granted) = watcher.poll() {
                 let _ = app.emit(CHANGED_EVENT, granted);
                 on_change(&app, granted);
@@ -86,8 +92,7 @@ struct Watcher<F> {
 }
 
 impl<F: Fn() -> bool> Watcher<F> {
-    fn new(check: F) -> Self {
-        let last = check();
+    fn new(check: F, last: bool) -> Self {
         Self { check, last }
     }
 
@@ -111,7 +116,7 @@ mod tests {
     #[test]
     fn watcher_reports_only_changes() {
         let granted = Cell::new(false);
-        let mut watcher = Watcher::new(|| granted.get());
+        let mut watcher = Watcher::new(|| granted.get(), false);
         assert_eq!(watcher.poll(), None);
 
         granted.set(true);
@@ -124,9 +129,10 @@ mod tests {
     }
 
     #[test]
-    fn watcher_starts_from_the_current_state() {
-        let mut watcher = Watcher::new(|| true);
-        assert_eq!(watcher.poll(), None);
+    fn watcher_starts_from_the_state_the_caller_saw() {
+        // Revoked between the startup check and the first poll: reported.
+        let mut watcher = Watcher::new(|| false, true);
+        assert_eq!(watcher.poll(), Some(false));
     }
 
     #[test]

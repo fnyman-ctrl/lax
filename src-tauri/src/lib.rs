@@ -20,10 +20,11 @@ pub fn run() {
 
             // Without the Accessibility permission Lax can't capture anything,
             // so show the onboarding window explaining why it's needed.
-            if !accessibility::is_granted() {
+            let granted = accessibility::is_granted();
+            if !granted {
                 tray::open_window(app.handle());
             }
-            accessibility::watch(app.handle().clone(), |app, granted| {
+            accessibility::watch(app.handle().clone(), granted, |app, granted| {
                 if !granted {
                     tray::open_window(app);
                 }
