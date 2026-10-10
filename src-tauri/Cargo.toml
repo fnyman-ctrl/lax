@@ -21,6 +21,11 @@ tauri = { version = "2", features = ["tray-icon"] }
 # Local time for pause deadlines ("until tomorrow") and the menu label.
 # Already in the dependency tree through Tauri.
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# Pattern matching for secret redaction. Already in the dependency tree through Tauri.
+regex = "1"
+# Local storage. SQLite is compiled in, so the version and FTS5 are known.
+# See docs/adr/0006-sqlite-with-rusqlite.md.
+rusqlite = { version = "0.40", features = ["bundled"] }
 # Parsing browser addresses so only the host is kept. Already in the
 # dependency tree through Tauri.
 url = "2"
