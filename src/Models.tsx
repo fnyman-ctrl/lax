@@ -161,26 +161,40 @@ export function Models() {
           ) : (
             <ul className="excluded">
               {server.models.map((model) => {
-                const task: Task = isEmbeddingModel(model) ? "embeddings" : "chat";
-                const recommended = TASKS.find((t) => t.task === task)?.recommended ?? "";
-                const chosen =
+                // A guess from the name; both choices stay available,
+                // since not every embedding model says "embed".
+                const guess: Task = isEmbeddingModel(model) ? "embeddings" : "chat";
+                const recommended = TASKS.find((t) => t.task === guess)?.recommended ?? "";
+                const chosenFor = (task: Task) =>
                   settings[task]?.model === model && settings[task]?.baseUrl.startsWith(server.baseUrl);
+                const order: Task[] = guess === "chat" ? ["chat", "embeddings"] : ["embeddings", "chat"];
                 return (
                   <li key={model}>
                     <span>
                       {model}{" "}
                       <span className="muted">
-                        · {task === "chat" ? "chat" : "embeddings"}
+                        · probably {guess === "chat" ? "chat" : "embeddings"}
                         {model.toLowerCase().includes(recommended) ? " · recommended" : ""}
                       </span>
                     </span>
-                    {chosen ? (
-                      <span className="muted">Chosen</span>
-                    ) : (
-                      <button type="button" className="link" onClick={() => choose(task, server, model)}>
-                        Use for {task === "chat" ? "chat" : "embeddings"}
-                      </button>
-                    )}
+                    <span className="buttons">
+                      {order.map((task) =>
+                        chosenFor(task) ? (
+                          <span key={task} className="muted">
+                            Chosen for {task}
+                          </span>
+                        ) : (
+                          <button
+                            key={task}
+                            type="button"
+                            className="link"
+                            onClick={() => choose(task, server, model)}
+                          >
+                            Use for {task}
+                          </button>
+                        ),
+                      )}
+                    </span>
                   </li>
                 );
               })}

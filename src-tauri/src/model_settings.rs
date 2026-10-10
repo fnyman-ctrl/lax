@@ -6,7 +6,7 @@
 //! knocks on loopback ports, and only when the user asks.
 
 use std::sync::{Mutex, PoisonError};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
@@ -71,26 +71,37 @@ pub struct TestResult {
     pub detail: String,
 }
 
-/// The servers among `KNOWN_SERVERS` that answer, with their models.
+/// How long a probed server gets to list its models.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// The servers among `KNOWN_SERVERS` that answer, with their models. All
+/// are asked at once, each for at most `PROBE_TIMEOUT`.
 #[tauri::command]
 pub async fn find_local_models() -> Vec<LocalServer> {
+    let probes: Vec<_> = KNOWN_SERVERS
+        .iter()
+        .map(|(name, address)| tauri::async_runtime::spawn(probe(name, address)))
+        .collect();
     let mut found = Vec::new();
-    for (name, address) in KNOWN_SERVERS {
-        let Ok(endpoint) = Endpoint::parse(address) else {
-            continue;
-        };
-        let Ok(client) = ModelClient::new(endpoint) else {
-            continue;
-        };
-        if let Ok(models) = client.without_retries().models().await {
-            found.push(LocalServer {
-                name,
-                base_url: (*address).to_string(),
-                models,
-            });
+    for probe in probes {
+        if let Ok(Some(server)) = probe.await {
+            found.push(server);
         }
     }
     found
+}
+
+async fn probe(name: &'static str, address: &'static str) -> Option<LocalServer> {
+    let client = ModelClient::new(Endpoint::parse(address).ok()?).ok()?;
+    let models = tokio::time::timeout(PROBE_TIMEOUT, client.without_retries().models())
+        .await
+        .ok()?
+        .ok()?;
+    Some(LocalServer {
+        name,
+        base_url: address.to_string(),
+        models,
+    })
 }
 
 #[tauri::command(async)]
