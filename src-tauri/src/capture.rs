@@ -110,6 +110,16 @@ const ADDRESS_FIELD_DEPTH: usize = 6;
 /// app chrome.
 const SKIPPED_ROLES: &[&str] = &["AXToolbar", "AXMenuBar", "AXMenu", "AXMenuItem"];
 
+/// Parts of a web page that repeat on every page and say little about what
+/// is on it: navigation menus, page headers and footers. Pages mark them as
+/// landmarks, which browsers and Electron apps expose as these subroles of
+/// a group. Skipped inside web areas, so captures start with the content.
+const SKIPPED_WEB_LANDMARKS: &[&str] = &[
+    "AXLandmarkNavigation",
+    "AXLandmarkBanner",
+    "AXLandmarkContentInfo",
+];
+
 /// Roles whose text is read.
 const TEXT_ROLES: &[&str] = &["AXStaticText", "AXTextArea", "AXTextField", "AXComboBox"];
 
@@ -428,6 +438,15 @@ fn walk<N: Node>(
 
         let Some(role) = node.role() else { continue };
         if SKIPPED_ROLES.contains(&role.as_str()) || is_secure_text_field(&role, None) {
+            continue;
+        }
+
+        if in_web
+            && role == "AXGroup"
+            && node
+                .subrole()
+                .is_some_and(|subrole| SKIPPED_WEB_LANDMARKS.contains(&subrole.as_str()))
+        {
             continue;
         }
 
@@ -1379,6 +1398,57 @@ mod tests {
         for name in ["by-subrole", "by-role", "inside"] {
             assert!(!reads.contains(&format!("text:{name}")), "{name}");
         }
+    }
+
+    #[test]
+    fn page_navigation_headers_and_footers_are_skipped() {
+        let landmark = |name, subrole, text_name, value| Fake {
+            subrole: Some(subrole),
+            children: vec![text(text_name, value)],
+            ..el(name, "AXGroup")
+        };
+        let mut screen = FakeScreen::new(
+            "com.google.Chrome",
+            "Google Chrome",
+            window(
+                "Q3 proposal - Google Chrome",
+                vec![web_area(
+                    "https://docs.example.com/q3",
+                    vec![
+                        landmark(
+                            "nav",
+                            "AXLandmarkNavigation",
+                            "menu",
+                            "Skip to content Home Issues",
+                        ),
+                        landmark("header", "AXLandmarkBanner", "logo", "Example Docs"),
+                        landmark("main", "AXLandmarkMain", "body", "Deliver by Friday"),
+                        landmark("footer", "AXLandmarkContentInfo", "legal", "© Example"),
+                    ],
+                )],
+            ),
+        );
+        let snapshot = captured(capturer().tick(&mut screen, running));
+        assert_eq!(snapshot.text, "Deliver by Friday");
+    }
+
+    #[test]
+    fn landmarks_outside_web_pages_are_read() {
+        // Native apps don't use web landmarks; a group is just a group.
+        let mut screen = FakeScreen::new(
+            "com.example.app",
+            "Example",
+            window(
+                "Doc",
+                vec![Fake {
+                    subrole: Some("AXLandmarkNavigation"),
+                    children: vec![text("a", "Sidebar note")],
+                    ..el("group", "AXGroup")
+                }],
+            ),
+        );
+        let snapshot = captured(capturer().tick(&mut screen, running));
+        assert_eq!(snapshot.text, "Sidebar note");
     }
 
     #[test]

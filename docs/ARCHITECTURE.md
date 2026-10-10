@@ -21,7 +21,8 @@ previous one, so they can be built, tested and improved independently.
   times out, so a hung app can't block Lax. All the macOS calls are in
   `src-tauri/src/ax.rs`.
 - In browsers only the page is read, never the address field, which holds the
-  full address.
+  full address. The page's navigation, header and footer, which repeat on every
+  page, are skipped.
 - Reading slows down while the user is away from the keyboard or on battery,
   and a window whose text keeps changing is stored at most every 30 seconds.
   See [PERFORMANCE.md](PERFORMANCE.md).
