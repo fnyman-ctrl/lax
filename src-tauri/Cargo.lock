@@ -1653,6 +1653,7 @@ dependencies = [
  "chrono",
  "tauri",
  "tauri-build",
+ "url",
 ]
 
 [[package]]
