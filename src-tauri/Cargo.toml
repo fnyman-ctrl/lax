@@ -32,10 +32,17 @@ url = "2"
 # Turning what the window shows into JSON for the web UI. Already in the
 # dependency tree through Tauri.
 serde = { version = "1", features = ["derive"] }
+# Calls to OpenAI-compatible model servers (ADR 0004, ADR 0007). Already in
+# Cargo.lock through Tauri; TLS through macOS's own Security framework.
+reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls"] }
+serde_json = "1"
+# Waiting between retries of a model call. Already in the dependency tree
+# through Tauri, which runs on it.
+tokio = { version = "1", features = ["time"] }
 
 [dev-dependencies]
-# Checking the JSON the web UI gets. Already in the dependency tree through Tauri.
-serde_json = "1"
+# Async tests for the model client.
+tokio = { version = "1", features = ["macros", "rt"] }
 
 # Reading other apps' windows through the Accessibility API (capture, #6).
 # All already in the dependency tree through Tauri; only the features used

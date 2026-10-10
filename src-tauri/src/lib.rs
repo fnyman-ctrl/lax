@@ -10,6 +10,8 @@ mod filevault;
 mod forget;
 #[allow(dead_code)] // Some levels and fields have no user yet.
 mod logging;
+#[allow(dead_code, unused_imports)] // Used by the model settings (#15) and the journal (Stage 3).
+mod models;
 mod pause;
 mod redact;
 mod site;
