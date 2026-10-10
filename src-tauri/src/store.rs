@@ -15,6 +15,7 @@ use std::path::Path;
 use chrono::{DateTime, TimeDelta, Utc};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 
+use crate::pause::CaptureState;
 use crate::redact::redact;
 
 pub const DATABASE_FILE: &str = "lax.sqlite";
@@ -34,6 +35,8 @@ pub const DEFAULT_RETENTION_DAYS: u32 = 90;
 pub const MAX_RETENTION_DAYS: u32 = 3650;
 
 const RETENTION_KEY: &str = "retention_days";
+const PAUSE_KEY: &str = "paused_until";
+const PAUSED_UNTIL_RESUMED: &str = "resumed";
 
 #[derive(Debug)]
 pub enum StoreError {
@@ -253,14 +256,7 @@ impl Store {
     }
 
     pub fn retention_days(&self) -> Result<u32> {
-        let value: Option<String> = self
-            .conn
-            .query_row(
-                "SELECT value FROM settings WHERE key = ?1",
-                [RETENTION_KEY],
-                |row| row.get(0),
-            )
-            .optional()?;
+        let value = self.setting(RETENTION_KEY)?;
         // A missing or damaged value falls back to the default rather than
         // to keeping captures forever.
         Ok(value
@@ -275,12 +271,62 @@ impl Store {
         if !(1..=MAX_RETENTION_DAYS).contains(&days) {
             return Err(StoreError::InvalidRetention(days));
         }
+        self.set_setting(RETENTION_KEY, &days.to_string())?;
+        self.expire(now)?;
+        Ok(())
+    }
+
+    /// The pause state saved by [`Store::set_pause_state`], so a pause
+    /// survives restarting Lax.
+    pub fn pause_state(&self) -> Result<CaptureState> {
+        let value = self.setting(PAUSE_KEY)?;
+        Ok(match value.as_deref() {
+            None => CaptureState::Running,
+            Some(PAUSED_UNTIL_RESUMED) => CaptureState::Paused { until: None },
+            Some(millis) => match millis
+                .parse()
+                .ok()
+                .and_then(DateTime::from_timestamp_millis)
+            {
+                Some(until) => CaptureState::Paused { until: Some(until) },
+                // A damaged value keeps capture paused until the user resumes:
+                // stopping by mistake is safer than capturing by mistake.
+                None => CaptureState::Paused { until: None },
+            },
+        })
+    }
+
+    pub fn set_pause_state(&self, state: CaptureState) -> Result<()> {
+        match state {
+            CaptureState::Running => {
+                self.conn
+                    .execute("DELETE FROM settings WHERE key = ?1", [PAUSE_KEY])?;
+                Ok(())
+            }
+            CaptureState::Paused { until: None } => {
+                self.set_setting(PAUSE_KEY, PAUSED_UNTIL_RESUMED)
+            }
+            CaptureState::Paused { until: Some(t) } => {
+                self.set_setting(PAUSE_KEY, &t.timestamp_millis().to_string())
+            }
+        }
+    }
+
+    fn setting(&self, key: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |row| {
+                row.get(0)
+            })
+            .optional()?)
+    }
+
+    fn set_setting(&self, key: &str, value: &str) -> Result<()> {
         self.conn.execute(
             "INSERT INTO settings (key, value) VALUES (?1, ?2)
              ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-            params![RETENTION_KEY, days.to_string()],
+            params![key, value],
         )?;
-        self.expire(now)?;
         Ok(())
     }
 
@@ -835,5 +881,31 @@ mod tests {
         let now = at_minute(1000) + TimeDelta::days(1);
         assert_eq!(store.expire(now).unwrap(), 1);
         assert_eq!(remaining(&store), ["new"]);
+    }
+
+    #[test]
+    fn pause_survives_a_restart() {
+        let tmp = TempDir::new();
+        let until = at_minute(15);
+        let states = [
+            CaptureState::Running,
+            CaptureState::Paused { until: None },
+            CaptureState::Paused { until: Some(until) },
+            CaptureState::Running,
+        ];
+        for state in states {
+            Store::open(&tmp.0).unwrap().set_pause_state(state).unwrap();
+            assert_eq!(Store::open(&tmp.0).unwrap().pause_state().unwrap(), state);
+        }
+    }
+
+    #[test]
+    fn a_damaged_pause_keeps_capture_paused() {
+        let store = Store::open_in_memory().unwrap();
+        store.set_setting(PAUSE_KEY, "garbage").unwrap();
+        assert_eq!(
+            store.pause_state().unwrap(),
+            CaptureState::Paused { until: None }
+        );
     }
 }
