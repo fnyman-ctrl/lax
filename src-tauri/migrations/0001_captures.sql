@@ -10,6 +10,7 @@ CREATE TABLE captures (
 ) STRICT;
 
 CREATE INDEX captures_by_time ON captures (captured_at);
+CREATE INDEX captures_by_app ON captures (bundle_id COLLATE NOCASE);
 
 -- Full-text search over titles and text. Diacritics are kept, because å, ä
 -- and ö are separate letters in Swedish ("för" is not "for").

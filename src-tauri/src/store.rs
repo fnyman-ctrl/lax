@@ -8,8 +8,8 @@
 //! can't store a secret by forgetting to redact (GUARDRAILS §4).
 
 use std::fmt;
-use std::fs::{self, DirBuilder, Permissions};
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::fs::{self, DirBuilder, OpenOptions, Permissions};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
@@ -103,8 +103,14 @@ impl Store {
     pub fn open(data_dir: &Path) -> Result<Self> {
         prepare_data_dir(data_dir)?;
         let path = data_dir.join(DATABASE_FILE);
-        let conn = Connection::open(&path)?;
+        // Create the file private from the start, not chmod it afterwards.
+        OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(&path)?;
         fs::set_permissions(&path, Permissions::from_mode(0o600))?;
+        let conn = Connection::open(&path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         Self::init(conn)
     }
@@ -201,18 +207,28 @@ fn capture_from_row(row: &Row) -> rusqlite::Result<Capture> {
 /// else, such as a full address with a path, is not stored.
 fn bare_host(site: &str) -> Option<String> {
     let site = site.trim().to_ascii_lowercase();
-    let allowed = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':');
-    (!site.is_empty() && site.chars().all(allowed)).then_some(site)
+    let name = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-');
+    // Colons only in an IPv6 address, so "about:blank" isn't a host.
+    let ipv6 = |c: char| c.is_ascii_hexdigit() || c == ':';
+    let is_host = site.chars().all(name) || (site.contains(':') && site.chars().all(ipv6));
+    (!site.is_empty() && is_host).then_some(site)
 }
 
 /// Turns what the user typed into an FTS5 query: each word is quoted, so
-/// operators and punctuation are plain text, and matched as a prefix.
+/// operators and punctuation are plain text. Only the last word is matched
+/// as a prefix, so results follow typing without "ai" matching "air".
 fn match_query(input: &str) -> Option<String> {
-    let terms: Vec<String> = input
-        .split_whitespace()
-        .map(|word| format!("\"{}\"*", word.replace('"', "\"\"")))
+    let words: Vec<&str> = input.split_whitespace().collect();
+    let last = words.len().checked_sub(1)?;
+    let terms: Vec<String> = words
+        .iter()
+        .enumerate()
+        .map(|(i, word)| {
+            let quoted = format!("\"{}\"", word.replace('"', "\"\""));
+            if i == last { quoted + "*" } else { quoted }
+        })
         .collect();
-    (!terms.is_empty()).then(|| terms.join(" "))
+    Some(terms.join(" "))
 }
 
 #[cfg(test)]
@@ -351,6 +367,10 @@ mod tests {
         store.insert(&c).unwrap();
         c.site = Some("https://figma.com/file/abc?token=xyz");
         store.insert(&c).unwrap();
+        c.site = Some("about:blank");
+        store.insert(&c).unwrap();
+        c.site = Some("::1");
+        store.insert(&c).unwrap();
         let sites: Vec<Option<String>> = store
             .search("draft", 10)
             .unwrap()
@@ -359,6 +379,8 @@ mod tests {
             .collect();
         assert!(sites.contains(&Some("figma.com".to_string())));
         assert!(sites.contains(&None));
+        assert!(sites.contains(&Some("::1".to_string())));
+        assert!(!sites.contains(&Some("about:blank".to_string())));
         assert!(!sites.iter().flatten().any(|s| s.contains('/')));
     }
 
@@ -392,6 +414,9 @@ mod tests {
             ["Weekly report"]
         );
         assert!(store.search("torsdag numbers", 10).unwrap().is_empty());
+        // Only the last word is a prefix.
+        assert!(store.search("tors dag", 10).unwrap().is_empty());
+        assert!(store.search("q numbers", 10).unwrap().is_empty());
     }
 
     #[test]
