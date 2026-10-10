@@ -8,8 +8,9 @@
 
 Lax quietly follows what you do on your computer and turns it into a living memory:
 which projects you're working on, who you work with, and what happened when.
-Everything runs on your machine by default. No cloud, no API keys, no telemetry.
-Nothing leaves your computer unless you choose to use a remote model.
+Everything runs on your machine by default: no cloud and no API keys unless you
+choose a remote model, and no telemetry, ever. Nothing leaves your computer unless
+you decide it should.
 
 > Salmon (*lax* in Swedish) find their way back to the exact river they were born
 > in, years later and thousands of kilometres away. That's the kind of memory we're after.

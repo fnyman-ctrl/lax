@@ -47,6 +47,7 @@ Ruleset **Protect main**, enforcement *Active*, target: default branch.
 ## General
 
 - [x] Allow squash merging only (disable merge commits and rebase merging).
-  Also set the ruleset's allowed merge method to *Squash* only.
+- [ ] Set the ruleset's allowed merge method to *Squash* only. As of 2026-10-10 the
+  *Protect main* ruleset still allows merge, squash and rebase.
 - [x] Automatically delete head branches
 - Features: Issues on, Wiki off, Projects as needed
