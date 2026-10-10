@@ -13,7 +13,7 @@ The idea comes from [Mason](https://github.com/Baltsar/mason/blob/main/docs/CLAI
 | Private browser windows are never captured | §4 | Not yet implemented | None yet |
 | Password managers are never captured | §4 | Not yet implemented | None yet |
 | Exclusions are checked before content is read | §4 | Not yet implemented | None yet |
-| Only the host of a URL is stored | §4 | Not yet implemented | None yet |
+| Only the host of a URL is stored | §4 | `site_from_url` in `src-tauri/src/site.rs` keeps only the host of `http`/`https` addresses. Capture must store its result, never the address (#6, #8) | `site::tests` (paths, queries, fragments, credentials and ports dropped; other schemes keep nothing) |
 | Secrets are redacted before they are stored | §4 | Not yet implemented | None yet |
 | While paused, nothing is read | §4 | Pause state in `src-tauri/src/pause.rs` (`Pause::is_paused`). Capture must check it before every read; capture itself arrives in #6 | Pause, resume and expiry: `pause::tests`. A test that capture reads nothing while paused comes with #6 |
 | Captured content never appears in logs | §6 | Not yet implemented | None yet |
