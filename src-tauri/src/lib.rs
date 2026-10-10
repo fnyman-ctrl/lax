@@ -1,11 +1,14 @@
+mod expiry;
 mod pause;
 #[allow(dead_code)] // Used by capture, which arrives in #6.
 mod redact;
-#[allow(dead_code)] // Used by capture, which arrives in #6.
+#[allow(dead_code)] // Writing and searching are used by capture (#6) and the viewer (#10).
 mod store;
 mod tray;
 
-use tauri::WindowEvent;
+use std::sync::Mutex;
+
+use tauri::{Manager, WindowEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -16,6 +19,12 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             tray::create(app.handle())?;
+
+            // All data lives in one private folder:
+            // ~/Library/Application Support/io.github.fnyman-ctrl.lax
+            let store = store::Store::open(&app.path().app_data_dir()?)?;
+            app.manage(Mutex::new(store));
+            expiry::start(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {

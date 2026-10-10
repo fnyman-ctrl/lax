@@ -12,8 +12,8 @@ use std::fs::{self, DirBuilder, OpenOptions, Permissions};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
-use chrono::{DateTime, Utc};
-use rusqlite::{Connection, Row, params};
+use chrono::{DateTime, TimeDelta, Utc};
+use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::redact::redact;
 
@@ -21,12 +21,25 @@ pub const DATABASE_FILE: &str = "lax.sqlite";
 
 /// Schema changes, applied in order. The database's `user_version` is the
 /// number of migrations it has.
-const MIGRATIONS: &[&str] = &[include_str!("../migrations/0001_captures.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/0001_captures.sql"),
+    include_str!("../migrations/0002_settings.sql"),
+];
+
+/// How long raw captures are kept unless the user chooses otherwise
+/// (GUARDRAILS §4).
+pub const DEFAULT_RETENTION_DAYS: u32 = 30;
+/// The longest retention the user can choose: ten years.
+pub const MAX_RETENTION_DAYS: u32 = 3650;
+
+const RETENTION_KEY: &str = "retention_days";
 
 #[derive(Debug)]
 pub enum StoreError {
     Io(std::io::Error),
     Sqlite(rusqlite::Error),
+    /// Retention must be between 1 and [`MAX_RETENTION_DAYS`] days.
+    InvalidRetention(u32),
     /// The database was created by a newer version of Lax.
     NewerSchema {
         found: i64,
@@ -39,6 +52,10 @@ impl fmt::Display for StoreError {
         match self {
             StoreError::Io(e) => write!(f, "data folder: {e}"),
             StoreError::Sqlite(e) => write!(f, "database: {e}"),
+            StoreError::InvalidRetention(days) => write!(
+                f,
+                "retention of {days} days is outside 1 to {MAX_RETENTION_DAYS}"
+            ),
             StoreError::NewerSchema { found, supported } => write!(
                 f,
                 "database schema {found} is newer than this version of Lax supports ({supported})"
@@ -92,6 +109,21 @@ pub struct Capture {
 pub fn prepare_data_dir(dir: &Path) -> std::io::Result<()> {
     DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
     fs::set_permissions(dir, Permissions::from_mode(0o700))
+}
+
+/// What to forget.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Forget {
+    /// Everything captured before this moment (retention).
+    Before(DateTime<Utc>),
+    /// Everything captured from this moment on ("the last 15 minutes").
+    Since(DateTime<Utc>),
+    /// Everything captured from `from` up to, not including, `to`.
+    Between(DateTime<Utc>, DateTime<Utc>),
+    /// Everything captured from one app, by bundle id.
+    App(String),
+    /// Everything.
+    Everything,
 }
 
 pub struct Store {
@@ -164,6 +196,90 @@ impl Store {
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         let rows = statement.query_map(params![query, limit], capture_from_row)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+}
+
+impl Store {
+    /// Deletes what `what` covers, including everything derived from it, and
+    /// makes sure the deleted text is gone from the database files. Returns
+    /// how many captures were deleted.
+    ///
+    /// When episodes and memory pages arrive, what is derived from the
+    /// deleted captures must be deleted here too (GUARDRAILS §4).
+    pub fn forget(&self, what: &Forget) -> Result<usize> {
+        let deleted = match what {
+            Forget::Before(t) => self.conn.execute(
+                "DELETE FROM captures WHERE captured_at < ?1",
+                [t.timestamp_millis()],
+            )?,
+            Forget::Since(t) => self.conn.execute(
+                "DELETE FROM captures WHERE captured_at >= ?1",
+                [t.timestamp_millis()],
+            )?,
+            Forget::Between(from, to) => self.conn.execute(
+                "DELETE FROM captures WHERE captured_at >= ?1 AND captured_at < ?2",
+                [from.timestamp_millis(), to.timestamp_millis()],
+            )?,
+            Forget::App(bundle_id) => self.conn.execute(
+                "DELETE FROM captures WHERE bundle_id = ?1 COLLATE NOCASE",
+                [bundle_id],
+            )?,
+            Forget::Everything => self.conn.execute("DELETE FROM captures", [])?,
+        };
+        if deleted > 0 {
+            self.scrub()?;
+        }
+        Ok(deleted)
+    }
+
+    /// Deletes captures older than the retention period.
+    pub fn expire(&self, now: DateTime<Utc>) -> Result<usize> {
+        let days = i64::from(self.retention_days()?);
+        self.forget(&Forget::Before(now - TimeDelta::days(days)))
+    }
+
+    pub fn retention_days(&self) -> Result<u32> {
+        let value: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = ?1",
+                [RETENTION_KEY],
+                |row| row.get(0),
+            )
+            .optional()?;
+        // A missing or damaged value falls back to the default rather than
+        // to keeping captures forever.
+        Ok(value
+            .and_then(|v| v.parse().ok())
+            .filter(|days| (1..=MAX_RETENTION_DAYS).contains(days))
+            .unwrap_or(DEFAULT_RETENTION_DAYS))
+    }
+
+    pub fn set_retention_days(&self, days: u32) -> Result<()> {
+        if !(1..=MAX_RETENTION_DAYS).contains(&days) {
+            return Err(StoreError::InvalidRetention(days));
+        }
+        self.conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            params![RETENTION_KEY, days.to_string()],
+        )?;
+        Ok(())
+    }
+
+    /// Removes deleted content from the files on disk. `secure_delete` has
+    /// already overwritten the freed pages; VACUUM rebuilds the file without
+    /// them, and the checkpoint empties the write-ahead log, which can still
+    /// hold old copies of pages.
+    fn scrub(&self) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO captures_fts (captures_fts) VALUES ('optimize')",
+            [],
+        )?;
+        self.conn.execute_batch("VACUUM")?;
+        self.conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+        Ok(())
     }
 }
 
@@ -491,5 +607,169 @@ mod tests {
                 text: "round trip".to_string(),
             }]
         );
+    }
+
+    fn at_minute(minute: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp_millis(1_781_520_000_000).unwrap() + TimeDelta::minutes(minute)
+    }
+
+    /// Stores one capture per (minute, bundle id, text).
+    fn store_with(store: &Store, captures: &[(i64, &str, &str)]) {
+        for &(minute, bundle_id, text) in captures {
+            store
+                .insert(&NewCapture {
+                    captured_at: at_minute(minute),
+                    bundle_id,
+                    ..capture("Window", text)
+                })
+                .unwrap();
+        }
+    }
+
+    fn remaining(store: &Store) -> Vec<String> {
+        let mut statement = store
+            .conn
+            .prepare("SELECT text FROM captures ORDER BY captured_at")
+            .unwrap();
+        statement
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    const SAMPLE: &[(i64, &str, &str)] = &[
+        (0, "com.apple.mail", "alpha"),
+        (10, "com.tinyspeck.slackmacgap", "bravo"),
+        (20, "com.apple.mail", "charlie"),
+        (30, "com.apple.Safari", "delta"),
+    ];
+
+    #[test]
+    fn forget_before() {
+        let store = Store::open_in_memory().unwrap();
+        store_with(&store, SAMPLE);
+        assert_eq!(store.forget(&Forget::Before(at_minute(20))).unwrap(), 2);
+        assert_eq!(remaining(&store), ["charlie", "delta"]);
+    }
+
+    #[test]
+    fn forget_since() {
+        let store = Store::open_in_memory().unwrap();
+        store_with(&store, SAMPLE);
+        assert_eq!(store.forget(&Forget::Since(at_minute(20))).unwrap(), 2);
+        assert_eq!(remaining(&store), ["alpha", "bravo"]);
+    }
+
+    #[test]
+    fn forget_between() {
+        let store = Store::open_in_memory().unwrap();
+        store_with(&store, SAMPLE);
+        let range = Forget::Between(at_minute(10), at_minute(30));
+        assert_eq!(store.forget(&range).unwrap(), 2);
+        assert_eq!(remaining(&store), ["alpha", "delta"]);
+    }
+
+    #[test]
+    fn forget_app() {
+        let store = Store::open_in_memory().unwrap();
+        store_with(&store, SAMPLE);
+        let app = Forget::App("COM.APPLE.MAIL".to_string());
+        assert_eq!(store.forget(&app).unwrap(), 2);
+        assert_eq!(remaining(&store), ["bravo", "delta"]);
+    }
+
+    #[test]
+    fn forget_everything() {
+        let store = Store::open_in_memory().unwrap();
+        store_with(&store, SAMPLE);
+        assert_eq!(store.forget(&Forget::Everything).unwrap(), 4);
+        assert!(remaining(&store).is_empty());
+    }
+
+    #[test]
+    fn forgotten_captures_leave_the_search_index() {
+        let store = Store::open_in_memory().unwrap();
+        store_with(&store, SAMPLE);
+        store
+            .forget(&Forget::App("com.apple.mail".to_string()))
+            .unwrap();
+        assert!(store.search("alpha", 10).unwrap().is_empty());
+        assert!(store.search("charlie", 10).unwrap().is_empty());
+        assert_eq!(store.search("bravo", 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn forgotten_text_is_gone_from_the_files_on_disk() {
+        let tmp = TempDir::new();
+        let store = Store::open(&tmp.0).unwrap();
+        // A word that appears nowhere else, so finding its bytes anywhere in
+        // the files means the text survived.
+        let marker = "zebrafinkmarker";
+        for _ in 0..50 {
+            store_with(&store, &[(0, "com.apple.mail", marker)]);
+        }
+        store_with(&store, &[(60, "com.apple.Safari", "keep")]);
+        store.forget(&Forget::Before(at_minute(30))).unwrap();
+
+        for entry in fs::read_dir(&tmp.0).unwrap() {
+            let path = entry.unwrap().path();
+            let bytes = fs::read(&path).unwrap();
+            let found = bytes.windows(marker.len()).any(|w| w == marker.as_bytes());
+            assert!(!found, "{} still contains forgotten text", path.display());
+        }
+        assert_eq!(remaining(&store), ["keep"]);
+    }
+
+    #[test]
+    fn retention_defaults_to_30_days() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.retention_days().unwrap(), DEFAULT_RETENTION_DAYS);
+        assert_eq!(DEFAULT_RETENTION_DAYS, 30);
+    }
+
+    #[test]
+    fn retention_can_be_changed_and_is_kept() {
+        let tmp = TempDir::new();
+        Store::open(&tmp.0).unwrap().set_retention_days(7).unwrap();
+        assert_eq!(Store::open(&tmp.0).unwrap().retention_days().unwrap(), 7);
+    }
+
+    #[test]
+    fn retention_outside_the_limits_is_refused() {
+        let store = Store::open_in_memory().unwrap();
+        assert!(store.set_retention_days(0).is_err());
+        assert!(store.set_retention_days(MAX_RETENTION_DAYS + 1).is_err());
+        assert_eq!(store.retention_days().unwrap(), DEFAULT_RETENTION_DAYS);
+    }
+
+    #[test]
+    fn damaged_retention_falls_back_to_the_default() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO settings (key, value) VALUES (?1, 'forever')",
+                [RETENTION_KEY],
+            )
+            .unwrap();
+        assert_eq!(store.retention_days().unwrap(), DEFAULT_RETENTION_DAYS);
+    }
+
+    #[test]
+    fn expire_deletes_captures_older_than_the_retention() {
+        let store = Store::open_in_memory().unwrap();
+        store.set_retention_days(1).unwrap();
+        store_with(
+            &store,
+            &[
+                (0, "com.apple.mail", "old"),
+                (1500, "com.apple.mail", "new"),
+            ],
+        );
+        // One day after minute 1000: minute 0 is older than a day, 1500 is not.
+        let now = at_minute(1000) + TimeDelta::days(1);
+        assert_eq!(store.expire(now).unwrap(), 1);
+        assert_eq!(remaining(&store), ["new"]);
     }
 }
