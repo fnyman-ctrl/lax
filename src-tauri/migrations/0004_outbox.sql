@@ -9,7 +9,12 @@ CREATE TABLE outbox (
     model          TEXT NOT NULL,
     payload        TEXT NOT NULL,    -- the request body as sent
     status         INTEGER NOT NULL, -- HTTP status, 0 if nothing came back
-    response_bytes INTEGER NOT NULL  -- size of the answer
+    response_bytes INTEGER NOT NULL, -- size of the answer
+    -- The captures the request was made from, so forgetting a time range or
+    -- an app also removes what was sent about it (GUARDRAILS §4).
+    covers_from    INTEGER,          -- earliest capture time in it, ms; NULL if none
+    covers_to      INTEGER,          -- latest capture time in it, ms
+    apps           TEXT NOT NULL DEFAULT '' -- bundle ids in it, one per line
 ) STRICT;
 
 CREATE INDEX outbox_by_time ON outbox (sent_at);

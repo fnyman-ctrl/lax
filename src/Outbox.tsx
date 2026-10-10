@@ -135,11 +135,9 @@ export function Outbox() {
               </option>
             ))}
           </select>
-          {items !== null && items.length > 0 && (
-            <button type="button" className="danger" onClick={() => setConfirmClear(true)}>
-              Delete the whole outbox…
-            </button>
-          )}
+          <button type="button" className="danger" onClick={() => setConfirmClear(true)}>
+            Delete the whole outbox…
+          </button>
         </p>
       )}
       {confirmClear && (

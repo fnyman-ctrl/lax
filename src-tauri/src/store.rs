@@ -329,6 +329,11 @@ pub struct OutboxEntry {
     /// HTTP status, 0 if nothing came back.
     pub status: u16,
     pub response_bytes: usize,
+    /// The earliest and latest capture time the request was made from, if
+    /// it was made from captures.
+    pub covers: Option<(DateTime<Utc>, DateTime<Utc>)>,
+    /// The apps (bundle ids) whose captures it held.
+    pub apps: Vec<String>,
 }
 
 /// An outbox entry as the window lists it.
@@ -349,8 +354,9 @@ pub struct OutboxSummary {
 impl Store {
     pub fn record_outbox(&self, entry: &OutboxEntry) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO outbox (sent_at, provider, task, model, payload, status, response_bytes)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO outbox (sent_at, provider, task, model, payload, status, response_bytes,
+                                 covers_from, covers_to, apps)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 entry.sent_at.timestamp_millis(),
                 entry.provider,
@@ -359,6 +365,9 @@ impl Store {
                 entry.payload,
                 entry.status,
                 i64::try_from(entry.response_bytes).unwrap_or(i64::MAX),
+                entry.covers.map(|(from, _)| from.timestamp_millis()),
+                entry.covers.map(|(_, to)| to.timestamp_millis()),
+                entry.apps.join("\n"),
             ],
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -671,16 +680,44 @@ impl Store {
     /// deleted captures must be deleted here too (GUARDRAILS §4).
     pub fn forget(&self, what: &Forget) -> Result<usize> {
         let deleted = self.delete(what)?;
+        // What was sent off the machine about the forgotten captures goes
+        // too. (Everything already includes the outbox.)
+        let outbox_deleted = self.forget_in_outbox(what)?;
         // Remembered once the rows are gone, so a failed delete refuses
         // nothing. The store is behind a lock, so no capture can be stored
         // in between.
         self.recent_forgets
             .borrow_mut()
             .push((what.clone(), Utc::now()));
-        if deleted > 0 {
+        if deleted + outbox_deleted > 0 {
             self.scrub()?;
         }
         Ok(deleted)
+    }
+
+    /// Outbox entries made from captures that `what` covers.
+    fn forget_in_outbox(&self, what: &Forget) -> Result<usize> {
+        Ok(match what {
+            Forget::Before(t) => self.conn.execute(
+                "DELETE FROM outbox WHERE covers_from < ?1",
+                [t.timestamp_millis()],
+            )?,
+            Forget::Since(t) => self.conn.execute(
+                "DELETE FROM outbox WHERE covers_to >= ?1",
+                [t.timestamp_millis()],
+            )?,
+            Forget::Between(from, to) => self.conn.execute(
+                "DELETE FROM outbox WHERE covers_from < ?2 AND covers_to >= ?1",
+                [from.timestamp_millis(), to.timestamp_millis()],
+            )?,
+            Forget::App(bundle_id) => self.conn.execute(
+                "DELETE FROM outbox
+                 WHERE instr(char(10) || lower(apps) || char(10),
+                             char(10) || lower(?1) || char(10)) > 0",
+                [bundle_id],
+            )?,
+            Forget::Everything => 0,
+        })
     }
 
     /// Deletes captures older than the retention period.
@@ -1594,7 +1631,48 @@ mod tests {
             payload: payload.to_string(),
             status: 200,
             response_bytes: 512,
+            covers: Some((at(minute - 15), at(minute))),
+            apps: vec!["com.apple.mail".to_string()],
         }
+    }
+
+    #[test]
+    fn forgetting_captures_forgets_what_was_sent_about_them() {
+        let store = Store::open_in_memory().unwrap();
+        // Requests covering minutes -15..0, 45..60 and 105..120.
+        store.record_outbox(&sent(0, "first")).unwrap();
+        store.record_outbox(&sent(60, "second")).unwrap();
+        store
+            .record_outbox(&OutboxEntry {
+                apps: vec!["com.apple.Notes".to_string()],
+                ..sent(120, "third")
+            })
+            .unwrap();
+        // A request not made from captures stays through time forgets.
+        store
+            .record_outbox(&OutboxEntry {
+                covers: None,
+                apps: Vec::new(),
+                ..sent(130, "not from captures")
+            })
+            .unwrap();
+        let left = |store: &Store| -> Vec<String> {
+            store
+                .outbox(None, None, 10)
+                .unwrap()
+                .into_iter()
+                .map(|o| o.preview)
+                .collect()
+        };
+
+        store.forget(&Forget::Between(at(50), at(55))).unwrap();
+        assert_eq!(left(&store), ["not from captures", "third", "first"]);
+        store
+            .forget(&Forget::App("COM.APPLE.NOTES".to_string()))
+            .unwrap();
+        assert_eq!(left(&store), ["not from captures", "first"]);
+        store.forget(&Forget::Since(at(-5))).unwrap();
+        assert_eq!(left(&store), ["not from captures"]);
     }
 
     #[test]
