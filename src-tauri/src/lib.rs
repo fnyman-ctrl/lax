@@ -1,16 +1,17 @@
 mod accessibility;
-#[allow(dead_code)] // Used by capture, which arrives in #6.
+#[cfg(target_os = "macos")]
+mod ax;
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // The loop is macOS only.
+mod capture;
 mod exclusions;
 mod expiry;
 mod filevault;
-#[allow(dead_code)] // Most levels and fields are first used by capture (#6).
+#[allow(dead_code)] // Some levels and fields have no user yet.
 mod logging;
 mod pause;
-#[allow(dead_code)] // Used by capture, which arrives in #6.
 mod redact;
-#[allow(dead_code)] // Used by capture, which arrives in #6.
 mod site;
-#[allow(dead_code)] // Writing is used by capture (#6), forgetting by #9.
+#[allow(dead_code)] // Forgetting is used from the window in #9.
 mod store;
 mod tray;
 mod viewer;
@@ -23,6 +24,7 @@ use tauri::{Manager, WindowEvent};
 pub fn run() {
     tauri::Builder::default()
         .manage(pause::Pause::default())
+        .manage(capture::Heartbeat::default())
         .invoke_handler(tauri::generate_handler![
             accessibility::accessibility_status,
             accessibility::open_accessibility_settings,
@@ -61,6 +63,10 @@ pub fn run() {
                     pause.restore(store.pause_state().unwrap_or(paused_until_resumed));
                     app.manage(Mutex::new(store));
                     expiry::start(app.handle().clone());
+                    // Capture checks the pause and the Accessibility
+                    // permission before every read, so it can start now.
+                    #[cfg(target_os = "macos")]
+                    capture::start(app.handle().clone());
                 }
                 Err(error) => {
                     pause.restore(paused_until_resumed);

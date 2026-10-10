@@ -6,6 +6,7 @@ type CaptureStatus = {
   paused: boolean;
   label: string;
   permission: boolean;
+  capturing: boolean;
   storeError: string | null;
 };
 
@@ -126,6 +127,13 @@ function Status() {
           Turn it on in System Settings
         </button>
         {settingsFailed && " (System Settings didn't open: go to Privacy & Security → Accessibility.)"}
+      </div>
+    );
+  }
+  if (!status.capturing) {
+    return (
+      <div className="status error" role="alert">
+        Capture isn't running. Quit Lax from the menu bar and open it again.
       </div>
     );
   }
