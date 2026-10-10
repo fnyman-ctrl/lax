@@ -27,8 +27,9 @@ const MIGRATIONS: &[&str] = &[
 ];
 
 /// How long raw captures are kept unless the user chooses otherwise
-/// (GUARDRAILS §4).
-pub const DEFAULT_RETENTION_DAYS: u32 = 30;
+/// (GUARDRAILS §4). Long enough that nothing is lost before the journal
+/// (Stage 3) can summarize it; from then on only summarized captures expire.
+pub const DEFAULT_RETENTION_DAYS: u32 = 90;
 /// The longest retention the user can choose: ten years.
 pub const MAX_RETENTION_DAYS: u32 = 3650;
 
@@ -778,10 +779,10 @@ mod tests {
     }
 
     #[test]
-    fn retention_defaults_to_30_days() {
+    fn retention_defaults_to_90_days() {
         let store = Store::open_in_memory().unwrap();
         assert_eq!(store.retention_days().unwrap(), DEFAULT_RETENTION_DAYS);
-        assert_eq!(DEFAULT_RETENTION_DAYS, 30);
+        assert_eq!(DEFAULT_RETENTION_DAYS, 90);
     }
 
     #[test]
