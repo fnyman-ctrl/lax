@@ -290,6 +290,29 @@ impl Store {
     }
 }
 
+/// What a model is used for. Chat and embeddings are configured separately
+/// (GUARDRAILS §3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelTask {
+    Chat,
+    Embeddings,
+}
+
+impl ModelTask {
+    fn as_str(self) -> &'static str {
+        match self {
+            ModelTask::Chat => "chat",
+            ModelTask::Embeddings => "embeddings",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelChoice {
+    pub base_url: String,
+    pub model: String,
+}
+
 /// A kind of user exclusion (GUARDRAILS §4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExclusionKind {
@@ -578,6 +601,37 @@ impl Store {
             return Err(StoreError::InvalidCaptureInterval(seconds));
         }
         self.set_setting(CAPTURE_INTERVAL_KEY, &seconds.to_string())
+    }
+
+    /// The model chosen for `task`: a base address and a model id. Settings
+    /// only, never a key (keys live in the Keychain, GUARDRAILS §3).
+    pub fn model_choice(&self, task: ModelTask) -> Result<Option<ModelChoice>> {
+        let base_url = self.setting(&format!("model.{}.base_url", task.as_str()))?;
+        let model = self.setting(&format!("model.{}.model", task.as_str()))?;
+        Ok(match (base_url, model) {
+            (Some(base_url), Some(model)) => Some(ModelChoice { base_url, model }),
+            _ => None,
+        })
+    }
+
+    pub fn set_model_choice(&self, task: ModelTask, choice: Option<&ModelChoice>) -> Result<()> {
+        let keys = [
+            format!("model.{}.base_url", task.as_str()),
+            format!("model.{}.model", task.as_str()),
+        ];
+        match choice {
+            Some(choice) => {
+                self.set_setting(&keys[0], &choice.base_url)?;
+                self.set_setting(&keys[1], &choice.model)
+            }
+            None => {
+                for key in &keys {
+                    self.conn
+                        .execute("DELETE FROM settings WHERE key = ?1", [key])?;
+                }
+                Ok(())
+            }
+        }
     }
 
     /// The pause state saved by [`Store::set_pause_state`], so a pause
@@ -1342,6 +1396,26 @@ mod tests {
                 .is_err()
         );
         assert_eq!(store.retention_days().unwrap(), DEFAULT_RETENTION_DAYS);
+    }
+
+    #[test]
+    fn model_choices_are_kept_per_task() {
+        let tmp = TempDir::new();
+        let store = Store::open(&tmp.0).unwrap();
+        assert_eq!(store.model_choice(ModelTask::Chat).unwrap(), None);
+        let chat = ModelChoice {
+            base_url: "http://localhost:1234/v1/".to_string(),
+            model: "google/gemma-4-e4b".to_string(),
+        };
+        store
+            .set_model_choice(ModelTask::Chat, Some(&chat))
+            .unwrap();
+        drop(store);
+        let store = Store::open(&tmp.0).unwrap();
+        assert_eq!(store.model_choice(ModelTask::Chat).unwrap(), Some(chat));
+        assert_eq!(store.model_choice(ModelTask::Embeddings).unwrap(), None);
+        store.set_model_choice(ModelTask::Chat, None).unwrap();
+        assert_eq!(store.model_choice(ModelTask::Chat).unwrap(), None);
     }
 
     #[test]

@@ -10,7 +10,8 @@ mod filevault;
 mod forget;
 #[allow(dead_code)] // Some levels and fields have no user yet.
 mod logging;
-#[allow(dead_code, unused_imports)] // Used by the model settings (#15) and the journal (Stage 3).
+mod model_settings;
+#[allow(dead_code)] // Embeddings and more are used by the journal (Stage 3).
 mod models;
 mod pause;
 mod redact;
@@ -47,6 +48,11 @@ pub fn run() {
             exclusion_settings::add_exclusion,
             exclusion_settings::remove_exclusion,
             exclusion_settings::set_default_excluded,
+            model_settings::find_local_models,
+            model_settings::model_settings,
+            model_settings::set_model,
+            model_settings::clear_model,
+            model_settings::test_model,
         ])
         .setup(|app| {
             // Lax lives in the menu bar, without a Dock icon.
