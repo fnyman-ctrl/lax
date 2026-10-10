@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { Forget } from "./Forget";
 
 // Shapes returned by src-tauri/src/viewer.rs.
 type CaptureStatus = {
@@ -48,6 +49,8 @@ const MATCH_END = "\u0003";
  */
 export function Viewer() {
   const [query, setQuery] = useState("");
+  // Bumped after a deletion, so the lists start over from the database.
+  const [version, setVersion] = useState(0);
   const searching = query.trim() !== "";
 
   return (
@@ -66,7 +69,12 @@ export function Viewer() {
           onChange={(event) => setQuery(event.target.value)}
         />
       </label>
-      {searching ? <SearchResults query={query} /> : <Timeline />}
+      <Forget onForgotten={() => setVersion((v) => v + 1)} />
+      {searching ? (
+        <SearchResults key={version} query={query} />
+      ) : (
+        <Timeline key={version} />
+      )}
     </main>
   );
 }

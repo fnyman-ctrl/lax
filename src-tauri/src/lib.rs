@@ -3,6 +3,7 @@ mod accessibility;
 mod exclusions;
 mod expiry;
 mod filevault;
+mod forget;
 #[allow(dead_code)] // Most levels and fields are first used by capture (#6).
 mod logging;
 mod pause;
@@ -10,7 +11,7 @@ mod pause;
 mod redact;
 #[allow(dead_code)] // Used by capture, which arrives in #6.
 mod site;
-#[allow(dead_code)] // Writing is used by capture (#6), forgetting by #9.
+#[allow(dead_code)] // Writing is used by capture (#6).
 mod store;
 mod tray;
 mod viewer;
@@ -31,6 +32,11 @@ pub fn run() {
             viewer::recent_captures,
             viewer::search_captures,
             viewer::capture_detail,
+            forget::captured_apps,
+            forget::forget_captures,
+            forget::delete_all_data,
+            forget::retention_days,
+            forget::set_retention_days,
         ])
         .setup(|app| {
             // Lax lives in the menu bar, without a Dock icon.

@@ -10,6 +10,11 @@ fn main() {
             "recent_captures",
             "search_captures",
             "capture_detail",
+            "captured_apps",
+            "forget_captures",
+            "delete_all_data",
+            "retention_days",
+            "set_retention_days",
         ]),
     ))
     .expect("failed to run tauri-build");

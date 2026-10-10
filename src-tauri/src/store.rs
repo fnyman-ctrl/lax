@@ -7,6 +7,7 @@
 //! The store redacts titles and text itself before writing them, so a caller
 //! can't store a secret by forgetting to redact (GUARDRAILS §4).
 
+use std::cell::RefCell;
 use std::fmt;
 use std::fs::{self, DirBuilder, OpenOptions, Permissions};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
@@ -162,8 +163,28 @@ pub enum Forget {
     Everything,
 }
 
+impl Forget {
+    /// Whether this covers a capture made at `at` in the app `bundle_id`.
+    fn covers(&self, at: DateTime<Utc>, bundle_id: &str) -> bool {
+        match self {
+            Forget::Before(t) => at < *t,
+            Forget::Since(t) => at >= *t,
+            Forget::Between(from, to) => at >= *from && at < *to,
+            Forget::App(app) => app.eq_ignore_ascii_case(bundle_id),
+            Forget::Everything => true,
+        }
+    }
+}
+
+/// How long a forget is remembered, to refuse captures read before it but
+/// handed to the store after it. Capture holds a capture back for at most
+/// 30 seconds, so this leaves plenty of room.
+const FORGET_MEMORY: TimeDelta = TimeDelta::minutes(10);
+
 pub struct Store {
     conn: Connection,
+    /// Recent forgets and when they happened.
+    recent_forgets: RefCell<Vec<(Forget, DateTime<Utc>)>>,
 }
 
 impl Store {
@@ -193,12 +214,22 @@ impl Store {
         conn.pragma_update(None, "secure_delete", "ON")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         migrate(&mut conn)?;
-        Ok(Store { conn })
+        Ok(Store {
+            conn,
+            recent_forgets: RefCell::new(Vec::new()),
+        })
     }
 
-    /// Stores a capture. The window title and text are redacted here, and a
-    /// site that isn't a bare host is dropped.
-    pub fn insert(&self, capture: &NewCapture) -> Result<i64> {
+    /// Stores a capture and returns its id. The window title and text are
+    /// redacted here, and a site that isn't a bare host is dropped.
+    ///
+    /// A capture that was read before the user forgot the time or app it
+    /// belongs to is refused (`None`): forgetting takes effect immediately
+    /// (GUARDRAILS §4), also for what capture had read but not yet stored.
+    pub fn insert(&self, capture: &NewCapture) -> Result<Option<i64>> {
+        if self.forgotten(capture, Utc::now()) {
+            return Ok(None);
+        }
         self.conn.execute(
             "INSERT INTO captures (captured_at, app_name, bundle_id, window_title, site, text)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -211,7 +242,15 @@ impl Store {
                 redact(capture.text),
             ],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        Ok(Some(self.conn.last_insert_rowid()))
+    }
+
+    fn forgotten(&self, capture: &NewCapture, now: DateTime<Utc>) -> bool {
+        let mut forgets = self.recent_forgets.borrow_mut();
+        forgets.retain(|(_, at)| now - *at < FORGET_MEMORY);
+        forgets.iter().any(|(what, at)| {
+            capture.captured_at < *at && what.covers(capture.captured_at, capture.bundle_id)
+        })
     }
 
     /// Full-text search over titles and text, best matches first. Every word
@@ -311,6 +350,40 @@ impl Store {
     }
 }
 
+/// An app Lax has captured from, for "forget this app".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapturedApp {
+    pub bundle_id: String,
+    /// The most recent name it had.
+    pub app_name: String,
+    pub captures: usize,
+}
+
+impl Store {
+    /// Every app with captures, the most captured first.
+    pub fn apps(&self) -> Result<Vec<CapturedApp>> {
+        let mut statement = self.conn.prepare(
+            "SELECT bundle_id,
+                    (SELECT app_name FROM captures AS n
+                     WHERE n.bundle_id = c.bundle_id COLLATE NOCASE
+                     ORDER BY captured_at DESC LIMIT 1),
+                    count(*)
+             FROM captures AS c
+             GROUP BY bundle_id COLLATE NOCASE
+             ORDER BY count(*) DESC, bundle_id",
+        )?;
+        let rows = statement.query_map([], |row| {
+            let count: i64 = row.get(2)?;
+            Ok(CapturedApp {
+                bundle_id: row.get(0)?,
+                app_name: row.get(1)?,
+                captures: usize::try_from(count).unwrap_or(0),
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+}
+
 fn sql_limit(limit: usize) -> i64 {
     i64::try_from(limit).unwrap_or(i64::MAX)
 }
@@ -338,6 +411,9 @@ impl Store {
     /// When episodes and memory pages arrive, what is derived from the
     /// deleted captures must be deleted here too (GUARDRAILS §4).
     pub fn forget(&self, what: &Forget) -> Result<usize> {
+        self.recent_forgets
+            .borrow_mut()
+            .push((what.clone(), Utc::now()));
         let deleted = self.delete(what)?;
         if deleted > 0 {
             self.scrub()?;
@@ -773,6 +849,75 @@ mod tests {
                 ..capture(title, text)
             })
             .unwrap()
+            .unwrap()
+    }
+
+    #[test]
+    fn captures_read_before_a_forget_are_refused_after_it() {
+        let store = Store::open_in_memory().unwrap();
+        let read_at = Utc::now() - TimeDelta::seconds(20);
+        let held = NewCapture {
+            captured_at: read_at,
+            ..capture("Chat", "read, then held back")
+        };
+        // The user forgets the last 15 minutes while capture holds `held`.
+        store
+            .forget(&Forget::Since(Utc::now() - TimeDelta::minutes(15)))
+            .unwrap();
+        assert_eq!(store.insert(&held).unwrap(), None);
+        assert!(store.search("held", 10).unwrap().is_empty());
+
+        // Something read after the forget is stored.
+        let later = NewCapture {
+            captured_at: Utc::now() + TimeDelta::seconds(1),
+            ..capture("Chat", "new activity")
+        };
+        assert!(store.insert(&later).unwrap().is_some());
+
+        // So is an older capture the forget didn't cover.
+        let other = NewCapture {
+            captured_at: read_at - TimeDelta::hours(2),
+            ..capture("Chat", "outside the range")
+        };
+        assert!(store.insert(&other).unwrap().is_some());
+    }
+
+    #[test]
+    fn forgetting_an_app_refuses_its_held_captures() {
+        let store = Store::open_in_memory().unwrap();
+        let held = NewCapture {
+            captured_at: Utc::now() - TimeDelta::seconds(5),
+            ..capture("Inbox", "held mail")
+        };
+        store
+            .forget(&Forget::App("com.apple.mail".to_string()))
+            .unwrap();
+        assert_eq!(store.insert(&held).unwrap(), None);
+        let notes = NewCapture {
+            bundle_id: "com.apple.Notes",
+            ..held.clone()
+        };
+        assert!(store.insert(&notes).unwrap().is_some());
+    }
+
+    #[test]
+    fn apps_are_listed_with_their_latest_name_and_count() {
+        let store = Store::open_in_memory().unwrap();
+        insert_at(&store, 0, "a", "x");
+        insert_at(&store, 1, "b", "x");
+        store
+            .insert(&NewCapture {
+                captured_at: at(2),
+                app_name: "Anteckningar",
+                bundle_id: "com.apple.Notes",
+                ..capture("c", "x")
+            })
+            .unwrap();
+        let apps = store.apps().unwrap();
+        assert_eq!(apps.len(), 2);
+        assert_eq!(apps[0].bundle_id, "com.apple.mail");
+        assert_eq!(apps[0].captures, 2);
+        assert_eq!(apps[1].app_name, "Anteckningar");
     }
 
     #[test]
@@ -845,7 +990,10 @@ mod tests {
     #[test]
     fn deleted_captures_leave_the_index() {
         let store = Store::open_in_memory().unwrap();
-        let id = store.insert(&capture("Inbox", "forgettable")).unwrap();
+        let id = store
+            .insert(&capture("Inbox", "forgettable"))
+            .unwrap()
+            .unwrap();
         store
             .conn
             .execute("DELETE FROM captures WHERE id = ?1", [id])
@@ -860,7 +1008,7 @@ mod tests {
             site: Some("example.com"),
             ..capture("Inbox", "round trip")
         };
-        let id = store.insert(&new).unwrap();
+        let id = store.insert(&new).unwrap().unwrap();
         let hits = store.search("round", 10).unwrap();
         assert_eq!(
             hits,

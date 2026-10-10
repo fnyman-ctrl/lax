@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-retention-days"
+description = "Enables the retention_days command without any pre-configured scope."
+commands.allow = ["retention_days"]
+
+[[permission]]
+identifier = "deny-retention-days"
+description = "Denies the retention_days command without any pre-configured scope."
+commands.deny = ["retention_days"]

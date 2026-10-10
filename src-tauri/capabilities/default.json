@@ -11,6 +11,11 @@
     "allow-capture-status",
     "allow-recent-captures",
     "allow-search-captures",
-    "allow-capture-detail"
+    "allow-capture-detail",
+    "allow-captured-apps",
+    "allow-forget-captures",
+    "allow-delete-all-data",
+    "allow-retention-days",
+    "allow-set-retention-days"
   ]
 }
