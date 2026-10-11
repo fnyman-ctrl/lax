@@ -34,9 +34,21 @@ the key on its own can't simply be a shortcut.
 - **Tap Option on its own**: press and release ⌥ with no other key in between,
   within half a second. ⌥2, ⌥-click and holding ⌥ do nothing.
 - To tell a tap from ⌥2, Lax must notice that *some* key was pressed while ⌥
-  was down. It listens to modifier changes and to the fact that a key went
-  down, **never which key**: no key codes, no characters, nothing stored or
-  logged. A test proves the listener has no access to key identity.
+  was down. macOS delivers every key event with its key code, so Lax can't
+  avoid receiving it; what it enforces is that the code goes no further. The
+  callback turns each event into "a key went down" (or "modifiers changed")
+  before anything else runs; the type it hands on has no key or character
+  field; nothing is stored or logged. A test checks that type, and that the
+  callback keeps nothing.
+- Events are dropped unless the frontmost app is one Lax may read: in an
+  excluded app, a password manager or a private window, nothing is looked at.
+  Password fields are covered by macOS too: they turn on Secure Event Input,
+  which keeps key events from every listener.
+- **Permission:** a global key listener needs Accessibility (which Lax has)
+  for an `NSEvent` global monitor; a `CGEventTap` would need Input Monitoring,
+  a second, more alarming prompt ("receive keystrokes from any
+  application"). Lax uses the `NSEvent` monitor, and onboarding says plainly
+  that Lax notices when keys are pressed, never which.
 - A setting turns the shortcut off, and it does nothing while capture is
   paused or the focused app, window or site is excluded. Password fields and
   private windows never get it.
@@ -56,8 +68,12 @@ the key on its own can't simply be a shortcut.
 
 - The text of the focused window, read under the same rules as capture
   (exclusions first, secrets redacted), now, not stored.
-- `about-me.md` for who the user is and how they write, and the pages of
-  people and projects named in the window.
+- `about-me.md` for who the user is and how they write, and the pages of the
+  people in the thread (sender and recipients, where the app shows them) and
+  the project it's about. Not every name in the window: a hostile message
+  could otherwise name people to pull their pages into a reply. The panel
+  lists the pages used, and the model is told not to share facts about
+  anyone but the people in the thread.
 - All of it goes to the model as `Captured` data. The instruction is the
   user's request (`structured::ask_for`). The answer is validated as
   `{"draft": string}`: a length cap, no control or invisible characters.
@@ -70,7 +86,10 @@ the key on its own can't simply be a shortcut.
 - Text fields that accept it get the draft through Accessibility (replacing
   the selected text). Web views, such as Mail's compose window, get it by
   selecting the instruction and pasting, with the clipboard restored
-  afterwards. Either way the app's own undo (⌘Z) takes it back.
+  afterwards. The pasted item is marked concealed and transient
+  (`org.nspasteboard.ConcealedType`, `org.nspasteboard.TransientType`), so
+  clipboard managers that honour the convention don't keep it in their
+  history. Either way the app's own undo (⌘Z) takes it back.
 - Nothing about the draft is stored: not the instruction, not the draft, not
   the window text. Logs hold counts and timings.
 
@@ -82,7 +101,10 @@ the key on its own can't simply be a shortcut.
   that builds this.
 - Listening for "a key was pressed" is close to a key logger in what it could
   do, even if it doesn't. It needs the same care as capture: one module, no key
-  identity in its types, and a CLAIMS row with a test.
+  identity in its types, excluded apps ignored, and a CLAIMS row with a test.
+  The claim is what the code does with events, not that Lax can't see them.
+- Clipboard managers that ignore the concealed marker can still keep a pasted
+  draft. Fields that accept Accessibility writes avoid the clipboard entirely.
 - A preview before inserting costs one key press, but a draft written from an
   untrusted message is never put in a field the user hasn't read.
 - Small local models write passable mail in Swedish and English, but "in my
