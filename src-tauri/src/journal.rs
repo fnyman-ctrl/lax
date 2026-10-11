@@ -47,8 +47,9 @@ const MAX_CHARS_PER_CAPTURE: usize = 1500;
 const MAX_CHARS_PER_BLOCK: usize = 12_000;
 /// Room for the answer. Models like Gemma 4 reason before answering, and with
 /// a full block that can take well over a thousand tokens; too little room
-/// leaves no answer at all (checked on a real Mac).
-const MAX_TOKENS: u32 = 3000;
+/// leaves no answer at all (checked on a real Mac). Kept well inside the
+/// client's chat timeout at local speeds (about 25 tokens a second).
+const MAX_TOKENS: u32 = 2000;
 
 const TASK: &str = "Write a short work-journal entry, one to three sentences, about what the \
 user did in these windows: what they worked on, in which apps, and with whom. Write in the \
@@ -187,6 +188,9 @@ async fn round(app: &AppHandle, setbacks: &mut Setbacks) -> Result<(), ()> {
                     return Err(());
                 }
                 setbacks.bad_answer(&work.block_ids);
+                // Try again next round rather than at once, so a hard block
+                // doesn't keep the Mac busy with back-to-back attempts.
+                return Ok(());
             }
         }
     }
