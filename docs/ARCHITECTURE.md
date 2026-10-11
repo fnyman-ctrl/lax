@@ -47,10 +47,14 @@ previous one, so they can be built, tested and improved independently.
 
 ## 3. Recognize
 
-- Extract **entities** (projects, people, organisations, topics) from new episodes
-  using structured LLM output (JSON).
-- Resolve them against known entities (name, aliases, embeddings) to avoid
-  duplicates ("Q3 offert" vs "Q3 proposal").
+- Extract **entities** (people, organisations, projects) from new episodes
+  using structured LLM output (JSON). The memory is off until the user turns
+  it on, and runs in the journal's loop right after it
+  (`src-tauri/src/memory.rs`, [ADR 0008](adr/0008-learning-memory.md)).
+- Resolve them against known entities to avoid duplicates. For now only an
+  exact match of the normalized name (case and spacing ignored, diacritics
+  kept) joins a known entity; embeddings can suggest merges later, such as
+  "Q3 offert" and "Q3 proposal".
 
 ## 4. Learn
 

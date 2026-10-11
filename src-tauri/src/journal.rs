@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
 use crate::logging::{self, ErrorKind, Field};
+use crate::memory;
 use crate::models::structured::{self, Captured, StructuredError, Validate};
 use crate::models::{Endpoint, ModelClient, ModelError};
 use crate::pause::Pause;
@@ -87,8 +88,15 @@ impl Validate for EpisodeSummary {
 pub fn start(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut setbacks = Setbacks::default();
+        let mut memory_setbacks = memory::Setbacks::default();
         loop {
-            let wait = match round(&app, &mut setbacks).await {
+            // The memory reads the journal's episodes, right after it, so the
+            // two never ask the model for two things at once (ADR 0008).
+            let mut result = round(&app, &mut setbacks).await;
+            if result.is_ok() {
+                result = memory::round(&app, &mut memory_setbacks).await;
+            }
+            let wait = match result {
                 Ok(()) => ROUND,
                 Err(()) => AFTER_FAILURE,
             };
@@ -167,15 +175,7 @@ async fn round(app: &AppHandle, setbacks: &mut Setbacks) -> Result<(), ()> {
                 // a while. Anything else (a malformed or invalid answer, or
                 // running out of room) may be, so the block is counted and
                 // the journal goes on.
-                let unavailable = matches!(
-                    error,
-                    StructuredError::Model(
-                        ModelError::Unreachable
-                            | ModelError::Timeout
-                            | ModelError::Status(_)
-                            | ModelError::RemoteNotAllowed
-                    )
-                );
+                let unavailable = error.model_unavailable();
                 logging::warn(
                     "journal.failed",
                     &[

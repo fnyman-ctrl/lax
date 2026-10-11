@@ -11,6 +11,7 @@ mod forget;
 mod journal;
 #[allow(dead_code)] // Some levels and fields have no user yet.
 mod logging;
+mod memory;
 mod model_settings;
 #[allow(dead_code)] // Embeddings and more are used by the journal (Stage 3).
 mod models;
@@ -64,6 +65,10 @@ pub fn run() {
             journal::journal_status,
             journal::set_journal_enabled,
             journal::journal_episodes,
+            memory::memory_status,
+            memory::set_memory_enabled,
+            memory::memory_entities,
+            memory::forget_entity,
         ])
         .setup(|app| {
             // Lax lives in the menu bar, without a Dock icon.
@@ -98,7 +103,8 @@ pub fn run() {
                     let exclusions = store.exclusions();
                     app.manage(Mutex::new(store));
                     expiry::start(app.handle().clone());
-                    // Does nothing until the user turns the journal on.
+                    // Does nothing until the user turns the journal on. The
+                    // memory runs in the same loop, after it.
                     journal::start(app.handle().clone());
                     match exclusions {
                         Ok(exclusions) => {

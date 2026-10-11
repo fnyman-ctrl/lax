@@ -57,6 +57,24 @@ pub enum StructuredError {
     Invalid(&'static str),
 }
 
+impl StructuredError {
+    /// The server is unreachable, slow or erroring: not the fault of what
+    /// was asked, so it is worth waiting a while before asking again.
+    /// Anything else (a malformed or invalid answer, or running out of room)
+    /// may be the input's fault.
+    pub fn model_unavailable(&self) -> bool {
+        matches!(
+            self,
+            StructuredError::Model(
+                ModelError::Unreachable
+                    | ModelError::Timeout
+                    | ModelError::Status(_)
+                    | ModelError::RemoteNotAllowed
+            )
+        )
+    }
+}
+
 impl std::fmt::Display for StructuredError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -148,7 +166,8 @@ impl Entities {
     pub const SHAPE: &'static str =
         r#"{"people": [string], "organisations": [string], "projects": [string]}"#;
     pub const TASK: &'static str = "List the people, organisations and projects named in the \
-captured text. Use names as written. Leave a list empty if there are none.";
+captured text. Use names as written. Apps and websites the user worked in (such as Mail, Slack \
+or Safari) are not organisations. Leave a list empty if there are none.";
 }
 
 /// Most names per list, and the longest name, in characters.

@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Exclusions } from "./Exclusions";
 import { Forget } from "./Forget";
 import { Journal } from "./Journal";
+import { Memory } from "./Memory";
 import { Models } from "./Models";
 import { Outbox } from "./Outbox";
 import { usePaged } from "./usePaged";
@@ -58,9 +59,9 @@ const MATCH_END = "\u0003";
  * only ever rendered as text, never as HTML.
  */
 export function Viewer() {
-  const [tab, setTab] = useState<"journal" | "captures" | "exclusions" | "models" | "outbox">(
-    "journal",
-  );
+  const [tab, setTab] = useState<
+    "journal" | "memory" | "captures" | "exclusions" | "models" | "outbox"
+  >("journal");
   const [query, setQuery] = useState("");
   // Bumped after a deletion, so the lists start over from the database.
   const [version, setVersion] = useState(0);
@@ -83,6 +84,13 @@ export function Viewer() {
           onClick={() => setTab("journal")}
         >
           Journal
+        </button>
+        <button
+          type="button"
+          aria-current={tab === "memory" ? "page" : undefined}
+          onClick={() => setTab("memory")}
+        >
+          Memory
         </button>
         <button
           type="button"
@@ -115,6 +123,8 @@ export function Viewer() {
       </nav>
       {tab === "journal" ? (
         <Journal onShowModels={() => setTab("models")} />
+      ) : tab === "memory" ? (
+        <Memory onShowModels={() => setTab("models")} />
       ) : tab === "outbox" ? (
         <Outbox />
       ) : tab === "models" ? (

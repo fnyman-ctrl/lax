@@ -683,13 +683,15 @@ mark {
   list-style: none;
 }
 
-/* Journal (src/Journal.tsx) */
+/* Journal (src/Journal.tsx) and Memory (src/Memory.tsx) */
 
-.journal-status {
+.journal-status,
+.memory-status {
   margin-top: 1.25rem;
 }
 
-.journal-status p {
+.journal-status p,
+.memory-status p {
   margin: 0.25rem 0;
 }
 
@@ -718,4 +720,43 @@ mark {
   margin: 0.2rem 0 0;
   font-size: 1.02rem;
   line-height: 1.55;
+}
+
+.entities {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.entity {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.6rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.entity p {
+  margin: 0;
+}
+
+.entity .confirm {
+  flex-basis: 100%;
+  margin-top: 0.25rem;
+}
+
+.entity .confirm p {
+  margin: 0.25rem 0;
+}
+
+.entity .name {
+  font-size: 1.02rem;
+  overflow-wrap: anywhere;
+}
+
+.entity .aliases,
+.entity .seen {
+  font-size: 0.85em;
 }

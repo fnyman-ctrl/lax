@@ -20,6 +20,9 @@ use crate::exclusions::Exclusions;
 use crate::pause::CaptureState;
 use crate::redact::redact;
 
+mod memory;
+pub use memory::{EntityKind, UnrecognizedEpisode, name_key};
+
 pub const DATABASE_FILE: &str = "lax.sqlite";
 
 /// Schema changes, applied in order. The database's `user_version` is the
@@ -30,6 +33,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0003_exclusions.sql"),
     include_str!("../migrations/0004_outbox.sql"),
     include_str!("../migrations/0005_journal.sql"),
+    include_str!("../migrations/0006_memory.sql"),
 ];
 
 /// How long raw captures are kept unless the user chooses otherwise
@@ -846,8 +850,10 @@ impl Store {
     /// makes sure the deleted text is gone from the database files. Returns
     /// how many captures were deleted.
     ///
-    /// When episodes and memory pages arrive, what is derived from the
-    /// deleted captures must be deleted here too (GUARDRAILS §4).
+    /// What is derived from the deleted captures is deleted here too
+    /// (GUARDRAILS §4): the outbox entries and episodes made from them, and
+    /// with the episodes, the memory's mentions of entities and the entities
+    /// that only they mentioned (a trigger in `0006_memory.sql`).
     pub fn forget(&self, what: &Forget) -> Result<usize> {
         let deleted = self.delete(what)?;
         // What was sent off the machine about the forgotten captures goes
