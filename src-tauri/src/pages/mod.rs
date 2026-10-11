@@ -101,15 +101,30 @@ fn synced(path: &Path) -> Option<&'static str> {
     None
 }
 
-/// Every page in the folder, by the id in its marker. Hidden folders,
-/// symbolic links and big files are skipped.
-pub fn scan(dir: &Path) -> HashMap<String, PathBuf> {
+/// What a scan last read of each file: its modification time, size and
+/// page id, so unchanged files aren't read again every round.
+pub type ScanCache = HashMap<PathBuf, (std::time::SystemTime, u64, Option<String>)>;
+
+/// Every page in the folder, by the id in its marker, with every file that
+/// carries it (a page the user copied has two). Hidden folders, symbolic
+/// links and big files are skipped; files unchanged since the last scan
+/// aren't read again.
+pub fn scan(dir: &Path, cache: &mut ScanCache) -> HashMap<String, Vec<PathBuf>> {
     let mut found = HashMap::new();
-    scan_into(dir, dir, 0, &mut found);
+    let mut seen = ScanCache::new();
+    scan_into(dir, dir, 0, cache, &mut seen, &mut found);
+    *cache = seen;
     found
 }
 
-fn scan_into(root: &Path, dir: &Path, depth: usize, found: &mut HashMap<String, PathBuf>) {
+fn scan_into(
+    root: &Path,
+    dir: &Path,
+    depth: usize,
+    cache: &ScanCache,
+    seen: &mut ScanCache,
+    found: &mut HashMap<String, Vec<PathBuf>>,
+) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
@@ -118,21 +133,34 @@ fn scan_into(root: &Path, dir: &Path, depth: usize, found: &mut HashMap<String, 
         if name.to_string_lossy().starts_with('.') {
             continue;
         }
-        let Ok(meta) = fs::symlink_metadata(entry.path()) else {
+        let path = entry.path();
+        let Ok(meta) = fs::symlink_metadata(&path) else {
             continue;
         };
         if meta.is_dir() {
             if depth < MAX_DEPTH {
-                scan_into(root, &entry.path(), depth + 1, found);
+                scan_into(root, &path, depth + 1, cache, seen, found);
             }
-        } else if meta.is_file()
-            && meta.len() <= MAX_PAGE_BYTES
-            && entry.path().extension().is_some_and(|e| e == "md")
-            && let Ok(text) = fs::read_to_string(entry.path())
-            && let Some(id) = block::page_id(&text)
-            && let Ok(relative) = entry.path().strip_prefix(root)
+            continue;
+        }
+        if !meta.is_file()
+            || meta.len() > MAX_PAGE_BYTES
+            || path.extension().is_none_or(|e| e != "md")
         {
-            found.insert(id.to_string(), relative.to_path_buf());
+            continue;
+        }
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        let id = match cache.get(&path) {
+            Some((at, len, id)) if *at == modified && *len == meta.len() => id.clone(),
+            _ => fs::read_to_string(&path)
+                .ok()
+                .and_then(|text| block::page_id(&text).map(String::from)),
+        };
+        seen.insert(path.clone(), (modified, meta.len(), id.clone()));
+        if let (Some(id), Ok(relative)) = (id, path.strip_prefix(root)) {
+            found.entry(id).or_default().push(relative.to_path_buf());
         }
     }
 }
@@ -177,6 +205,27 @@ fn inside(root: &Path, relative: &str) -> Option<PathBuf> {
         .components()
         .all(|c| matches!(c, Component::Normal(_)))
         .then(|| root.join(relative))
+}
+
+/// Writes a page only if its folder is really inside the memory folder and
+/// not synced: a subfolder the user replaced with a symbolic link to iCloud
+/// Drive is refused like the memory folder itself.
+fn write_inside(
+    root: &Path,
+    path: &Path,
+    expected: Option<&str>,
+    text: &str,
+) -> std::io::Result<bool> {
+    let parent = path.parent().ok_or(std::io::ErrorKind::InvalidInput)?;
+    DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(parent)?;
+    let (root, parent) = (root.canonicalize()?, parent.canonicalize()?);
+    if !parent.starts_with(&root) || synced(&parent).is_some() {
+        return Ok(false);
+    }
+    write(path, expected, text)
 }
 
 fn kind_folder(kind: EntityKind) -> &'static str {
@@ -261,6 +310,7 @@ pub struct Synced {
 pub fn sync<Tz: TimeZone>(
     store: &mut Store,
     dir: &Path,
+    cache: &mut ScanCache,
     now: DateTime<Utc>,
     tz: &Tz,
 ) -> crate::store::Result<Synced>
@@ -268,36 +318,54 @@ where
     Tz::Offset: std::fmt::Display,
 {
     let mut done = Synced::default();
-    let on_disk = scan(dir);
+    let on_disk = scan(dir, cache);
     let entities = store.entities()?;
     // Off, the memory writes nothing new; forgotten entities still leave.
     let enabled = store.memory_enabled()?;
 
     for page in store.pages()? {
-        let found = on_disk.get(&page.id).cloned();
+        // The file where the page was last seen, if it still carries the id;
+        // otherwise the first other file that does.
+        let found = on_disk.get(&page.id).and_then(|paths| {
+            paths
+                .iter()
+                .find(|p| p.to_string_lossy() == page.path)
+                .or_else(|| paths.first())
+                .cloned()
+        });
         let entity = page
             .entity_id
             .and_then(|id| entities.iter().find(|e| e.id == id));
 
         // Forgotten: take Lax's block out, and the file if nothing of the
         // user's is left in it.
+        // The page is forgotten only once Lax's block is out of the file
+        // (or there is no file); otherwise it is tried again next round, so
+        // forgotten text can't stay behind in a file Lax no longer knows.
         let Some(entity) = entity else {
-            if let Some(relative) = &found {
-                let path = dir.join(relative);
-                if let Ok(text) = fs::read_to_string(&path)
-                    && let Some(rest) = block::without_block(&text, &page.id)
-                {
-                    if block::only_a_title(&rest) {
-                        if fs::read_to_string(&path).ok().as_deref() == Some(text.as_str()) {
-                            let _ = fs::remove_file(&path);
-                        }
-                    } else {
-                        let _ = write(&path, Some(&text), &rest);
+            let cleared = match &found {
+                None => true,
+                Some(relative) => {
+                    let path = dir.join(relative);
+                    match fs::read_to_string(&path) {
+                        Err(_) => false,
+                        Ok(text) => match block::without_block(&text, &page.id) {
+                            None => true,
+                            Some(rest) if block::only_a_title(&rest) => {
+                                fs::read_to_string(&path).ok().as_deref() == Some(text.as_str())
+                                    && fs::remove_file(&path).is_ok()
+                            }
+                            Some(rest) => {
+                                write_inside(dir, &path, Some(&text), &rest).unwrap_or(false)
+                            }
+                        },
                     }
                 }
+            };
+            if cleared {
+                store.delete_page(&page.id)?;
+                done.removed += 1;
             }
-            store.delete_page(&page.id)?;
-            done.removed += 1;
             continue;
         };
 
@@ -322,7 +390,8 @@ where
                 let Some(full) = inside(dir, &path) else {
                     continue;
                 };
-                if write(
+                if write_inside(
+                    dir,
                     &full,
                     None,
                     &block::new_page(&entity.name, &page.id, &content),
@@ -340,8 +409,18 @@ where
                 }
             }
             (_, None) => {
-                if page.state != PageState::Missing {
-                    store.set_page_state(&page.id, PageState::Missing, None)?;
+                // Still there, but without Lax's markers: the user made it
+                // theirs. Gone: missing.
+                let detached = inside(dir, &page.path)
+                    .and_then(|path| fs::read_to_string(path).ok())
+                    .is_some_and(|text| block::page_id(&text) != Some(page.id.as_str()));
+                let state = if detached {
+                    PageState::Detached
+                } else {
+                    PageState::Missing
+                };
+                if page.state != state {
+                    store.set_page_state(&page.id, state, None)?;
                     done.missing += 1;
                 }
             }
@@ -358,7 +437,7 @@ where
                         }
                     }
                     block::Update::Write { text: new, adopted } => {
-                        if write(&path, Some(&text), &new).unwrap_or(false) {
+                        if write_inside(dir, &path, Some(&text), &new).unwrap_or(false) {
                             if let Some(edit) = &adopted {
                                 store.page_edited_by_user(&page.id, edit, now)?;
                                 done.adopted += 1;
@@ -409,7 +488,14 @@ where
         let Some(full) = inside(dir, &path) else {
             continue;
         };
-        if write(&full, None, &block::new_page(&entity.name, &id, &content)).unwrap_or(false) {
+        if write_inside(
+            dir,
+            &full,
+            None,
+            &block::new_page(&entity.name, &id, &content),
+        )
+        .unwrap_or(false)
+        {
             store.add_page(&id, entity.id, &path, now)?;
             let sources: Vec<i64> = latest.iter().map(|e| e.id).collect();
             store.page_written(&id, &path, &block::normalize(&content), &sources, now)?;
@@ -467,7 +553,12 @@ pub fn sync_now(app: &AppHandle) {
         );
         return;
     }
-    if sync(&mut store, &dir, Utc::now(), &Local).is_err() {
+    static CACHE: std::sync::OnceLock<Mutex<ScanCache>> = std::sync::OnceLock::new();
+    let mut cache = CACHE
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
+    if sync(&mut store, &dir, &mut cache, Utc::now(), &Local).is_err() {
         logging::warn("pages.failed", &[Field::Error(ErrorKind::Database)]);
     }
 }

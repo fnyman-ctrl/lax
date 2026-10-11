@@ -107,13 +107,16 @@ pub fn new_page(title: &str, id: &str, content: &str) -> String {
     format!("# {title}\n\n{}\n", block(id, content))
 }
 
+use std::collections::HashSet;
+
 /// What to do with a page.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Update {
     /// The block already says this.
     Same,
-    /// Write `text`. If the user had edited Lax's block, `adopted` is their
-    /// edited block (normalized): it is now their text, outside the markers.
+    /// Write `text`. If the user had added or changed lines in Lax's block,
+    /// `adopted` is those lines: they are now the user's text, above the
+    /// markers.
     Write {
         text: String,
         adopted: Option<String>,
@@ -124,9 +127,9 @@ pub enum Update {
 }
 
 /// Puts `content` in the page's block. `last_written` is the block as Lax
-/// last wrote it (normalized), if known: if the block now differs, the user
-/// edited it, and their edit is moved out of the markers and kept, with a
-/// new block after it.
+/// last wrote it (normalized), if known: lines in the block now that aren't
+/// in it are the user's, and are moved out of the markers, above the new
+/// block.
 pub fn update(text: &str, id: &str, last_written: Option<&str>, content: &str) -> Update {
     let Some(old) = split(text) else {
         return Update::NotOurs;
@@ -135,16 +138,25 @@ pub fn update(text: &str, id: &str, last_written: Option<&str>, content: &str) -
         return Update::NotOurs;
     }
     let current = normalize(old.block);
-    let edited = last_written.is_some_and(|last| normalize(last) != current);
-    let (new, user_text, adopted) = if edited {
-        let user_text = format!("{}{}{}", old.before, old.block, old.after);
-        let gap = if user_text.ends_with('\n') {
-            "\n"
-        } else {
-            "\n\n"
-        };
-        let new = format!("{user_text}{gap}{}\n", block(id, content));
-        (new, user_text, Some(current))
+    // The user's lines: those in the block now that Lax didn't write. Lines
+    // they deleted are simply gone; Lax's own lines stay Lax's, so what it
+    // wrote from episodes can still be forgotten with them.
+    let added: Vec<&str> = match last_written {
+        Some(last) => {
+            let last = normalize(last);
+            let ours: HashSet<&str> = last.lines().collect();
+            current
+                .lines()
+                .filter(|line| !line.trim().is_empty() && !ours.contains(line))
+                .collect()
+        }
+        None => Vec::new(),
+    };
+    let (new, user_text, adopted) = if !added.is_empty() {
+        let mine = format!("{}\n", added.join("\n"));
+        let new = format!("{}{mine}\n{}{}", old.before, block(id, content), old.after);
+        let user_text = format!("{}{mine}\n{}", old.before, old.after);
+        (new, user_text, Some(added.join("\n")))
     } else {
         if current == normalize(content) {
             return Update::Same;
@@ -283,17 +295,29 @@ mod tests {
             Some("- Works at Exempelbolaget AB.\n- Likes tea."),
             "- Works at Exempelbolaget AB.",
         ));
-        assert_eq!(
-            adopted.as_deref(),
-            Some("- Works at Exempelbolaget AB.\n- Likes coffee, not tea.")
-        );
-        // Their edit is outside the markers now, word for word…
+        assert_eq!(adopted.as_deref(), Some("- Likes coffee, not tea."));
+        // Their line is outside the markers now, word for word; Lax's
+        // unchanged line isn't…
         let (user, block_start) = new.split_at(new.find("<!-- lax:begin").unwrap());
         assert!(user.contains("- Likes coffee, not tea.\n"));
+        assert!(!user.contains("Exempelbolaget"));
         assert!(!user.contains("lax:"));
         // …and Lax's new block follows it.
         assert!(block_start.contains("- Works at Exempelbolaget AB.\n<!-- lax:end -->"));
         assert_eq!(page_id(&new), Some(ID));
+    }
+
+    #[test]
+    fn deleting_lines_from_laxs_block_is_not_an_addition() {
+        let text = page("- One.\n- Two.").replace("- Two.\n", "");
+        let (new, adopted) = written(update(
+            &text,
+            ID,
+            Some("- One.\n- Two."),
+            "- One.\n- Three.",
+        ));
+        assert_eq!(adopted, None);
+        assert!(new.starts_with("# Anna Example\n\n<!-- lax:begin"));
     }
 
     #[test]

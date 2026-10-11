@@ -98,7 +98,14 @@ fn sample() -> Store {
 }
 
 fn sync_now(store: &mut Store, folder: &Folder) -> Synced {
-    sync(store, &folder.0, at(11, 13), &stockholm()).unwrap()
+    sync(
+        store,
+        &folder.0,
+        &mut ScanCache::new(),
+        at(11, 13),
+        &stockholm(),
+    )
+    .unwrap()
 }
 
 const ANNA: &str = "people/anna-example.md";
@@ -172,6 +179,31 @@ fn an_edit_to_laxs_block_becomes_the_users() {
 }
 
 #[test]
+fn a_line_the_user_adds_stays_and_forgotten_entries_still_leave() {
+    let folder = Folder::new();
+    let mut store = sample();
+    sync_now(&mut store, &folder);
+    let text = folder.read(ANNA);
+    let with_mine = text.replace(
+        "<!-- lax:end -->",
+        "- Ring henne på fredagar.\n<!-- lax:end -->",
+    );
+    folder.put(ANNA, &with_mine);
+    assert_eq!(sync_now(&mut store, &folder).adopted, 1);
+
+    store
+        .forget(&Forget::App("com.example.mail".to_string()))
+        .unwrap();
+    sync_now(&mut store, &folder);
+    let text = folder.read(ANNA);
+    assert!(text.contains("- Ring henne på fredagar.\n"));
+    assert!(!text.contains("Q3-offerten"));
+    let user = &text[..text.find("<!-- lax:begin").unwrap()];
+    assert!(user.contains("Ring henne"));
+    assert!(!user.contains("Planerade"));
+}
+
+#[test]
 fn a_renamed_page_is_followed() {
     let folder = Folder::new();
     let mut store = sample();
@@ -224,7 +256,8 @@ fn a_page_without_markers_is_left_alone() {
     folder.put(ANNA, &mine);
     sync_now(&mut store, &folder);
     assert_eq!(folder.read(ANNA), mine);
-    assert_eq!(store.pages().unwrap()[0].state, PageState::Missing);
+    // The file is still where the page was: detached, not missing.
+    assert_eq!(store.pages().unwrap()[0].state, PageState::Detached);
 }
 
 #[test]
@@ -383,6 +416,97 @@ fn with_the_memory_off_nothing_is_written_but_forgetting_still_works() {
 }
 
 #[test]
+fn a_forgotten_page_is_retried_until_laxs_part_is_out() {
+    let folder = Folder::new();
+    let mut store = sample();
+    sync_now(&mut store, &folder);
+    folder.put(ANNA, &(folder.read(ANNA) + "\nMine.\n"));
+    let anna = store.pages().unwrap()[0].entity_id.unwrap();
+    store.forget_entity(anna, false, at(11, 14)).unwrap();
+    // The folder can't be written: the page stays known…
+    let mode = |m| fs::set_permissions(folder.0.join("people"), Permissions::from_mode(m)).unwrap();
+    mode(0o500);
+    sync_now(&mut store, &folder);
+    assert_eq!(store.pages().unwrap().len(), 1);
+    assert!(folder.read(ANNA).contains("lax:begin"));
+    // …until it can.
+    mode(0o700);
+    sync_now(&mut store, &folder);
+    assert!(store.pages().unwrap().is_empty());
+    assert_eq!(folder.read(ANNA), "# Anna Example\n\nMine.\n");
+}
+
+#[test]
+fn a_symlinked_subfolder_is_not_written_to() {
+    let folder = Folder::new();
+    let elsewhere = Folder::new();
+    std::os::unix::fs::symlink(&elsewhere.0, folder.0.join("people")).unwrap();
+    let mut store = sample();
+    assert_eq!(sync_now(&mut store, &folder).created, 0);
+    assert_eq!(fs::read_dir(&elsewhere.0).unwrap().count(), 0);
+}
+
+#[test]
+fn a_copied_page_doesnt_take_over() {
+    let folder = Folder::new();
+    let mut store = sample();
+    sync_now(&mut store, &folder);
+    // Copies sort before and after the original.
+    folder.put("people/a-copy.md", &folder.read(ANNA));
+    folder.put("people/z-copy.md", &folder.read(ANNA));
+    let later = episode(&mut store, at(11, 9), "Mail", "Ringde Anna.");
+    mention(&mut store, later, "Anna Example");
+    sync_now(&mut store, &folder);
+    assert!(folder.read(ANNA).contains("Ringde Anna."));
+    assert!(!folder.read("people/a-copy.md").contains("Ringde Anna."));
+    assert_eq!(store.pages().unwrap()[0].path, ANNA);
+}
+
+#[test]
+fn only_the_latest_versions_of_laxs_are_kept() {
+    let folder = Folder::new();
+    let mut store = sample();
+    sync_now(&mut store, &folder);
+    for minute in 0..25 {
+        let when = at(11, 8) + TimeDelta::minutes(minute);
+        let id = episode(
+            &mut store,
+            when,
+            "Mail",
+            &format!("Möte {minute} med Anna."),
+        );
+        mention(&mut store, id, "Anna Example");
+        sync_now(&mut store, &folder);
+    }
+    let id = store.pages().unwrap()[0].id.clone();
+    assert_eq!(
+        store.page_versions(&id).unwrap(),
+        (crate::store::LAX_VERSIONS_KEPT as usize, 0)
+    );
+    // The latest is still the one edits are compared with.
+    assert!(
+        store.pages().unwrap()[0]
+            .last_block
+            .as_deref()
+            .unwrap()
+            .contains("Möte 24")
+    );
+}
+
+#[test]
+fn unchanged_files_are_not_read_again() {
+    let folder = Folder::new();
+    let mut store = sample();
+    sync_now(&mut store, &folder);
+    let mut cache = ScanCache::new();
+    assert_eq!(scan(&folder.0, &mut cache).len(), 1);
+    // Make the file unreadable: a cached scan still knows it.
+    fs::set_permissions(folder.0.join(ANNA), Permissions::from_mode(0o000)).unwrap();
+    assert_eq!(scan(&folder.0, &mut cache).len(), 1);
+    fs::set_permissions(folder.0.join(ANNA), Permissions::from_mode(0o600)).unwrap();
+}
+
+#[test]
 fn name_clashes_get_a_number() {
     let folder = Folder::new();
     fs::create_dir_all(folder.0.join("people")).unwrap();
@@ -391,5 +515,4 @@ fn name_clashes_get_a_number() {
         free_path(&folder.0, EntityKind::Person, "Anna Example"),
         "people/anna-example-2.md"
     );
-    let _ = TimeDelta::zero();
 }

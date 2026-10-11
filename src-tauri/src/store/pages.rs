@@ -63,6 +63,9 @@ fn page_from_row(row: &Row) -> rusqlite::Result<Page> {
 const PAGE_COLUMNS: &str = "p.id, p.entity_id, p.path, p.state,
     (SELECT block FROM page_versions WHERE id = p.last_version)";
 
+/// How many of Lax's versions of a page are kept.
+pub const LAX_VERSIONS_KEPT: i64 = 20;
+
 impl Store {
     pub fn pages(&self) -> Result<Vec<Page>> {
         let mut statement = self.conn.prepare(&format!(
@@ -130,6 +133,15 @@ impl Store {
         tx.execute(
             "UPDATE pages SET path = ?2, state = 'ok', last_version = ?3 WHERE id = ?1",
             params![id, path, version],
+        )?;
+        // Lax's versions change with every new mention; the latest few are
+        // enough to see and undo what it wrote. The user's are all kept.
+        tx.execute(
+            "DELETE FROM page_versions
+             WHERE page_id = ?1 AND by = 'lax' AND id NOT IN (
+                 SELECT id FROM page_versions WHERE page_id = ?1 AND by = 'lax'
+                 ORDER BY id DESC LIMIT ?2)",
+            params![id, LAX_VERSIONS_KEPT],
         )?;
         tx.commit()?;
         Ok(())
