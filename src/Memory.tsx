@@ -2,7 +2,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 // Shapes returned by src-tauri/src/memory.rs.
-type MemoryStatus = { enabled: boolean; model: string | null; waiting: number; journal: boolean };
+type MemoryStatus = {
+  enabled: boolean;
+  model: string | null;
+  waiting: number;
+  journal: boolean;
+  folder: string | null;
+  folderProblem: string | null;
+};
+type PageItem = { path: string; state: "ok" | "missing" | "detached" | "recreate" };
 type Kind = "person" | "organisation" | "project";
 type EntityItem = {
   id: number;
@@ -14,6 +22,7 @@ type EntityItem = {
   lastSeen: number;
   /** Seen on fewer than two days and not kept: Lax only notes it so far. */
   isNew: boolean;
+  page: PageItem | null;
 };
 type DontLearnItem = { kind: Kind; name: string };
 
@@ -142,6 +151,27 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
             {!status.journal && (
               <p className="muted">The journal is off, so no new entries arrive.</p>
             )}
+            {status.folderProblem ? (
+              <p className="error">{status.folderProblem}</p>
+            ) : (
+              status.folder && (
+                <p className="buttons">
+                  <span className="muted">
+                    Lax keeps a page for each name it's sure of in {status.folder}. Write in them
+                    freely: Lax only changes its own part.
+                  </span>
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() =>
+                      invoke("open_memory_folder").catch((e) => setMessage(String(e)))
+                    }
+                  >
+                    Open in Finder
+                  </button>
+                </p>
+              )
+            )}
             <p className="buttons">
               <button type="button" className="secondary" onClick={() => toggle(false)}>
                 Turn the memory off
@@ -201,8 +231,9 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
           <div className="confirm" role="alertdialog" aria-label="Confirm">
             <p>
               {status.enabled ? "Turn the memory off and forget" : "Forget"} every name it
-              noted? The journal entries stay, and so does the list of names not to learn. If
-              you turn it on again, it starts with new entries.
+              noted? Lax's part of the pages goes too; anything you wrote on them stays. The
+              journal entries stay, and so does the list of names not to learn. If you turn it
+              on again, it starts with new entries.
             </p>
             <p className="buttons">
               <button
@@ -410,6 +441,30 @@ function EntityRow({
           <p className="muted aliases">Also: {entity.aliases.join(", ")}</p>
         )}
         <p className="muted seen">{seen(entity)}</p>
+        {entity.page?.state === "ok" && <p className="muted seen">Page: {entity.page.path}</p>}
+        {(entity.page?.state === "missing" || entity.page?.state === "detached") && (
+          <p className="buttons page-problem">
+            <span>
+              {entity.page.state === "missing"
+                ? "Lax can't find its page in the memory folder. It won't write it again unless you ask."
+                : `Lax's part was removed from ${entity.page.path}, so Lax leaves that file alone.`}
+            </span>
+            <button
+              type="button"
+              className="secondary"
+              disabled={busy}
+              onClick={() =>
+                run(
+                  invoke("recreate_page", { id: entity.id }).then(
+                    () => `Wrote a page for ${entity.name} again.`,
+                  ),
+                )
+              }
+            >
+              {entity.page.state === "missing" ? "Recreate page" : "Write a new page"}
+            </button>
+          </p>
+        )}
       </div>
       <p className="buttons">
         {entity.isNew && (
@@ -504,6 +559,7 @@ function EntityRow({
               <p>
                 Forget {entity.name}? Lax removes the name and where it was mentioned. The
                 journal entries stay.{" "}
+                {entity.page && "Lax's part of its page goes too; anything you wrote there stays. "}
                 {dontLearn
                   ? "Lax won't learn about it again until you allow it."
                   : "If a new entry names it again, Lax starts over."}

@@ -21,8 +21,11 @@ use tauri::{AppHandle, Manager};
 use crate::logging::{self, ErrorKind, Field};
 use crate::models::structured::{self, Captured, Entities, StructuredError};
 use crate::models::{Endpoint, ModelClient, ModelTurn};
+use crate::pages;
 use crate::pause::Pause;
-use crate::store::{EntityKind, Merged, ModelTask, Renamed, Store, UnrecognizedEpisode, name_key};
+use crate::store::{
+    EntityKind, Merged, ModelTask, Page, PageState, Renamed, Store, UnrecognizedEpisode, name_key,
+};
 
 /// At most this many episodes are read per round, so the journal gets its
 /// turn again soon.
@@ -230,6 +233,10 @@ pub struct MemoryStatus {
     pub waiting: usize,
     /// Whether the journal is on; without it no new episodes arrive.
     pub journal: bool,
+    /// The memory folder, with `~` for the home folder.
+    pub folder: Option<String>,
+    /// Why pages can't be written there, if they can't.
+    pub folder_problem: Option<String>,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -244,6 +251,16 @@ pub struct EntityItem {
     pub last_seen: i64,
     /// Still new: seen on fewer than two days, and not kept by the user.
     pub is_new: bool,
+    pub page: Option<PageItem>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PageItem {
+    /// Relative to the memory folder.
+    pub path: String,
+    /// "ok", "missing", "detached" or "recreate".
+    pub state: &'static str,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -259,14 +276,34 @@ fn status(store: &Store) -> crate::store::Result<MemoryStatus> {
         model: store.model_choice(ModelTask::Chat)?.map(|c| c.model),
         waiting: store.unrecognized_count()?,
         journal: store.journal_enabled()?,
+        folder: None,
+        folder_problem: None,
     })
 }
 
 #[tauri::command(async)]
 pub fn memory_status(app: AppHandle) -> Result<MemoryStatus, String> {
-    command(&app, |store| {
+    let mut status = command(&app, |store| {
         status(store).map_err(|_| "Lax couldn't read the memory.".to_string())
-    })
+    })?;
+    with_folder(&app, &mut status);
+    Ok(status)
+}
+
+/// Adds where the pages are, and, with the memory on, whether they can be
+/// written there.
+fn with_folder(app: &AppHandle, status: &mut MemoryStatus) {
+    let folder = pages::folder_of(app);
+    let home = app.path().home_dir().ok();
+    status.folder = folder.map(
+        |f| match home.as_ref().and_then(|h| f.strip_prefix(h).ok()) {
+            Some(relative) => format!("~/{}", relative.display()),
+            None => f.display().to_string(),
+        },
+    );
+    if status.enabled {
+        status.folder_problem = pages::folder_problem(app);
+    }
 }
 
 /// Turns the memory on or off. It can only be turned on with a chat model
@@ -287,17 +324,37 @@ pub fn set_memory_enabled(app: AppHandle, enabled: bool) -> Result<MemoryStatus,
         store.set_memory_enabled(enabled).map_err(failed)?;
         status(store).map_err(failed)
     })
+    .map(|mut status| {
+        with_folder(&app, &mut status);
+        pages::sync_now(&app);
+        status
+    })
 }
 
 #[tauri::command(async)]
 pub fn memory_entities(app: AppHandle) -> Result<Vec<EntityItem>, String> {
     command(&app, |store| {
+        let pages: HashMap<i64, Page> = store
+            .pages()
+            .map_err(|_| "Lax couldn't read the memory.".to_string())?
+            .into_iter()
+            .filter_map(|p| Some((p.entity_id?, p)))
+            .collect();
         store
             .entities()
             .map(|entities| {
                 entities
                     .into_iter()
                     .map(|e| EntityItem {
+                        page: pages.get(&e.id).map(|p| PageItem {
+                            path: p.path.clone(),
+                            state: match p.state {
+                                PageState::Ok => "ok",
+                                PageState::Missing => "missing",
+                                PageState::Detached => "detached",
+                                PageState::Recreate => "recreate",
+                            },
+                        }),
                         is_new: e.is_new(),
                         id: e.id,
                         kind: e.kind.as_str(),
@@ -316,11 +373,13 @@ pub fn memory_entities(app: AppHandle) -> Result<Vec<EntityItem>, String> {
 /// Forgets everything the memory noted and turns it off.
 #[tauri::command(async)]
 pub fn forget_memory(app: AppHandle) -> Result<usize, String> {
-    command(&app, |store| {
+    let forgotten = command(&app, |store| {
         store
             .forget_memory()
             .map_err(|_| "Lax couldn't forget what the memory noted.".to_string())
-    })
+    })?;
+    pages::sync_now(&app);
+    Ok(forgotten)
 }
 
 /// Forgets one entity: its names and mentions. The episodes stay. With
@@ -328,21 +387,59 @@ pub fn forget_memory(app: AppHandle) -> Result<usize, String> {
 /// can't bring it back; without, a later episode that names it starts anew.
 #[tauri::command(async)]
 pub fn forget_entity(app: AppHandle, id: i64, dont_learn: bool) -> Result<bool, String> {
-    command(&app, |store| {
+    let existed = command(&app, |store| {
         store
             .forget_entity(id, dont_learn, Utc::now())
             .map_err(|_| "Lax couldn't forget it.".to_string())
-    })
+    })?;
+    pages::sync_now(&app);
+    Ok(existed)
 }
 
 /// Keeps a new entity, as if it had been seen on two days.
 #[tauri::command(async)]
 pub fn keep_entity(app: AppHandle, id: i64) -> Result<bool, String> {
-    command(&app, |store| {
+    let kept = command(&app, |store| {
         store
             .keep_entity(id)
             .map_err(|_| "Lax couldn't keep it.".to_string())
-    })
+    })?;
+    pages::sync_now(&app);
+    Ok(kept)
+}
+
+/// Writes a missing page again, or a new one for a page whose markers the
+/// user removed (that file is left as it is).
+#[tauri::command(async)]
+pub fn recreate_page(app: AppHandle, id: i64) -> Result<(), String> {
+    command(&app, |store| {
+        let failed = |_| "Lax couldn't recreate the page.".to_string();
+        let page = store
+            .page_of(id)
+            .map_err(failed)?
+            .ok_or("It has no page.")?;
+        store
+            .set_page_state(&page.id, PageState::Recreate, None)
+            .map_err(failed)
+    })?;
+    pages::sync_now(&app);
+    Ok(())
+}
+
+/// Opens the memory folder in Finder.
+#[tauri::command(async)]
+pub fn open_memory_folder(app: AppHandle) -> Result<(), String> {
+    let folder = pages::folder_of(&app).ok_or("Lax couldn't find the memory folder.")?;
+    if !folder.is_dir() {
+        return Err("There are no pages yet.".to_string());
+    }
+    std::process::Command::new("/usr/bin/open")
+        .arg(&folder)
+        .status()
+        .ok()
+        .filter(|s| s.success())
+        .map(|_| ())
+        .ok_or_else(|| "Lax couldn't open the folder.".to_string())
 }
 
 #[tauri::command(async)]
@@ -360,7 +457,9 @@ pub fn rename_entity(app: AppHandle, id: i64, name: String) -> Result<(), String
             )),
             Renamed::Empty => Err("Type a name.".to_string()),
         }
-    })
+    })?;
+    pages::sync_now(&app);
+    Ok(())
 }
 
 /// Merges `from` into `into`, which keeps its name.
@@ -377,7 +476,9 @@ pub fn merge_entities(app: AppHandle, from: i64, into: i64) -> Result<(), String
                 Err("Only two people, two organisations or two projects can be merged.".to_string())
             }
         }
-    })
+    })?;
+    pages::sync_now(&app);
+    Ok(())
 }
 
 #[tauri::command(async)]

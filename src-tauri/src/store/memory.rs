@@ -70,6 +70,7 @@ pub struct Entity {
     /// On how many different days (local time) it was mentioned.
     pub days: usize,
     pub last_seen: DateTime<Utc>,
+    pub first_seen: DateTime<Utc>,
     /// The user chose to keep it.
     pub kept: bool,
 }
@@ -223,7 +224,8 @@ impl Store {
                     count(*),
                     count(DISTINCT date(e.started_at / 1000, 'unixepoch', 'localtime')),
                     max(e.ended_at),
-                    n.kept
+                    n.kept,
+                    min(e.started_at)
              FROM entities AS n
              JOIN mentions AS m ON m.entity_id = n.id
              JOIN episodes AS e ON e.id = m.episode_id
@@ -251,6 +253,7 @@ impl Store {
                     days: usize::try_from(days).unwrap_or(0),
                     last_seen: DateTime::from_timestamp_millis(last).unwrap_or_default(),
                     kept: row.get::<_, i64>(7)? != 0,
+                    first_seen: DateTime::from_timestamp_millis(row.get(8)?).unwrap_or_default(),
                 },
             ))
         })?;

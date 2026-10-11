@@ -89,6 +89,8 @@ pub fn forget_captures(app: AppHandle, what: ForgetRequest) -> Result<usize, Str
     let forget = what.to_forget(Utc::now())?;
     let deleted = with_store(&app, |store| store.forget(&forget))?;
     logging::info("forget.done", &[Field::Count("deleted", deleted as u64)]);
+    // What the memory's pages drew from the forgotten episodes goes too.
+    crate::pages::sync_now(&app);
     Ok(deleted)
 }
 
@@ -98,6 +100,7 @@ pub fn forget_captures(app: AppHandle, what: ForgetRequest) -> Result<usize, Str
 #[tauri::command(async)]
 pub fn delete_all_data(app: AppHandle) -> Result<usize, String> {
     let deleted = with_store(&app, |store| store.forget(&Forget::Everything))?;
+    crate::pages::sync_now(&app);
     let data_dir = app
         .path()
         .app_data_dir()

@@ -826,3 +826,8 @@ mark {
   cursor: pointer;
   color: var(--muted);
 }
+
+.entity .page-problem {
+  font-size: 0.9em;
+  color: var(--warning-fg);
+}

@@ -17,6 +17,7 @@ mod model_settings;
 #[allow(dead_code)] // Embeddings and more are used by the journal (Stage 3).
 mod models;
 mod outbox;
+mod pages;
 mod pause;
 #[allow(dead_code)] // RemoteRedactor is used by remote providers (#16).
 mod redact;
@@ -73,6 +74,8 @@ pub fn run() {
             memory::memory_entities,
             memory::forget_entity,
             memory::forget_memory,
+            memory::recreate_page,
+            memory::open_memory_folder,
             memory::keep_entity,
             memory::rename_entity,
             memory::merge_entities,

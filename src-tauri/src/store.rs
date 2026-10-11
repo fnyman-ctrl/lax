@@ -22,7 +22,9 @@ use crate::redact::redact;
 
 mod ask;
 mod memory;
+mod pages;
 pub use memory::{EntityKind, Merged, Renamed, UnrecognizedEpisode, name_key};
+pub use pages::{Page, PageState};
 
 pub const DATABASE_FILE: &str = "lax.sqlite";
 
@@ -36,6 +38,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0005_journal.sql"),
     include_str!("../migrations/0006_memory.sql"),
     include_str!("../migrations/0007_memory_choices.sql"),
+    include_str!("../migrations/0008_pages.sql"),
 ];
 
 /// How long raw captures are kept unless the user chooses otherwise

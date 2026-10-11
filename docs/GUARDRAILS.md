@@ -147,7 +147,11 @@ written to manipulate an AI ("ignore previous instructions and…"). Therefore:
 
 ## 6. Storage
 
-- All data lives in one folder owned by the user, with permissions `0700`.
+- All data lives in two folders owned by the user, both with permissions `0700`:
+  the data folder (database and logs, in `~/Library/Application Support`) and the
+  memory folder (`~/Lax`, the memory's Markdown pages, files `0600`). Lax refuses
+  to write pages if the memory folder is inside iCloud Drive or another synced
+  folder, since that would copy the memory off the machine (§1).
 - Lax relies on FileVault for disk encryption and warns if FileVault is off.
   Database encryption (SQLCipher) is planned.
 - **Logs never contain captured content**, only metadata such as counts and timings.

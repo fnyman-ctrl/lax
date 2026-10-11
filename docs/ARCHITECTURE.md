@@ -58,8 +58,10 @@ previous one, so they can be built, tested and improved independently.
 
 ## 4. Learn
 
-- Each entity has a Markdown page in the memory folder, e.g.
-  `~/Lax/projects/q3-proposal.md`, `~/Lax/people/anna.md`, plus `~/Lax/about-me.md`.
+- Each entity Lax keeps (mentioned on two days, or kept by the user) has a
+  Markdown page in the memory folder, e.g. `~/Lax/projects/q3-proposal.md`,
+  `~/Lax/people/anna.md`, plus `~/Lax/about-me.md` (`src-tauri/src/pages`).
+  Lax writes only between its own markers, and versions every block in SQLite.
 - Pages are updated incrementally: the LLM gets the current page plus new episodes
   and proposes an updated page.
 - **User edits win.** If the user edits a page, the edit is treated as ground truth

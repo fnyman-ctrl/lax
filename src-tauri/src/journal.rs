@@ -96,6 +96,8 @@ pub fn start(app: AppHandle) {
             if result.is_ok() {
                 result = memory::round(&app, &mut memory_setbacks).await;
             }
+            // No model: brings the memory's pages up to date.
+            crate::pages::round(&app);
             let wait = match result {
                 Ok(()) => ROUND,
                 Err(()) => AFTER_FAILURE,
