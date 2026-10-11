@@ -53,6 +53,22 @@ them and don't repeat them. Never include a deleted fact. Never record health, r
 beliefs, political views, sexual orientation, ethnicity or union membership. At most 12 facts.";
 const SHAPE: &str = r#"{"facts": [string]}"#;
 
+const ABOUT_ME_TASK: &str = "You keep a short page about the user in their personal memory. \
+The captured blocks give, in order: the user's own notes on the page; the page's current facts; \
+facts the user deleted; and recent entries from the user's work journal. Write what is worth \
+remembering about the user themselves: their role and work, current projects and \
+responsibilities, who they work with most and on what, and how they work (tools, routines). \
+One short fact per item, in the language of the entries. Keep current facts that are still \
+true, add new ones, and drop what the entries contradict. The user's notes are always right: \
+never contradict them and don't repeat them. Never include a deleted fact. Never record \
+health, religion or beliefs, political views, sexual orientation, ethnicity or union \
+membership, and nothing private about other people. At most 12 facts.";
+
+/// How often `about-me.md`'s facts are rewritten, and from how many of the
+/// latest entries.
+const ABOUT_ME_EVERY: chrono::TimeDelta = chrono::TimeDelta::hours(24);
+const ABOUT_ME_ENTRIES: usize = 40;
+
 /// What the model must answer.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -118,6 +134,7 @@ pub struct Schedule {
 /// One page's work, gathered under the store lock.
 struct Work {
     page: String,
+    task: &'static str,
     base_url: String,
     model: String,
     texts: Vec<String>,
@@ -157,7 +174,7 @@ pub async fn round(app: &AppHandle, schedule: &mut Schedule) -> Result<(), ()> {
             Ok(reply) => {
                 let facts = kept(reply, &work.rejected, &work.notes);
                 let stored = with_store(app, |store| {
-                    store.set_facts(&work.page, &facts, &work.sources)
+                    store.set_facts(&work.page, &facts, &work.sources, chrono::Utc::now())
                 });
                 changed |= matches!(stored, Some(Ok(true)));
                 logging::info(
@@ -225,22 +242,9 @@ fn gather(store: &Store, dir: &std::path::Path) -> Vec<Work> {
             if entries.is_empty() {
                 continue;
             }
-            let notes = inside(dir, &page.path)
-                .and_then(|path| std::fs::read_to_string(path).ok())
-                .and_then(|text| block::without_block(&text, &page.id))
-                .map(|notes| notes.chars().take(MAX_NOTES_CHARS).collect::<String>())
-                .unwrap_or_default();
+            let notes = notes_of(dir, page);
             let rejected = store.rejected_facts(&page.id)?;
-            let note_lines: Vec<String> = notes
-                .lines()
-                .map(|l| {
-                    l.trim()
-                        .trim_start_matches(['-', '*', '•', '#'])
-                        .trim()
-                        .to_string()
-                })
-                .filter(|l| !l.is_empty())
-                .collect();
+            let note_lines = note_lines(&notes);
             let current = page.facts.clone().unwrap_or_default();
             let kind = match entity.kind {
                 EntityKind::Person => "person",
@@ -253,16 +257,10 @@ fn gather(store: &Store, dir: &std::path::Path) -> Vec<Work> {
                 format!("Current facts:\n{}", bullets(&current)),
                 format!("Deleted facts:\n{}", bullets(&rejected)),
             ];
-            texts.extend(entries.iter().map(|e| {
-                format!(
-                    "Journal entry, {} ({}): {}",
-                    e.started_at.format("%Y-%m-%d"),
-                    e.app_names.join(", "),
-                    e.summary
-                )
-            }));
+            texts.extend(entries.iter().map(entry_text));
             work.push(Work {
                 page: page.id.clone(),
+                task: TASK,
                 base_url: choice.base_url.clone(),
                 model: choice.model.clone(),
                 texts,
@@ -271,9 +269,72 @@ fn gather(store: &Store, dir: &std::path::Path) -> Vec<Work> {
                 sources: entries.iter().map(|e| e.id).collect(),
             });
         }
+        // about-me.md, once a day, from the latest entries.
+        if let Some(page) = store.about_me_page()?
+            && page.state == crate::store::PageState::Ok
+            && page
+                .facts_at
+                .is_none_or(|at| chrono::Utc::now() - at >= ABOUT_ME_EVERY)
+        {
+            let mut entries = store.episodes(None, ABOUT_ME_ENTRIES)?;
+            entries.reverse();
+            if !entries.is_empty() {
+                let notes = notes_of(dir, &page);
+                let rejected = store.rejected_facts(&page.id)?;
+                let current = page.facts.clone().unwrap_or_default();
+                let mut texts = vec![
+                    format!("The user's own notes:\n{notes}"),
+                    format!("Current facts:\n{}", bullets(&current)),
+                    format!("Deleted facts:\n{}", bullets(&rejected)),
+                ];
+                texts.extend(entries.iter().map(entry_text));
+                work.push(Work {
+                    page: page.id.clone(),
+                    task: ABOUT_ME_TASK,
+                    base_url: choice.base_url.clone(),
+                    model: choice.model.clone(),
+                    texts,
+                    rejected,
+                    notes: note_lines(&notes),
+                    sources: entries.iter().map(|e| e.id).collect(),
+                });
+            }
+        }
         Ok(work)
     };
     gathered().unwrap_or_default()
+}
+
+/// The user's notes on a page: everything outside Lax's block.
+fn notes_of(dir: &std::path::Path, page: &crate::store::Page) -> String {
+    inside(dir, &page.path)
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|text| block::without_block(&text, &page.id))
+        .map(|notes| notes.chars().take(MAX_NOTES_CHARS).collect::<String>())
+        .unwrap_or_default()
+}
+
+/// The notes a line each, list marks and headings taken off.
+fn note_lines(notes: &str) -> Vec<String> {
+    notes
+        .lines()
+        .map(|l| {
+            l.trim()
+                .trim_start_matches(['-', '*', '•', '#'])
+                .trim()
+                .to_string()
+        })
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+fn entry_text(e: &Episode) -> String {
+    format!(
+        "Journal entry, {} ({}): {}",
+        e.started_at.format("%Y-%m-%d"),
+        e.app_names.join(", "),
+        e.summary
+    )
 }
 
 fn bullets(lines: &[String]) -> String {
@@ -293,7 +354,15 @@ async fn ask(work: &Work) -> Result<Reply, StructuredError> {
         Endpoint::parse(&work.base_url).map_err(|_| StructuredError::NotTheRequestedJson)?;
     let client = ModelClient::new(endpoint).map_err(StructuredError::Model)?;
     let captured: Vec<Captured> = work.texts.iter().map(|t| Captured(t.as_str())).collect();
-    structured::ask(&client, &work.model, TASK, SHAPE, &captured, MAX_TOKENS).await
+    structured::ask(
+        &client,
+        &work.model,
+        work.task,
+        SHAPE,
+        &captured,
+        MAX_TOKENS,
+    )
+    .await
 }
 
 fn with_store<T>(app: &AppHandle, work: impl FnOnce(&mut Store) -> T) -> Option<T> {
@@ -359,6 +428,36 @@ mod tests {
         assert!(parse(&format!(r#"{{"facts":[{}]}}"#, too_many.join(","))).is_err());
     }
 
+    /// About the user, against a real model server.
+    #[tokio::test]
+    #[ignore = "needs a local model server: LAX_LIVE_MODEL_URL, LAX_LIVE_CHAT_MODEL"]
+    async fn live_about_me() {
+        let env = |name| std::env::var(name).unwrap_or_else(|_| panic!("{name} is not set"));
+        let work = Work {
+            page: "0123456789abcdef".to_string(),
+            task: ABOUT_ME_TASK,
+            base_url: env("LAX_LIVE_MODEL_URL"),
+            model: env("LAX_LIVE_CHAT_MODEL"),
+            texts: vec![
+                "The user's own notes:\n".to_string(),
+                "Current facts:\n(none)".to_string(),
+                "Deleted facts:\n(none)".to_string(),
+                "Journal entry, 2026-10-09 (Mail): Skickade offerten för Q3-lanseringen till \
+                 Anna Example på Exempelbolaget AB."
+                    .to_string(),
+                "Journal entry, 2026-10-10 (Xcode): Felsökte inloggningen i appen och skrev \
+                 tester."
+                    .to_string(),
+                "Journal entry, 2026-10-10 (Slack): Planerade sprinten med Bo Exempel.".to_string(),
+            ],
+            rejected: Vec::new(),
+            notes: Vec::new(),
+            sources: vec![1, 2, 3],
+        };
+        let facts = kept(ask(&work).await.expect("an answer"), &[], &[]);
+        assert!(!facts.is_empty());
+    }
+
     /// Against a real model server, like `journal::tests::live_journal_episode`.
     #[tokio::test]
     #[ignore = "needs a local model server: LAX_LIVE_MODEL_URL, LAX_LIVE_CHAT_MODEL"]
@@ -366,6 +465,7 @@ mod tests {
         let env = |name| std::env::var(name).unwrap_or_else(|_| panic!("{name} is not set"));
         let work = Work {
             page: "0123456789abcdef".to_string(),
+            task: TASK,
             base_url: env("LAX_LIVE_MODEL_URL"),
             model: env("LAX_LIVE_CHAT_MODEL"),
             texts: vec![

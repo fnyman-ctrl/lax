@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use rusqlite::{OptionalExtension, Row, params};
 
-use super::{Result, Store};
+use super::{EntityKind, Result, Store};
 
 /// Where a page stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,6 +50,18 @@ pub struct Page {
     pub last_block: Option<String>,
     /// What the model learned, one fact per line; `None` until it has.
     pub facts: Option<Vec<String>>,
+    pub kind: PageKind,
+    /// When the model last wrote the facts.
+    pub facts_at: Option<DateTime<Utc>>,
+}
+
+/// What a page is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PageKind {
+    /// A person, organisation or project.
+    Entity,
+    /// The user: `about-me.md`.
+    AboutMe,
 }
 
 /// A page whose facts are out of date: never written, rebuilt after a
@@ -80,11 +92,19 @@ fn page_from_row(row: &Row) -> rusqlite::Result<Page> {
         facts: row
             .get::<_, Option<String>>(5)?
             .map(|facts| facts.lines().map(String::from).collect()),
+        kind: if row.get::<_, String>(6)? == "about-me" {
+            PageKind::AboutMe
+        } else {
+            PageKind::Entity
+        },
+        facts_at: row
+            .get::<_, Option<i64>>(7)?
+            .and_then(DateTime::from_timestamp_millis),
     })
 }
 
 const PAGE_COLUMNS: &str = "p.id, p.entity_id, p.path, p.state,
-    (SELECT block FROM page_versions WHERE id = p.last_version), p.facts";
+    (SELECT block FROM page_versions WHERE id = p.last_version), p.facts, p.kind, p.facts_at";
 
 /// How many of Lax's versions of a page are kept.
 pub const LAX_VERSIONS_KEPT: i64 = 20;
@@ -107,6 +127,100 @@ impl Store {
                 page_from_row,
             )
             .optional()?)
+    }
+
+    /// The episodes a page's facts were written from.
+    pub fn fact_sources(&self, page: &str) -> Result<Vec<i64>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT episode_id FROM page_fact_sources WHERE page_id = ?1")?;
+        let rows = statement.query_map([page], |row| row.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    pub fn about_me_page(&self) -> Result<Option<Page>> {
+        Ok(self
+            .conn
+            .query_row(
+                &format!("SELECT {PAGE_COLUMNS} FROM pages AS p WHERE p.kind = 'about-me'"),
+                [],
+                page_from_row,
+            )
+            .optional()?)
+    }
+
+    /// Starts keeping track of `about-me.md`; its file is written next.
+    pub fn add_about_me_page(&self, id: &str, path: &str, now: DateTime<Utc>) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO pages (id, entity_id, path, state, kind, created_at)
+             VALUES (?1, NULL, ?2, 'ok', 'about-me', ?3)",
+            params![id, path, now.timestamp_millis()],
+        )?;
+        Ok(())
+    }
+
+    /// Deletes all but the newest of Lax's versions of a page. For
+    /// `about-me.md`, whose block names other entities: a forgotten name
+    /// mustn't stay in its history.
+    pub fn keep_only_latest_version(&self, page: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM page_versions WHERE page_id = ?1 AND by = 'lax'
+             AND id != (SELECT coalesce(last_version, -1) FROM pages WHERE id = ?1)",
+            [page],
+        )?;
+        Ok(())
+    }
+
+    /// The most-mentioned entities of `kind` in episodes since `since`, among
+    /// those Lax keeps, with their counts.
+    pub fn most_mentioned_since(
+        &self,
+        kind: EntityKind,
+        since: DateTime<Utc>,
+        limit: usize,
+    ) -> Result<Vec<(String, usize)>> {
+        let mut statement = self.conn.prepare(
+            "SELECT n.name, count(*) FROM entities AS n
+             JOIN mentions AS m ON m.entity_id = n.id
+             JOIN episodes AS e ON e.id = m.episode_id
+             WHERE n.kind = ?1 AND e.started_at >= ?2
+               AND (n.kept = 1 OR (SELECT count(DISTINCT date(e2.started_at / 1000, 'unixepoch', 'localtime'))
+                                   FROM mentions AS m2 JOIN episodes AS e2 ON e2.id = m2.episode_id
+                                   WHERE m2.entity_id = n.id) >= 2)
+             GROUP BY n.id ORDER BY count(*) DESC, n.name LIMIT ?3",
+        )?;
+        let rows = statement.query_map(
+            params![
+                kind.as_str(),
+                since.timestamp_millis(),
+                super::sql_limit(limit)
+            ],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )?;
+        let mut list = Vec::new();
+        for row in rows {
+            let (name, count) = row?;
+            list.push((name, usize::try_from(count).unwrap_or(0)));
+        }
+        Ok(list)
+    }
+
+    /// The apps in most episodes since `since`.
+    pub fn most_used_apps_since(&self, since: DateTime<Utc>, limit: usize) -> Result<Vec<String>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT app_names FROM episodes WHERE started_at >= ?1")?;
+        let rows =
+            statement.query_map([since.timestamp_millis()], |row| row.get::<_, String>(0))?;
+        let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for names in rows {
+            for name in names?.lines().filter(|n| !n.is_empty()) {
+                *counts.entry(name.to_string()).or_default() += 1;
+            }
+        }
+        let mut apps: Vec<(String, usize)> = counts.into_iter().collect();
+        apps.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        Ok(apps.into_iter().take(limit).map(|(name, _)| name).collect())
     }
 
     /// Starts keeping track of a page; its file is written next.
@@ -175,12 +289,12 @@ impl Store {
         let mut statement = self.conn.prepare(&format!(
             "SELECT {PAGE_COLUMNS}, (SELECT count(*) FROM mentions WHERE entity_id = p.entity_id)
              FROM pages AS p
-             WHERE p.entity_id IS NOT NULL AND p.state = 'ok'
+             WHERE p.kind = 'entity' AND p.entity_id IS NOT NULL AND p.state = 'ok'
                AND (p.facts IS NULL OR EXISTS (
                     SELECT 1 FROM mentions AS m WHERE m.entity_id = p.entity_id
                       AND m.episode_id NOT IN
                           (SELECT episode_id FROM page_fact_sources WHERE page_id = p.id)))
-             ORDER BY 7 DESC, p.id
+             ORDER BY 9 DESC, p.id
              LIMIT ?1"
         ))?;
         let rows = statement.query_map([super::sql_limit(limit)], page_from_row)?;
@@ -213,7 +327,13 @@ impl Store {
     /// Stores what the model learned from `sources`. Refused (`false`) if
     /// the page or a source was forgotten meanwhile: the facts may hold
     /// what was forgotten.
-    pub fn set_facts(&mut self, page: &str, facts: &[String], sources: &[i64]) -> Result<bool> {
+    pub fn set_facts(
+        &mut self,
+        page: &str,
+        facts: &[String],
+        sources: &[i64],
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
         let tx = self.conn.transaction()?;
         let page_exists: bool = tx.query_row(
             "SELECT EXISTS (SELECT 1 FROM pages WHERE id = ?1)",
@@ -238,8 +358,8 @@ impl Store {
             )?;
         }
         let updated = tx.execute(
-            "UPDATE pages SET facts = ?2 WHERE id = ?1",
-            params![page, facts.join("\n")],
+            "UPDATE pages SET facts = ?2, facts_at = ?3 WHERE id = ?1",
+            params![page, facts.join("\n"), now.timestamp_millis()],
         )?;
         tx.commit()?;
         Ok(updated > 0)

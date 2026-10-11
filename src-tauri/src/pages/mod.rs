@@ -30,7 +30,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::logging::{self, ErrorKind, Field};
 use crate::pause::Pause;
-use crate::store::{Entity, EntityKind, Episode, PageState, Store};
+use crate::store::{Entity, EntityKind, Episode, Page, PageKind, PageState, Store};
 
 /// The memory folder in the user's home folder.
 pub fn folder(home: &Path) -> PathBuf {
@@ -334,6 +334,9 @@ where
                 .or_else(|| paths.first())
                 .cloned()
         });
+        if page.kind == PageKind::AboutMe {
+            continue;
+        }
         let entity = page
             .entity_id
             .and_then(|id| entities.iter().find(|e| e.id == id));
@@ -373,107 +376,21 @@ where
         if !enabled {
             continue;
         }
-        // Facts the user deleted from the page are rejected: gone, and never
-        // written there again.
-        let mut facts = page.facts.clone().unwrap_or_default();
-        if let Some(relative) = &found
-            && let Ok(text) = fs::read_to_string(dir.join(relative))
-        {
-            for line in block::removed_lines(&text, &page.id, page.last_block.as_deref()) {
-                let Some(fact) = line.strip_prefix("- ") else {
-                    continue;
-                };
-                let key = crate::store::fact_key(fact);
-                if facts
-                    .iter()
-                    .any(|f| crate::store::fact_key(&block::defuse(f)) == key)
-                {
-                    store.reject_fact(&page.id, fact, now)?;
-                    facts.retain(|f| crate::store::fact_key(&block::defuse(f)) != key);
-                    done.rejected += 1;
-                }
-            }
-        }
         let latest = store.episodes_mentioning(&[entity.id], None, LATEST)?;
-        let content = content(&facts, entity, &latest, tz);
-        let sources: Vec<i64> = latest.iter().map(|e| e.id).collect();
-
-        match (page.state, found) {
-            (PageState::Recreate, _) => {
-                let path = free_path(dir, entity.kind, &entity.name);
-                let Some(full) = inside(dir, &path) else {
-                    continue;
-                };
-                if write_inside(
-                    dir,
-                    &full,
-                    None,
-                    &block::new_page(&entity.name, &page.id, &content),
-                )
-                .unwrap_or(false)
-                {
-                    store.page_written(
-                        &page.id,
-                        &path,
-                        &block::normalize(&content),
-                        &sources,
-                        now,
-                    )?;
-                    done.created += 1;
-                }
-            }
-            (_, None) => {
-                // Still there, but without Lax's markers: the user made it
-                // theirs. Gone: missing.
-                let detached = inside(dir, &page.path)
-                    .and_then(|path| fs::read_to_string(path).ok())
-                    .is_some_and(|text| block::page_id(&text) != Some(page.id.as_str()));
-                let state = if detached {
-                    PageState::Detached
-                } else {
-                    PageState::Missing
-                };
-                if page.state != state {
-                    store.set_page_state(&page.id, state, None)?;
-                    done.missing += 1;
-                }
-            }
-            (_, Some(relative)) => {
-                let path = dir.join(&relative);
-                let relative = relative.to_string_lossy().to_string();
-                let Ok(text) = fs::read_to_string(&path) else {
-                    continue;
-                };
-                match block::update(&text, &page.id, page.last_block.as_deref(), &content) {
-                    block::Update::Same => {
-                        if page.state != PageState::Ok || page.path != relative {
-                            store.set_page_state(&page.id, PageState::Ok, Some(&relative))?;
-                        }
-                    }
-                    block::Update::Write { text: new, adopted } => {
-                        if write_inside(dir, &path, Some(&text), &new).unwrap_or(false) {
-                            if let Some(edit) = &adopted {
-                                store.page_edited_by_user(&page.id, edit, now)?;
-                                done.adopted += 1;
-                            }
-                            store.page_written(
-                                &page.id,
-                                &relative,
-                                &block::normalize(&content),
-                                &sources,
-                                now,
-                            )?;
-                            done.written += 1;
-                        }
-                    }
-                    block::Update::NotOurs => {
-                        if page.state != PageState::Detached {
-                            store.set_page_state(&page.id, PageState::Detached, Some(&relative))?;
-                        }
-                    }
-                }
-            }
-        }
+        refresh(
+            store,
+            dir,
+            &page,
+            found,
+            Refresh {
+                title: &entity.name,
+                new_path: &|| free_path(dir, entity.kind, &entity.name),
+                content: &|facts| content(facts, entity, &latest, tz),
+                sources: latest.iter().map(|e| e.id).collect(),
+            },
+            now,
+            &mut done,
+        )?;
     }
 
     // New pages for entities Lax keeps and hasn't written yet.
@@ -509,6 +426,8 @@ where
         }
     }
 
+    about_me(store, dir, &on_disk, now, &mut done)?;
+
     if done != Synced::default() {
         logging::info(
             "pages.synced",
@@ -523,6 +442,261 @@ where
         );
     }
     Ok(done)
+}
+
+/// What a page says, for [`refresh`].
+struct Refresh<'a> {
+    /// The title of a page written anew.
+    title: &'a str,
+    /// Where a page written anew goes.
+    new_path: &'a dyn Fn() -> String,
+    /// The block, given the facts.
+    content: &'a dyn Fn(&[String]) -> String,
+    /// The episodes the block lists besides its facts.
+    sources: Vec<i64>,
+}
+
+/// Brings one page up to date: facts the user deleted are rejected, then
+/// the block is rewritten if what it says changed, the page is recreated if
+/// the user asked, or marked missing or detached.
+fn refresh(
+    store: &mut Store,
+    dir: &Path,
+    page: &Page,
+    found: Option<PathBuf>,
+    what: Refresh,
+    now: DateTime<Utc>,
+    done: &mut Synced,
+) -> crate::store::Result<()> {
+    // Facts the user deleted from the page are rejected: gone, and never
+    // written there again.
+    let mut facts = page.facts.clone().unwrap_or_default();
+    if let Some(relative) = &found
+        && let Ok(text) = fs::read_to_string(dir.join(relative))
+    {
+        for line in block::removed_lines(&text, &page.id, page.last_block.as_deref()) {
+            let Some(fact) = line.strip_prefix("- ") else {
+                continue;
+            };
+            let key = crate::store::fact_key(fact);
+            if facts
+                .iter()
+                .any(|f| crate::store::fact_key(&block::defuse(f)) == key)
+            {
+                store.reject_fact(&page.id, fact, now)?;
+                facts.retain(|f| crate::store::fact_key(&block::defuse(f)) != key);
+                done.rejected += 1;
+            }
+        }
+    }
+    let content = (what.content)(&facts);
+    // A version holds the facts too, so it goes when an episode they drew
+    // on is forgotten, not only one of the listed entries.
+    let mut sources = what.sources;
+    for source in store.fact_sources(&page.id)? {
+        if !sources.contains(&source) {
+            sources.push(source);
+        }
+    }
+
+    match (page.state, found) {
+        (PageState::Recreate, _) => {
+            let path = (what.new_path)();
+            let Some(full) = inside(dir, &path) else {
+                return Ok(());
+            };
+            if write_inside(
+                dir,
+                &full,
+                None,
+                &block::new_page(what.title, &page.id, &content),
+            )
+            .unwrap_or(false)
+            {
+                store.page_written(&page.id, &path, &block::normalize(&content), &sources, now)?;
+                done.created += 1;
+            }
+        }
+        (_, None) => {
+            // Still there, but without Lax's markers: the user made it
+            // theirs. Gone: missing.
+            let detached = inside(dir, &page.path)
+                .and_then(|path| fs::read_to_string(path).ok())
+                .is_some_and(|text| block::page_id(&text) != Some(page.id.as_str()));
+            let state = if detached {
+                PageState::Detached
+            } else {
+                PageState::Missing
+            };
+            if page.state != state {
+                store.set_page_state(&page.id, state, None)?;
+                done.missing += 1;
+            }
+        }
+        (_, Some(relative)) => {
+            let path = dir.join(&relative);
+            let relative = relative.to_string_lossy().to_string();
+            let Ok(text) = fs::read_to_string(&path) else {
+                return Ok(());
+            };
+            match block::update(&text, &page.id, page.last_block.as_deref(), &content) {
+                block::Update::Same => {
+                    if page.state != PageState::Ok || page.path != relative {
+                        store.set_page_state(&page.id, PageState::Ok, Some(&relative))?;
+                    }
+                }
+                block::Update::Write { text: new, adopted } => {
+                    if write_inside(dir, &path, Some(&text), &new).unwrap_or(false) {
+                        if let Some(edit) = &adopted {
+                            store.page_edited_by_user(&page.id, edit, now)?;
+                            done.adopted += 1;
+                        }
+                        store.page_written(
+                            &page.id,
+                            &relative,
+                            &block::normalize(&content),
+                            &sources,
+                            now,
+                        )?;
+                        done.written += 1;
+                    }
+                }
+                block::Update::NotOurs => {
+                    if page.state != PageState::Detached {
+                        store.set_page_state(&page.id, PageState::Detached, Some(&relative))?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// How far back `about-me.md` looks for who and what the user works with.
+const ABOUT_ME_DAYS: i64 = 30;
+const ABOUT_ME_TITLE: &str = "About me";
+
+/// `about-me.md`: what the model learned about the user, then who and what
+/// they worked with most lately. Defused, like every block.
+fn about_me_content(facts: &[String], lately: &AboutMe) -> String {
+    let mut text = String::new();
+    for fact in facts {
+        text.push_str(&format!("- {}\n", fact.replace(['\n', '\r'], " ")));
+    }
+    if !facts.is_empty() {
+        text.push('\n');
+    }
+    text.push_str(&format!("In the last {ABOUT_ME_DAYS} days:\n"));
+    for (label, names) in [
+        ("Most in touch with", &lately.people),
+        ("Projects", &lately.projects),
+        ("Organisations", &lately.organisations),
+        ("Apps", &lately.apps),
+    ] {
+        if !names.is_empty() {
+            text.push_str(&format!("{label}: {}.\n", names.join(", ")));
+        }
+    }
+    block::defuse(&text)
+}
+
+/// Who and what the user worked with most in the last `ABOUT_ME_DAYS`.
+struct AboutMe {
+    people: Vec<String>,
+    projects: Vec<String>,
+    organisations: Vec<String>,
+    apps: Vec<String>,
+}
+
+fn lately(store: &Store, now: DateTime<Utc>) -> crate::store::Result<AboutMe> {
+    let since = now - chrono::TimeDelta::days(ABOUT_ME_DAYS);
+    let names = |kind| -> crate::store::Result<Vec<String>> {
+        Ok(store
+            .most_mentioned_since(kind, since, 5)?
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect())
+    };
+    Ok(AboutMe {
+        people: names(EntityKind::Person)?,
+        projects: names(EntityKind::Project)?,
+        organisations: names(EntityKind::Organisation)?,
+        apps: store.most_used_apps_since(since, 5)?,
+    })
+}
+
+/// Writes or updates `about-me.md`, with the memory on.
+fn about_me(
+    store: &mut Store,
+    dir: &Path,
+    on_disk: &HashMap<String, Vec<PathBuf>>,
+    now: DateTime<Utc>,
+    done: &mut Synced,
+) -> crate::store::Result<()> {
+    if !store.memory_enabled()? {
+        return Ok(());
+    }
+    let lately = lately(store, now)?;
+    let new_path = || {
+        let mut path = "about-me.md".to_string();
+        let mut n = 2;
+        while dir.join(&path).exists() {
+            path = format!("about-me-{n}.md");
+            n += 1;
+        }
+        path
+    };
+    match store.about_me_page()? {
+        None => {
+            let Ok(id) = block::new_id() else {
+                return Ok(());
+            };
+            let content = about_me_content(&[], &lately);
+            let path = new_path();
+            let Some(full) = inside(dir, &path) else {
+                return Ok(());
+            };
+            if write_inside(
+                dir,
+                &full,
+                None,
+                &block::new_page(ABOUT_ME_TITLE, &id, &content),
+            )
+            .unwrap_or(false)
+            {
+                store.add_about_me_page(&id, &path, now)?;
+                store.page_written(&id, &path, &block::normalize(&content), &[], now)?;
+                done.created += 1;
+            }
+        }
+        Some(page) => {
+            let found = on_disk.get(&page.id).and_then(|paths| {
+                paths
+                    .iter()
+                    .find(|p| p.to_string_lossy() == page.path)
+                    .or_else(|| paths.first())
+                    .cloned()
+            });
+            refresh(
+                store,
+                dir,
+                &page,
+                found,
+                Refresh {
+                    title: ABOUT_ME_TITLE,
+                    new_path: &new_path,
+                    content: &|facts| about_me_content(facts, &lately),
+                    sources: Vec::new(),
+                },
+                now,
+                done,
+            )?;
+            // It names other entities: a forgotten one mustn't stay in its
+            // history, so only the latest version is kept.
+            store.keep_only_latest_version(&page.id)?;
+        }
+    }
+    Ok(())
 }
 
 /// One round of the background loop, after the memory's. Skipped while

@@ -64,7 +64,9 @@ previous one, so they can be built, tested and improved independently.
   Lax writes only between its own markers, and versions every block in SQLite.
 - About once an hour, while the user is away, the model updates the facts on
   pages with new mentions (`src-tauri/src/pages/facts.rs`); facts the user
-  deletes are never written again.
+  deletes are never written again. `~/Lax/about-me.md` is about the user:
+  who and what they worked with most in the last 30 days, and, once a day,
+  what the model learned about their work.
 - Pages are updated incrementally: the LLM gets the current page plus new episodes
   and proposes an updated page.
 - **User edits win.** If the user edits a page, the edit is treated as ground truth

@@ -8,6 +8,7 @@ use rusqlite::{OptionalExtension, params};
 use super::{Result, Store, sql_limit};
 
 const MEMORY_KEY: &str = "memory_enabled";
+const OWN_NAMES_KEY: &str = "own_names";
 
 /// An entity is new, and Lax only notes it, until it is mentioned on this
 /// many different days, or the user keeps it (ADR 0008).
@@ -118,6 +119,21 @@ impl Store {
 
     pub fn set_memory_enabled(&self, enabled: bool) -> Result<()> {
         self.set_setting(MEMORY_KEY, if enabled { "1" } else { "0" })
+    }
+
+    /// Other names the user goes by, as they typed them.
+    pub fn own_names(&self) -> Result<Vec<String>> {
+        Ok(self
+            .setting(OWN_NAMES_KEY)?
+            .unwrap_or_default()
+            .lines()
+            .filter(|n| !n.is_empty())
+            .map(String::from)
+            .collect())
+    }
+
+    pub fn set_own_names(&self, names: &[String]) -> Result<()> {
+        self.set_setting(OWN_NAMES_KEY, &names.join("\n"))
     }
 
     /// Episodes the memory hasn't read, oldest first.

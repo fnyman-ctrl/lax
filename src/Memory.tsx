@@ -9,6 +9,8 @@ type MemoryStatus = {
   journal: boolean;
   folder: string | null;
   folderProblem: string | null;
+  ownNames: string[];
+  aboutMe: PageItem | null;
 };
 type PageItem = { path: string; state: "ok" | "missing" | "detached" | "recreate" };
 type Kind = "person" | "organisation" | "project";
@@ -258,6 +260,16 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
         )}
       </div>
 
+      {status.enabled && (
+        <AboutYou
+          status={status}
+          busy={busy}
+          onChanged={setStatus}
+          run={run}
+          onMessage={setMessage}
+        />
+      )}
+
       <p className="muted" role="status" aria-live="polite">
         {message}
       </p>
@@ -350,6 +362,92 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
         </section>
       )}
     </section>
+  );
+}
+
+/**
+ * About the user: other names they go by (kept out of the memory's people)
+ * and `about-me.md`.
+ */
+function AboutYou({
+  status,
+  busy,
+  onChanged,
+  run,
+  onMessage,
+}: {
+  status: MemoryStatus;
+  busy: boolean;
+  onChanged: (status: MemoryStatus) => void;
+  run: (work: Promise<string>) => Promise<boolean>;
+  onMessage: (message: string | null) => void;
+}) {
+  const [names, setNames] = useState(status.ownNames.join(", "));
+  const saved = status.ownNames.join(", ");
+
+  const save = () => {
+    const list = names
+      .split(",")
+      .map((n) => n.trim())
+      .filter((n) => n !== "");
+    onMessage(null);
+    invoke<MemoryStatus>("set_own_names", { names: list }).then(
+      (next) => {
+        onChanged(next);
+        setNames(next.ownNames.join(", "));
+        onMessage("Saved. Lax won't note these names as people.");
+      },
+      (e) => onMessage(String(e)),
+    );
+  };
+
+  return (
+    <div className="card about-you">
+      <h2>About you</h2>
+      <p className="muted hint">
+        Lax keeps your own name from this Mac out of the people it notes. Add other names you go
+        by, separated by commas.
+      </p>
+      <p className="buttons">
+        <input
+          type="text"
+          value={names}
+          maxLength={1000}
+          placeholder="Other names, e.g. a nickname"
+          aria-label="Other names you go by"
+          onChange={(e) => setNames(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && save()}
+        />
+        <button type="button" className="secondary" disabled={names === saved} onClick={save}>
+          Save
+        </button>
+      </p>
+      {status.aboutMe?.state === "ok" && (
+        <p className="muted hint">
+          {status.aboutMe.path} says who and what you work with most, and what Lax learned about
+          your work.
+        </p>
+      )}
+      {(status.aboutMe?.state === "missing" || status.aboutMe?.state === "detached") && (
+        <p className="buttons page-problem">
+          <span>
+            {status.aboutMe.state === "missing"
+              ? "Lax can't find about-me.md. It won't write it again unless you ask."
+              : "Lax's part was removed from about-me.md, so Lax leaves that file alone."}
+          </span>
+          <button
+            type="button"
+            className="secondary"
+            disabled={busy}
+            onClick={() =>
+              run(invoke("recreate_about_me").then(() => "Wrote about-me.md again."))
+            }
+          >
+            {status.aboutMe.state === "missing" ? "Recreate page" : "Write a new page"}
+          </button>
+        </p>
+      )}
+    </div>
   );
 }
 

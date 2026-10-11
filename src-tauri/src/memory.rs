@@ -67,6 +67,9 @@ struct Work {
     base_url: String,
     model: String,
     episode: UnrecognizedEpisode,
+    /// The names the user goes by: from the macOS account and the ones they
+    /// gave.
+    own_names: Vec<String>,
 }
 
 /// One round: read up to `EPISODES_PER_ROUND` new episodes. `Err` means the
@@ -94,7 +97,7 @@ pub async fn round(app: &AppHandle, setbacks: &mut Setbacks) -> Result<(), ()> {
         match answer {
             Ok(entities) => {
                 setbacks.done(work.episode.id);
-                let names = names_in(entities, &work.episode.app_names, &own_names());
+                let names = names_in(entities, &work.episode.app_names, &work.own_names);
                 let stored = with_store(app, |store| {
                     store.record_mentions(work.episode.id, &names, Utc::now())
                 });
@@ -147,10 +150,13 @@ fn next_work(app: &AppHandle) -> Option<Work> {
         let Some(episode) = store.unrecognized_episodes(1)?.into_iter().next() else {
             return Ok(None);
         };
+        let mut own_names = own_names();
+        own_names.extend(store.own_names()?);
         Ok(Some(Work {
             base_url: choice.base_url,
             model: choice.model,
             episode,
+            own_names,
         }))
     })
     .and_then(Result::ok)
@@ -237,6 +243,10 @@ pub struct MemoryStatus {
     pub folder: Option<String>,
     /// Why pages can't be written there, if they can't.
     pub folder_problem: Option<String>,
+    /// Other names the user goes by, as they gave them.
+    pub own_names: Vec<String>,
+    /// `about-me.md`, once written.
+    pub about_me: Option<PageItem>,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -270,6 +280,18 @@ pub struct DontLearnItem {
     pub name: String,
 }
 
+fn page_item(page: &Page) -> PageItem {
+    PageItem {
+        path: page.path.clone(),
+        state: match page.state {
+            PageState::Ok => "ok",
+            PageState::Missing => "missing",
+            PageState::Detached => "detached",
+            PageState::Recreate => "recreate",
+        },
+    }
+}
+
 fn status(store: &Store) -> crate::store::Result<MemoryStatus> {
     Ok(MemoryStatus {
         enabled: store.memory_enabled()?,
@@ -278,6 +300,8 @@ fn status(store: &Store) -> crate::store::Result<MemoryStatus> {
         journal: store.journal_enabled()?,
         folder: None,
         folder_problem: None,
+        own_names: store.own_names()?,
+        about_me: store.about_me_page()?.map(|p| page_item(&p)),
     })
 }
 
@@ -346,15 +370,7 @@ pub fn memory_entities(app: AppHandle) -> Result<Vec<EntityItem>, String> {
                 entities
                     .into_iter()
                     .map(|e| EntityItem {
-                        page: pages.get(&e.id).map(|p| PageItem {
-                            path: p.path.clone(),
-                            state: match p.state {
-                                PageState::Ok => "ok",
-                                PageState::Missing => "missing",
-                                PageState::Detached => "detached",
-                                PageState::Recreate => "recreate",
-                            },
-                        }),
+                        page: pages.get(&e.id).map(page_item),
                         is_new: e.is_new(),
                         id: e.id,
                         kind: e.kind.as_str(),
@@ -406,6 +422,51 @@ pub fn keep_entity(app: AppHandle, id: i64) -> Result<bool, String> {
     })?;
     pages::sync_now(&app);
     Ok(kept)
+}
+
+/// Sets the other names the user goes by (nicknames, a maiden name): kept
+/// out of the memory's people, and part of `about-me.md`.
+#[tauri::command(async)]
+pub fn set_own_names(app: AppHandle, names: Vec<String>) -> Result<MemoryStatus, String> {
+    let mut clean: Vec<String> = Vec::new();
+    for name in names
+        .iter()
+        .filter(|n| !n.trim().is_empty())
+        .take(MAX_OWN_NAMES)
+    {
+        let name = valid_name(name)?;
+        if !clean.iter().any(|n| name_key(n) == name_key(&name)) {
+            clean.push(name);
+        }
+    }
+    let mut status = command(&app, |store| {
+        let failed = |_| "Lax couldn't save your names.".to_string();
+        store.set_own_names(&clean).map_err(failed)?;
+        status(store).map_err(failed)
+    })?;
+    with_folder(&app, &mut status);
+    Ok(status)
+}
+
+/// Most other names the user can give.
+const MAX_OWN_NAMES: usize = 10;
+
+/// Writes `about-me.md` again after it went missing or the user removed
+/// Lax's part.
+#[tauri::command(async)]
+pub fn recreate_about_me(app: AppHandle) -> Result<(), String> {
+    command(&app, |store| {
+        let failed = |_| "Lax couldn't recreate the page.".to_string();
+        let page = store
+            .about_me_page()
+            .map_err(failed)?
+            .ok_or("There is no about-me page yet.")?;
+        store
+            .set_page_state(&page.id, PageState::Recreate, None)
+            .map_err(failed)
+    })?;
+    pages::sync_now(&app);
+    Ok(())
 }
 
 /// Writes a missing page again, or a new one for a page whose markers the
@@ -651,6 +712,7 @@ mod tests {
                     .to_string(),
                 app_names: vec!["Mail".to_string(), "Slack".to_string()],
             },
+            own_names: Vec::new(),
         };
         let answer = recognize(&work).await.expect("an answer");
         let names = names_in(answer, &work.episode.app_names, &[]);

@@ -97,6 +97,16 @@ fn sample() -> Store {
     store
 }
 
+/// The pages about entities (not `about-me.md`).
+fn entity_pages(store: &Store) -> Vec<crate::store::Page> {
+    store
+        .pages()
+        .unwrap()
+        .into_iter()
+        .filter(|p| p.kind == crate::store::PageKind::Entity)
+        .collect()
+}
+
 fn sync_now(store: &mut Store, folder: &Folder) -> Synced {
     sync(
         store,
@@ -115,7 +125,8 @@ fn kept_entities_get_a_page() {
     let folder = Folder::new();
     let mut store = sample();
     let done = sync_now(&mut store, &folder);
-    assert_eq!(done.created, 1);
+    // Anna's page and about-me.md.
+    assert_eq!(done.created, 2);
     let text = folder.read(ANNA);
     assert!(text.starts_with("# Anna Example\n\n<!-- lax:begin "));
     assert!(
@@ -150,7 +161,7 @@ fn the_users_text_survives_every_update() {
     assert!(text.contains("My notes: call her on Fridays.  \n"));
     assert!(text.ends_with("<!-- lax:end -->\n\nAnd a line at the end.\n"));
     assert!(text.contains("Ringde Anna."));
-    let page = &store.pages().unwrap()[0];
+    let page = &entity_pages(&store)[0];
     assert_eq!(store.page_versions(&page.id).unwrap(), (2, 0));
 }
 
@@ -172,7 +183,7 @@ fn an_edit_to_laxs_block_becomes_the_users() {
     assert!(user.contains("Mailade Anna om Q4-offerten (rättat)."));
     assert!(!user.contains("lax:"));
     assert!(ours.contains("Mailade Anna om Q3-offerten."));
-    let page = &store.pages().unwrap()[0];
+    let page = &entity_pages(&store)[0];
     assert_eq!(store.page_versions(&page.id).unwrap(), (2, 1));
     // And it settles: the next sync changes nothing.
     assert_eq!(sync_now(&mut store, &folder), Synced::default());
@@ -215,7 +226,7 @@ fn a_renamed_page_is_followed() {
     sync_now(&mut store, &folder);
     assert!(folder.read("work/friends/anna.md").contains("Ringde Anna."));
     assert!(!folder.0.join(ANNA).exists());
-    assert_eq!(store.pages().unwrap()[0].path, "work/friends/anna.md");
+    assert_eq!(entity_pages(&store)[0].path, "work/friends/anna.md");
 }
 
 #[test]
@@ -226,7 +237,7 @@ fn a_missing_page_is_neither_recreated_nor_forgotten() {
     fs::remove_file(folder.0.join(ANNA)).unwrap();
     assert_eq!(sync_now(&mut store, &folder).missing, 1);
     assert!(!folder.0.join(ANNA).exists());
-    let page = &store.pages().unwrap()[0];
+    let page = &entity_pages(&store)[0];
     assert_eq!(page.state, PageState::Missing);
     assert_eq!(store.entities().unwrap().len(), 2);
 
@@ -236,7 +247,7 @@ fn a_missing_page_is_neither_recreated_nor_forgotten() {
         .unwrap();
     assert_eq!(sync_now(&mut store, &folder).created, 1);
     assert_eq!(block::page_id(&folder.read(ANNA)), Some(page.id.as_str()));
-    assert_eq!(store.pages().unwrap()[0].state, PageState::Ok);
+    assert_eq!(entity_pages(&store)[0].state, PageState::Ok);
 }
 
 #[test]
@@ -244,7 +255,7 @@ fn a_page_without_markers_is_left_alone() {
     let folder = Folder::new();
     let mut store = sample();
     sync_now(&mut store, &folder);
-    let id = store.pages().unwrap()[0].id.clone();
+    let id = entity_pages(&store)[0].id.clone();
     let text = folder.read(ANNA);
     // The user keeps the marker line with the id but breaks the end.
     let broken = text.replace("<!-- lax:end -->", "");
@@ -257,7 +268,7 @@ fn a_page_without_markers_is_left_alone() {
     sync_now(&mut store, &folder);
     assert_eq!(folder.read(ANNA), mine);
     // The file is still where the page was: detached, not missing.
-    assert_eq!(store.pages().unwrap()[0].state, PageState::Detached);
+    assert_eq!(entity_pages(&store)[0].state, PageState::Detached);
 }
 
 #[test]
@@ -291,7 +302,7 @@ fn forgetting_takes_laxs_part_out_and_keeps_the_users() {
     assert_eq!(folder.read(ANNA), "# Anna Example\n\nMy own note.\n");
     // Bo's page had nothing of the user's: it's gone.
     assert!(!folder.0.join(bo_page).exists());
-    assert!(store.pages().unwrap().is_empty());
+    assert!(entity_pages(&store).is_empty());
 }
 
 #[test]
@@ -302,7 +313,7 @@ fn forgotten_episodes_leave_the_pages_and_their_history() {
     let later = episode(&mut store, at(11, 9), "Slack", "Ringde Anna.");
     mention(&mut store, later, "Anna Example");
     sync_now(&mut store, &folder);
-    let id = store.pages().unwrap()[0].id.clone();
+    let id = entity_pages(&store)[0].id.clone();
     assert_eq!(store.page_versions(&id).unwrap(), (2, 0));
 
     // Forgetting Mail removes the first entry, every version that listed
@@ -421,18 +432,18 @@ fn a_forgotten_page_is_retried_until_laxs_part_is_out() {
     let mut store = sample();
     sync_now(&mut store, &folder);
     folder.put(ANNA, &(folder.read(ANNA) + "\nMine.\n"));
-    let anna = store.pages().unwrap()[0].entity_id.unwrap();
+    let anna = entity_pages(&store)[0].entity_id.unwrap();
     store.forget_entity(anna, false, at(11, 14)).unwrap();
     // The folder can't be written: the page stays known…
     let mode = |m| fs::set_permissions(folder.0.join("people"), Permissions::from_mode(m)).unwrap();
     mode(0o500);
     sync_now(&mut store, &folder);
-    assert_eq!(store.pages().unwrap().len(), 1);
+    assert_eq!(entity_pages(&store).len(), 1);
     assert!(folder.read(ANNA).contains("lax:begin"));
     // …until it can.
     mode(0o700);
     sync_now(&mut store, &folder);
-    assert!(store.pages().unwrap().is_empty());
+    assert!(entity_pages(&store).is_empty());
     assert_eq!(folder.read(ANNA), "# Anna Example\n\nMine.\n");
 }
 
@@ -442,7 +453,8 @@ fn a_symlinked_subfolder_is_not_written_to() {
     let elsewhere = Folder::new();
     std::os::unix::fs::symlink(&elsewhere.0, folder.0.join("people")).unwrap();
     let mut store = sample();
-    assert_eq!(sync_now(&mut store, &folder).created, 0);
+    sync_now(&mut store, &folder);
+    assert!(entity_pages(&store).is_empty());
     assert_eq!(fs::read_dir(&elsewhere.0).unwrap().count(), 0);
 }
 
@@ -459,7 +471,7 @@ fn a_copied_page_doesnt_take_over() {
     sync_now(&mut store, &folder);
     assert!(folder.read(ANNA).contains("Ringde Anna."));
     assert!(!folder.read("people/a-copy.md").contains("Ringde Anna."));
-    assert_eq!(store.pages().unwrap()[0].path, ANNA);
+    assert_eq!(entity_pages(&store)[0].path, ANNA);
 }
 
 #[test]
@@ -478,14 +490,14 @@ fn only_the_latest_versions_of_laxs_are_kept() {
         mention(&mut store, id, "Anna Example");
         sync_now(&mut store, &folder);
     }
-    let id = store.pages().unwrap()[0].id.clone();
+    let id = entity_pages(&store)[0].id.clone();
     assert_eq!(
         store.page_versions(&id).unwrap(),
         (crate::store::LAX_VERSIONS_KEPT as usize, 0)
     );
     // The latest is still the one edits are compared with.
     assert!(
-        store.pages().unwrap()[0]
+        entity_pages(&store)[0]
             .last_block
             .as_deref()
             .unwrap()
@@ -499,15 +511,16 @@ fn unchanged_files_are_not_read_again() {
     let mut store = sample();
     sync_now(&mut store, &folder);
     let mut cache = ScanCache::new();
-    assert_eq!(scan(&folder.0, &mut cache).len(), 1);
+    // Anna's page and about-me.md.
+    assert_eq!(scan(&folder.0, &mut cache).len(), 2);
     // Make the file unreadable: a cached scan still knows it.
     fs::set_permissions(folder.0.join(ANNA), Permissions::from_mode(0o000)).unwrap();
-    assert_eq!(scan(&folder.0, &mut cache).len(), 1);
+    assert_eq!(scan(&folder.0, &mut cache).len(), 2);
     fs::set_permissions(folder.0.join(ANNA), Permissions::from_mode(0o600)).unwrap();
 }
 
 fn anna_page(store: &Store) -> crate::store::Page {
-    store.pages().unwrap().remove(0)
+    entity_pages(store).remove(0)
 }
 
 fn facts(list: &[&str]) -> Vec<String> {
@@ -531,7 +544,8 @@ fn facts_lead_the_block_and_deleted_ones_never_come_back() {
             .set_facts(
                 &page.id,
                 &facts(&["Leder Q3-lanseringen.", "Jobbar på Exempelbolaget AB."]),
-                &sources
+                &sources,
+                at(11, 13)
             )
             .unwrap()
     );
@@ -571,7 +585,12 @@ fn facts_go_when_an_episode_they_drew_on_is_forgotten() {
         .map(|e| e.id)
         .collect();
     store
-        .set_facts(&page.id, &facts(&["Leder Q3-lanseringen."]), &sources)
+        .set_facts(
+            &page.id,
+            &facts(&["Leder Q3-lanseringen."]),
+            &sources,
+            at(11, 13),
+        )
         .unwrap();
     sync_now(&mut store, &folder);
     assert!(folder.read(ANNA).contains("Leder Q3-lanseringen."));
@@ -595,7 +614,7 @@ fn facts_from_a_forgotten_episode_are_refused() {
     let page = anna_page(&store);
     assert!(
         !store
-            .set_facts(&page.id, &facts(&["Gammalt."]), &[999])
+            .set_facts(&page.id, &facts(&["Gammalt."]), &[999], at(11, 13))
             .unwrap()
     );
     assert_eq!(anna_page(&store).facts, None);
@@ -615,7 +634,7 @@ fn pages_are_stale_until_their_facts_have_seen_every_mention() {
         .map(|e| e.id)
         .collect();
     store
-        .set_facts(&page.id, &facts(&["En sak."]), &sources)
+        .set_facts(&page.id, &facts(&["En sak."]), &sources, at(11, 13))
         .unwrap();
     assert!(store.stale_pages(5).unwrap().is_empty());
     let later = episode(&mut store, at(11, 9), "Mail", "Ringde Anna.");
@@ -637,7 +656,7 @@ fn mentions_merged_in_from_older_episodes_make_a_page_stale() {
         .map(|e| e.id)
         .collect();
     store
-        .set_facts(&page.id, &facts(&["En sak."]), &sources)
+        .set_facts(&page.id, &facts(&["En sak."]), &sources, at(11, 13))
         .unwrap();
     assert!(store.stale_pages(5).unwrap().is_empty());
     // Bo's single, older mention becomes Anna's.
@@ -652,6 +671,115 @@ fn mentions_merged_in_from_older_episodes_make_a_page_stale() {
     assert_eq!(store.stale_pages(5).unwrap().len(), 1);
     let unseen = store.unseen_mentions(&page.id, anna, 10).unwrap();
     assert_eq!(unseen.len(), 1);
+}
+
+fn about_me(store: &Store) -> crate::store::Page {
+    store.about_me_page().unwrap().unwrap()
+}
+
+#[test]
+fn about_me_lists_who_and_what_the_user_works_with() {
+    let folder = Folder::new();
+    let mut store = sample();
+    sync(
+        &mut store,
+        &folder.0,
+        &mut ScanCache::new(),
+        at(11, 13),
+        &stockholm(),
+    )
+    .unwrap();
+    let text = folder.read("about-me.md");
+    assert!(text.starts_with("# About me\n\n<!-- lax:begin "));
+    assert!(text.contains("In the last 30 days:\n"));
+    // Anna is kept (two days); Bo is still new, so not listed.
+    assert!(text.contains("Most in touch with: Anna Example.\n"));
+    assert!(!text.contains("Bo Exempel"));
+    assert!(text.contains("Apps: Mail, Slack.\n"));
+    assert_eq!(about_me(&store).kind, crate::store::PageKind::AboutMe);
+}
+
+#[test]
+fn about_me_forgets_a_forgotten_name_and_its_history() {
+    let folder = Folder::new();
+    let mut store = sample();
+    sync_now(&mut store, &folder);
+    let page = about_me(&store);
+    // A few rewrites leave one version.
+    for minute in 0..3 {
+        let id = episode(
+            &mut store,
+            at(11, 9) + TimeDelta::minutes(minute),
+            "Notes",
+            "Skrev anteckningar.",
+        );
+        let _ = id;
+        sync_now(&mut store, &folder);
+    }
+    assert_eq!(store.page_versions(&page.id).unwrap().0, 1);
+
+    let anna = anna_page(&store).entity_id.unwrap();
+    store.forget_entity(anna, false, at(11, 14)).unwrap();
+    sync_now(&mut store, &folder);
+    assert!(!folder.read("about-me.md").contains("Anna"));
+    assert_eq!(store.page_versions(&page.id).unwrap().0, 1);
+    // about-me.md is not an entity's page: it stays.
+    assert!(store.about_me_page().unwrap().is_some());
+}
+
+#[test]
+fn about_me_keeps_the_users_text_and_takes_facts() {
+    let folder = Folder::new();
+    let mut store = sample();
+    sync_now(&mut store, &folder);
+    folder.put(
+        "about-me.md",
+        &folder
+            .read("about-me.md")
+            .replace("# About me\n", "# About me\n\nJag heter Anna i jobbet.\n"),
+    );
+    let page = about_me(&store);
+    let sources: Vec<i64> = store
+        .episodes(None, 10)
+        .unwrap()
+        .iter()
+        .map(|e| e.id)
+        .collect();
+    store
+        .set_facts(
+            &page.id,
+            &facts(&["Jobbar med Q3-lanseringen."]),
+            &sources,
+            at(11, 13),
+        )
+        .unwrap();
+    sync_now(&mut store, &folder);
+    let text = folder.read("about-me.md");
+    assert!(text.contains("Jag heter Anna i jobbet.\n"));
+    assert!(text.contains("- Jobbar med Q3-lanseringen.\n"));
+    assert_eq!(about_me(&store).facts_at, Some(at(11, 13)));
+}
+
+#[test]
+fn a_version_goes_when_an_episode_its_facts_drew_on_is_forgotten() {
+    let folder = Folder::new();
+    let mut store = sample();
+    sync_now(&mut store, &folder);
+    let page = anna_page(&store);
+    // Facts drawn from a Notes episode that the page doesn't list.
+    let notes = episode(&mut store, at(10, 8), "Notes", "Anteckning om Anna.");
+    store
+        .set_facts(&page.id, &facts(&["Gillar te."]), &[notes], at(11, 13))
+        .unwrap();
+    sync_now(&mut store, &folder);
+    let (before, _) = store.page_versions(&page.id).unwrap();
+    store
+        .forget(&Forget::App("com.example.notes".to_string()))
+        .unwrap();
+    // The versions that held the fact went with the episode.
+    assert!(store.page_versions(&page.id).unwrap().0 < before);
+    sync_now(&mut store, &folder);
+    assert!(!folder.read(ANNA).contains("Gillar te."));
 }
 
 #[test]
