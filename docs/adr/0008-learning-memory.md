@@ -1,6 +1,6 @@
 # 0008. How the memory learns, and how user edits are protected
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-11
 
 ## Context
@@ -59,9 +59,9 @@ What is still open is how that works in practice:
   offers "Don't learn about them again", which puts the names on the same
   list. The list is visible in the Memory view and can be cleared, since it
   still holds names.
-- The user is not an entity. Lax asks for the user's name (and other names
-  they go by) when the memory is turned on, and those names go to `about-me.md`
-  instead.
+- The user is not an entity. Lax starts from the name on the macOS account
+  (the full name and its first word), and with `about-me.md` asks for other
+  names the user goes by. Those names go to `about-me.md` instead.
 
 ### Learn: Lax writes only inside its own block
 
@@ -133,7 +133,8 @@ though Lax could infer them: health, religion or beliefs, political views,
 sexual orientation, ethnicity and union membership (the special categories in
 GDPR art. 9). The prompts tell the model so, and the Memory view makes any
 line easy to remove. Prompts can't guarantee this, so it is a rule for the
-model, not a promise to the user, and the docs say so.
+model, not a promise to the user, and the docs say so. This is enough to start
+with; it is revisited once there are pages to judge it by.
 
 ### The memory folder
 
@@ -182,6 +183,17 @@ Each step is usable and reviewable on its own:
 4. Page updates with the model, batched and validated.
 5. `about-me.md`.
 6. History and undo in the Memory view.
+
+## Decided with the maintainer
+
+The proposal asked five questions, answered on 2026-10-11 (#58):
+
+1. The memory folder is `~/Lax/`, and GUARDRAILS §6 becomes two `0700` folders.
+2. An entity gets a page once it is mentioned on two different days.
+3. A missing page file is never taken as "forget" without asking: it is shown
+   as missing, with "Recreate page" and "Forget".
+4. Special categories as a rule for the model is enough to start with.
+5. Versions are kept in SQLite, not git.
 
 ## Consequences
 

@@ -18,4 +18,4 @@ chat logs.
 | [0005](0005-memory-as-markdown.md) | Memory pages stored as Markdown files | Accepted |
 | [0006](0006-sqlite-with-rusqlite.md) | SQLite through rusqlite, with SQLite compiled in | Accepted |
 | [0007](0007-http-client-for-model-calls.md) | reqwest with macOS TLS for model calls | Accepted |
-| [0008](0008-learning-memory.md) | How the memory learns, and how user edits are protected | Proposed |
+| [0008](0008-learning-memory.md) | How the memory learns, and how user edits are protected | Accepted |
