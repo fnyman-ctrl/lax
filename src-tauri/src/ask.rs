@@ -33,6 +33,8 @@ const MAX_ENTRIES: usize = 60;
 const MAX_CHARS: usize = 14_000;
 /// Most entries taken from each way of finding them.
 const PER_SOURCE: usize = 40;
+/// Most named entities whose facts are given.
+const MAX_KNOWN_ENTITIES: usize = 5;
 /// Entries given when nothing in the question narrows it down.
 const RECENT: usize = 40;
 /// Room for a model that reasons before answering, as for the journal.
@@ -135,8 +137,10 @@ fn gather<Tz: TimeZone>(
         }
     };
 
+    // What the memory knows comes first, and counts against the budget.
+    let known = known(store, &entities)?;
     let mut seen = HashSet::new();
-    let mut chars = 0;
+    let mut chars: usize = known.iter().map(|k| k.chars().count()).sum();
     let mut episodes = Vec::new();
     for episode in candidates {
         if episodes.len() >= MAX_ENTRIES {
@@ -154,7 +158,7 @@ fn gather<Tz: TimeZone>(
     }
     episodes.sort_by_key(|e| (e.started_at, e.id));
     Ok(Found {
-        known: known(store, &entities)?,
+        known,
         episodes,
         recent_only,
         timed: range.is_some(),
@@ -173,7 +177,7 @@ fn known(store: &Store, entities: &[i64]) -> crate::store::Result<Vec<String>> {
         ));
     }
     let all = store.entities()?;
-    for id in entities {
+    for id in entities.iter().take(MAX_KNOWN_ENTITIES) {
         let (Some(entity), Some(facts)) = (
             all.iter().find(|e| e.id == *id),
             store.page_of(*id)?.and_then(|p| p.facts),
@@ -605,7 +609,9 @@ pub async fn ask_memory(app: AppHandle, question: String) -> Result<AskAnswer, S
             .ok_or("Choose a chat model under Models first.")?;
         (choice, gather(&store, &question, &now).map_err(failed)?)
     };
-    if found.episodes.is_empty() && found.known.is_empty() {
+    // A time with nothing in it is answered as such: what the memory knows
+    // in general says nothing about that day.
+    if found.episodes.is_empty() && (found.timed || found.known.is_empty()) {
         return Ok(AskAnswer {
             answer: if found.timed {
                 "There's nothing in the journal from that time.".to_string()
@@ -984,6 +990,14 @@ mod tests {
         // A question about no one still gets what the memory knows about the user.
         let found = gather(&store, "Sammanfatta", &now()).unwrap();
         assert_eq!(found.known.len(), 1);
+        // It counts against the budget: entries make room for it.
+        let known: usize = found.known.iter().map(|k| k.chars().count()).sum();
+        let entries: usize = found
+            .episodes
+            .iter()
+            .map(|e| e.summary.chars().count() + 60)
+            .sum();
+        assert!(known + entries <= MAX_CHARS);
         let _ = std::fs::remove_dir_all(folder);
     }
 
