@@ -20,6 +20,7 @@ use crate::exclusions::Exclusions;
 use crate::pause::CaptureState;
 use crate::redact::redact;
 
+mod ask;
 mod memory;
 pub use memory::{EntityKind, Merged, Renamed, UnrecognizedEpisode, name_key};
 
@@ -470,26 +471,33 @@ impl Store {
              ORDER BY e.started_at DESC, e.id DESC
              LIMIT ?3",
         )?;
-        let rows = statement.query_map(params![before_ms, before_id, sql_limit(limit)], |row| {
-            let started: i64 = row.get(1)?;
-            let ended: i64 = row.get(2)?;
-            let names: String = row.get(4)?;
-            let count: i64 = row.get(5)?;
-            Ok(Episode {
-                id: row.get(0)?,
-                started_at: DateTime::from_timestamp_millis(started).unwrap_or_default(),
-                ended_at: DateTime::from_timestamp_millis(ended).unwrap_or_default(),
-                summary: row.get(3)?,
-                app_names: names
-                    .lines()
-                    .filter(|n| !n.is_empty())
-                    .map(String::from)
-                    .collect(),
-                captures: usize::try_from(count).unwrap_or(0),
-            })
-        })?;
+        let rows = statement.query_map(
+            params![before_ms, before_id, sql_limit(limit)],
+            episode_from_row,
+        )?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
+}
+
+/// The columns `id, started_at, ended_at, summary, app_names, captures` as
+/// an [`Episode`].
+fn episode_from_row(row: &Row) -> rusqlite::Result<Episode> {
+    let started: i64 = row.get(1)?;
+    let ended: i64 = row.get(2)?;
+    let names: String = row.get(4)?;
+    let count: i64 = row.get(5)?;
+    Ok(Episode {
+        id: row.get(0)?,
+        started_at: DateTime::from_timestamp_millis(started).unwrap_or_default(),
+        ended_at: DateTime::from_timestamp_millis(ended).unwrap_or_default(),
+        summary: row.get(3)?,
+        app_names: names
+            .lines()
+            .filter(|n| !n.is_empty())
+            .map(String::from)
+            .collect(),
+        captures: usize::try_from(count).unwrap_or(0),
+    })
 }
 
 /// One request to a remote provider, as it was sent (GUARDRAILS §3).

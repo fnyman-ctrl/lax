@@ -1,0 +1,927 @@
+//! Ask your memory, first version (Stage 5): the user asks a question in
+//! Lax, and the chat model on this Mac answers from the journal.
+//!
+//! - Finding what the question is about takes no model call: a time named
+//!   in the question ("i tisdags", "last week"), names the memory knows, and
+//!   a full-text search of the journal, within a size budget.
+//! - The question is the user's own request. The journal entries were
+//!   written from captured text, so they go in only as `Captured` data, and
+//!   the answer must be `{"answer": string, "sources": [number]}`, with
+//!   sources among the entries given (GUARDRAILS §5).
+//! - Nothing is stored: not the question, not the answer. Logs hold counts
+//!   and timings only.
+
+use std::collections::HashSet;
+use std::sync::{Mutex, PoisonError};
+
+use chrono::{
+    DateTime, Datelike, Local, Months, NaiveDate, NaiveTime, TimeDelta, TimeZone, Utc, Weekday,
+};
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Manager};
+
+use crate::journal::EpisodeItem;
+use crate::logging::{self, ErrorKind, Field};
+use crate::models::structured::{self, Captured, StructuredError, Validate};
+use crate::models::{Endpoint, ModelClient};
+use crate::store::{Episode, ModelTask, Store};
+
+/// Most entries and characters of entries given to the model, so the prompt
+/// fits a small local model's context and is answered within the timeout.
+const MAX_ENTRIES: usize = 60;
+const MAX_CHARS: usize = 14_000;
+/// Most entries taken from each way of finding them.
+const PER_SOURCE: usize = 40;
+/// Entries given when nothing in the question narrows it down.
+const RECENT: usize = 40;
+/// Room for a model that reasons before answering, as for the journal.
+const MAX_TOKENS: u32 = 2000;
+const MAX_QUESTION_CHARS: usize = 1000;
+const MAX_ANSWER_CHARS: usize = 4000;
+
+const TASK: &str = "Answer the user's question using only the journal entries in the \
+captured blocks. Each entry starts with its number in brackets, then when it happened and in \
+which apps. Answer briefly and directly, in the language of the question. For several things, \
+use short lines starting with \"- \". Put the numbers of the entries the answer is based on in \
+sources. If the entries don't answer the question, say so plainly; don't guess.";
+const SHAPE: &str = r#"{"answer": string, "sources": [number]}"#;
+
+/// What the model must answer.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Reply {
+    answer: String,
+    sources: Vec<u32>,
+}
+
+impl Validate for Reply {
+    fn validate(&self) -> Result<(), &'static str> {
+        let answer = self.answer.trim();
+        if answer.is_empty() {
+            return Err("an empty answer");
+        }
+        if answer.chars().count() > MAX_ANSWER_CHARS {
+            return Err("an answer that was too long");
+        }
+        if answer
+            .chars()
+            .any(|c| (c.is_control() && c != '\n') || structured::is_invisible(c))
+        {
+            return Err("an answer with control or invisible characters");
+        }
+        if self.sources.len() > MAX_ENTRIES {
+            return Err("too many sources");
+        }
+        Ok(())
+    }
+}
+
+/// The entries a question is about, and how they were found.
+#[derive(Debug)]
+struct Found {
+    episodes: Vec<Episode>,
+    /// Nothing in the question narrowed it down, so these are the latest.
+    recent_only: bool,
+    /// The question named a time.
+    timed: bool,
+}
+
+/// Finds the entries `question` is about, oldest first, within the budget.
+fn gather<Tz: TimeZone>(
+    store: &Store,
+    question: &str,
+    now: &DateTime<Tz>,
+) -> crate::store::Result<Found> {
+    let range = time_range(question, now);
+    let asked = words(question);
+    let entities = named_entities(&asked, &store.entity_names()?);
+    let search = search_words(&asked);
+
+    let mentioning: Vec<Episode> = store.episodes_mentioning(&entities, PER_SOURCE)?;
+    let matching: Vec<Episode> = store.search_episodes(&search, PER_SOURCE)?;
+    let mut recent_only = false;
+
+    // In order of priority; the budget cuts from the end.
+    let candidates: Vec<Episode> = match range {
+        Some((from, to)) => {
+            let mut in_range = store.episodes_between(from, to, 500)?;
+            in_range.reverse(); // Latest first, so the budget keeps the end of the time.
+            if entities.is_empty() && search.is_empty() {
+                in_range
+            } else {
+                let wanted: HashSet<i64> =
+                    mentioning.iter().chain(&matching).map(|e| e.id).collect();
+                let (first, rest): (Vec<Episode>, Vec<Episode>) =
+                    in_range.into_iter().partition(|e| wanted.contains(&e.id));
+                first.into_iter().chain(rest).collect()
+            }
+        }
+        None => {
+            let both: Vec<Episode> = mentioning.into_iter().chain(matching).collect();
+            if both.is_empty() {
+                recent_only = true;
+                store.episodes(None, RECENT)?
+            } else {
+                both
+            }
+        }
+    };
+
+    let mut seen = HashSet::new();
+    let mut chars = 0;
+    let mut episodes = Vec::new();
+    for episode in candidates {
+        if episodes.len() >= MAX_ENTRIES {
+            break;
+        }
+        if !seen.insert(episode.id) {
+            continue;
+        }
+        let length = episode.summary.chars().count() + 60;
+        if chars + length > MAX_CHARS {
+            break;
+        }
+        chars += length;
+        episodes.push(episode);
+    }
+    episodes.sort_by_key(|e| (e.started_at, e.id));
+    Ok(Found {
+        episodes,
+        recent_only,
+        timed: range.is_some(),
+    })
+}
+
+/// The words of `text`, lowercased, split at anything that isn't a letter
+/// or digit.
+fn words(text: &str) -> Vec<String> {
+    text.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+/// The entities whose names appear in the question as whole words.
+fn named_entities(asked: &[String], names: &[(i64, String)]) -> Vec<i64> {
+    let question = format!(" {} ", asked.join(" "));
+    let mut found: Vec<i64> = names
+        .iter()
+        .filter(|(_, key)| {
+            let name = words(key).join(" ");
+            !name.is_empty() && question.contains(&format!(" {name} "))
+        })
+        .map(|(id, _)| *id)
+        .collect();
+    found.sort_unstable();
+    found.dedup();
+    found
+}
+
+/// Words worth searching the journal for: not the little words of a
+/// question, not words about time, and at least three letters (or with a
+/// digit, like "Q3").
+fn search_words(asked: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    asked
+        .iter()
+        .filter(|w| w.chars().count() >= 3 || w.chars().any(|c| c.is_ascii_digit()))
+        .filter(|w| !STOP_WORDS.contains(&w.as_str()) && !is_time_word(w))
+        .filter(|w| seen.insert(w.as_str()))
+        .take(12)
+        .cloned()
+        .collect()
+}
+
+const STOP_WORDS: &[&str] = &[
+    // Swedish
+    "vad",
+    "vem",
+    "vilka",
+    "vilken",
+    "vilket",
+    "när",
+    "var",
+    "hur",
+    "varför",
+    "gjorde",
+    "göra",
+    "gör",
+    "har",
+    "hade",
+    "jag",
+    "mig",
+    "min",
+    "mitt",
+    "mina",
+    "med",
+    "och",
+    "att",
+    "det",
+    "den",
+    "som",
+    "för",
+    "från",
+    "till",
+    "om",
+    "på",
+    "av",
+    "en",
+    "ett",
+    "är",
+    "var",
+    "vara",
+    "blev",
+    "kan",
+    "kunde",
+    "ska",
+    "skulle",
+    "något",
+    "några",
+    "allt",
+    "alla",
+    "mest",
+    "jobbade",
+    "jobbat",
+    "arbetade",
+    "arbetat",
+    "sysslade",
+    "pratade",
+    "pratat",
+    "senast",
+    "status",
+    "läget",
+    "hände",
+    "hänt",
+    "berätta",
+    "sammanfatta",
+    "lax",
+    // English
+    "what",
+    "who",
+    "which",
+    "when",
+    "where",
+    "how",
+    "why",
+    "did",
+    "does",
+    "doing",
+    "done",
+    "have",
+    "has",
+    "had",
+    "the",
+    "and",
+    "with",
+    "for",
+    "from",
+    "about",
+    "was",
+    "were",
+    "are",
+    "this",
+    "that",
+    "those",
+    "these",
+    "any",
+    "all",
+    "most",
+    "work",
+    "worked",
+    "working",
+    "talk",
+    "talked",
+    "last",
+    "latest",
+    "happened",
+    "tell",
+    "summarize",
+    "summarise",
+    "can",
+    "you",
+];
+
+/// Month names are left in: "Jan" and "Maj" are names too, and a month
+/// name alone doesn't narrow the time.
+fn is_time_word(word: &str) -> bool {
+    TIME_WORDS.contains(&word) || weekday(word).is_some()
+}
+
+const TIME_WORDS: &[&str] = &[
+    "idag",
+    "dag",
+    "igår",
+    "går",
+    "förrgår",
+    "morse",
+    "imorse",
+    "eftermiddag",
+    "kväll",
+    "veckan",
+    "vecka",
+    "förra",
+    "denna",
+    "här",
+    "månaden",
+    "månad",
+    "today",
+    "yesterday",
+    "morning",
+    "afternoon",
+    "evening",
+    "week",
+    "month",
+    "before",
+];
+
+/// The time `question` names, as a range in UTC, using the local calendar
+/// of `now`. Swedish and English.
+fn time_range<Tz: TimeZone>(
+    question: &str,
+    now: &DateTime<Tz>,
+) -> Option<(DateTime<Utc>, DateTime<Utc>)> {
+    let asked = words(question);
+    let text = format!(" {} ", asked.join(" "));
+    let has = |phrase: &str| text.contains(&format!(" {phrase} "));
+    let today = now.date_naive();
+    let tz = now.timezone();
+    let days = |from: NaiveDate, count: i64| {
+        let start = local_midnight(&tz, from)?;
+        let end = local_midnight(&tz, from + TimeDelta::days(count))?;
+        Some((start, end))
+    };
+
+    if has("förrgår") || has("i förrgår") || has("day before yesterday") {
+        return days(today - TimeDelta::days(2), 1);
+    }
+    if has("igår") || has("i går") || has("yesterday") {
+        return days(today - TimeDelta::days(1), 1);
+    }
+    if has("idag")
+        || has("i dag")
+        || has("today")
+        || has("imorse")
+        || has("i morse")
+        || has("this morning")
+        || has("this afternoon")
+        || has("i eftermiddag")
+    {
+        return days(today, 1);
+    }
+    let monday = today - TimeDelta::days(i64::from(today.weekday().num_days_from_monday()));
+    if has("förra veckan") || has("last week") {
+        return days(monday - TimeDelta::days(7), 7);
+    }
+    if has("den här veckan") || has("denna vecka") || has("i veckan") || has("this week") {
+        return days(monday, 7);
+    }
+    let first = today.with_day(1)?;
+    if has("förra månaden") || has("last month") {
+        let previous = first.checked_sub_months(Months::new(1))?;
+        return Some((local_midnight(&tz, previous)?, local_midnight(&tz, first)?));
+    }
+    if has("den här månaden") || has("denna månad") || has("this month") {
+        let next = first.checked_add_months(Months::new(1))?;
+        return Some((local_midnight(&tz, first)?, local_midnight(&tz, next)?));
+    }
+    // A date: 2026-10-07, "7 oktober", "7 okt", "October 7".
+    for word in question.split_whitespace() {
+        let word = word.trim_matches(|c: char| !c.is_ascii_digit());
+        if let Ok(date) = NaiveDate::parse_from_str(word, "%Y-%m-%d") {
+            return days(date, 1);
+        }
+    }
+    for pair in asked.windows(2) {
+        let (day, name) = match (pair[0].parse::<u32>(), pair[1].parse::<u32>()) {
+            (Ok(day), Err(_)) => (day, &pair[1]),
+            (Err(_), Ok(day)) => (day, &pair[0]),
+            _ => continue,
+        };
+        if let Some(month) = month(name) {
+            let mut date = NaiveDate::from_ymd_opt(today.year(), month, day)?;
+            if date > today {
+                date = NaiveDate::from_ymd_opt(today.year() - 1, month, day)?;
+            }
+            return days(date, 1);
+        }
+    }
+    // A weekday: "i tisdags" is the last one before today; "tisdag" or
+    // "Tuesday" may be today.
+    for word in &asked {
+        if let Some((day, past)) = weekday(word) {
+            let back =
+                (7 + today.weekday().num_days_from_monday() - day.num_days_from_monday()) % 7;
+            let back = if back == 0 && past { 7 } else { back };
+            return days(today - TimeDelta::days(i64::from(back)), 1);
+        }
+    }
+    None
+}
+
+fn local_midnight<Tz: TimeZone>(tz: &Tz, date: NaiveDate) -> Option<DateTime<Utc>> {
+    tz.from_local_datetime(&date.and_time(NaiveTime::MIN))
+        .earliest()
+        .map(|t| t.with_timezone(&Utc))
+}
+
+/// A weekday name, and whether it is the Swedish past form ("tisdags").
+fn weekday(word: &str) -> Option<(Weekday, bool)> {
+    const DAYS: &[(&str, Weekday)] = &[
+        ("måndag", Weekday::Mon),
+        ("tisdag", Weekday::Tue),
+        ("onsdag", Weekday::Wed),
+        ("torsdag", Weekday::Thu),
+        ("fredag", Weekday::Fri),
+        ("lördag", Weekday::Sat),
+        ("söndag", Weekday::Sun),
+        ("monday", Weekday::Mon),
+        ("tuesday", Weekday::Tue),
+        ("wednesday", Weekday::Wed),
+        ("thursday", Weekday::Thu),
+        ("friday", Weekday::Fri),
+        ("saturday", Weekday::Sat),
+        ("sunday", Weekday::Sun),
+    ];
+    DAYS.iter().find_map(|(name, day)| {
+        if word == *name {
+            Some((*day, false))
+        } else if word.strip_suffix('s') == Some(name) {
+            Some((*day, true))
+        } else {
+            None
+        }
+    })
+}
+
+/// A month name or its short form, Swedish or English, as 1–12.
+fn month(word: &str) -> Option<u32> {
+    const MONTHS: &[&[&str]] = &[
+        &["januari", "january", "jan"],
+        &["februari", "february", "feb"],
+        &["mars", "march", "mar"],
+        &["april", "apr"],
+        &["maj", "may"],
+        &["juni", "june", "jun"],
+        &["juli", "july", "jul"],
+        &["augusti", "august", "aug"],
+        &["september", "sep", "sept"],
+        &["oktober", "october", "okt", "oct"],
+        &["november", "nov"],
+        &["december", "dec"],
+    ];
+    MONTHS
+        .iter()
+        .position(|names| names.contains(&word))
+        .and_then(|i| u32::try_from(i + 1).ok())
+}
+
+/// One entry as the model sees it: "[3] Tue 2026-10-07 14:05–14:20 (Mail,
+/// Slack): …". All of it goes in as captured data.
+fn entry_text<Tz: TimeZone>(number: usize, episode: &Episode, tz: &Tz) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let start = episode.started_at.with_timezone(tz);
+    let end = episode.ended_at.with_timezone(tz);
+    format!(
+        "[{number}] {} {}–{} ({}): {}",
+        start.format("%a %Y-%m-%d"),
+        start.format("%H:%M"),
+        end.format("%H:%M"),
+        episode.app_names.join(", "),
+        episode.summary
+    )
+}
+
+/// The question, with today's date so the model can place "yesterday".
+fn request<Tz: TimeZone>(question: &str, now: &DateTime<Tz>) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    format!(
+        "Today is {}.\n\nQuestion: {question}",
+        now.format("%A %Y-%m-%d, %H:%M")
+    )
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AskAnswer {
+    pub answer: String,
+    /// The entries the answer says it is based on.
+    pub sources: Vec<EpisodeItem>,
+    /// How many entries the model was given.
+    pub considered: usize,
+    /// Nothing in the question narrowed it down, so the model was given
+    /// the latest entries.
+    pub recent_only: bool,
+}
+
+/// Answers `question` from the journal with the chosen chat model.
+#[tauri::command]
+pub async fn ask_memory(app: AppHandle, question: String) -> Result<AskAnswer, String> {
+    let question = question.trim().to_string();
+    if question.is_empty() {
+        return Err("Type a question.".to_string());
+    }
+    if question.chars().count() > MAX_QUESTION_CHARS {
+        return Err(format!(
+            "A question can be at most {MAX_QUESTION_CHARS} characters."
+        ));
+    }
+    let now = Local::now();
+    let (choice, found) = {
+        let store = app
+            .try_state::<Mutex<Store>>()
+            .ok_or("The database isn't available.")?;
+        let store = store.lock().unwrap_or_else(PoisonError::into_inner);
+        let failed = |_| "Lax couldn't read the journal.".to_string();
+        let choice = store
+            .model_choice(ModelTask::Chat)
+            .map_err(failed)?
+            .ok_or("Choose a chat model under Models first.")?;
+        (choice, gather(&store, &question, &now).map_err(failed)?)
+    };
+    if found.episodes.is_empty() {
+        return Ok(AskAnswer {
+            answer: if found.timed {
+                "There's nothing in the journal from that time.".to_string()
+            } else {
+                "There's nothing in the journal yet. Turn the journal on, and ask again once it \
+                 has written a few entries."
+                    .to_string()
+            },
+            sources: Vec::new(),
+            considered: 0,
+            recent_only: found.recent_only,
+        });
+    }
+
+    let started = std::time::Instant::now();
+    let texts: Vec<String> = found
+        .episodes
+        .iter()
+        .enumerate()
+        .map(|(i, e)| entry_text(i + 1, e, &Local))
+        .collect();
+    let reply = answer(
+        &choice.base_url,
+        &choice.model,
+        &request(&question, &now),
+        &texts,
+    )
+    .await;
+    let reply = reply.and_then(|reply| {
+        if reply
+            .sources
+            .iter()
+            .any(|&n| n == 0 || n as usize > found.episodes.len())
+        {
+            return Err(StructuredError::Invalid("a source that wasn't given"));
+        }
+        Ok(reply)
+    });
+    match reply {
+        Ok(reply) => {
+            let mut cited: Vec<usize> = reply.sources.iter().map(|&n| n as usize - 1).collect();
+            cited.sort_unstable();
+            cited.dedup();
+            logging::info(
+                "ask.answered",
+                &[
+                    Field::Count("entries", found.episodes.len() as u64),
+                    Field::Count("cited", cited.len() as u64),
+                    Field::Flag("recent_only", found.recent_only),
+                    Field::Duration("elapsed", started.elapsed()),
+                ],
+            );
+            Ok(AskAnswer {
+                answer: reply.answer.trim().to_string(),
+                sources: cited
+                    .into_iter()
+                    .map(|i| item(&found.episodes[i]))
+                    .collect(),
+                considered: found.episodes.len(),
+                recent_only: found.recent_only,
+            })
+        }
+        Err(error) => {
+            logging::warn(
+                "ask.failed",
+                &[
+                    Field::Flag("model_unavailable", error.model_unavailable()),
+                    Field::Error(ErrorKind::Other),
+                ],
+            );
+            Err(if error.model_unavailable() {
+                "Lax couldn't reach the model. Is the model server running?".to_string()
+            } else {
+                "The model's answer couldn't be used. Try asking again, perhaps in other words."
+                    .to_string()
+            })
+        }
+    }
+}
+
+async fn answer(
+    base_url: &str,
+    model: &str,
+    request: &str,
+    texts: &[String],
+) -> Result<Reply, StructuredError> {
+    let endpoint = Endpoint::parse(base_url).map_err(|_| StructuredError::NotTheRequestedJson)?;
+    let client = ModelClient::new(endpoint).map_err(StructuredError::Model)?;
+    let captured: Vec<Captured> = texts.iter().map(|t| Captured(t.as_str())).collect();
+    structured::ask_for(
+        &client,
+        model,
+        TASK,
+        SHAPE,
+        Some(request),
+        &captured,
+        MAX_TOKENS,
+    )
+    .await
+}
+
+fn item(e: &Episode) -> EpisodeItem {
+    EpisodeItem {
+        id: e.id,
+        started_at: e.started_at.timestamp_millis(),
+        ended_at: e.ended_at.timestamp_millis(),
+        summary: e.summary.clone(),
+        app_names: e.app_names.clone(),
+        captures: e.captures,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::{EntityKind, NewCapture, NewEpisode};
+    use chrono::FixedOffset;
+
+    fn stockholm() -> FixedOffset {
+        FixedOffset::east_opt(2 * 3600).unwrap()
+    }
+
+    /// Sunday 11 October 2026, 15:00 in Stockholm.
+    fn now() -> DateTime<FixedOffset> {
+        stockholm()
+            .with_ymd_and_hms(2026, 10, 11, 15, 0, 0)
+            .unwrap()
+    }
+
+    fn day(range: Option<(DateTime<Utc>, DateTime<Utc>)>) -> Option<(String, i64)> {
+        range.map(|(from, to)| {
+            (
+                from.with_timezone(&stockholm())
+                    .format("%Y-%m-%d %H:%M")
+                    .to_string(),
+                (to - from).num_days(),
+            )
+        })
+    }
+
+    fn on(date: &str, days: i64) -> Option<(String, i64)> {
+        Some((format!("{date} 00:00"), days))
+    }
+
+    #[test]
+    fn times_in_swedish_and_english() {
+        let range = |q: &str| day(time_range(q, &now()));
+        assert_eq!(range("Vad gjorde jag idag?"), on("2026-10-11", 1));
+        assert_eq!(range("vad gjorde jag i dag"), on("2026-10-11", 1));
+        assert_eq!(range("What did I do this morning?"), on("2026-10-11", 1));
+        assert_eq!(range("Vad gjorde jag igår?"), on("2026-10-10", 1));
+        assert_eq!(range("och i går då"), on("2026-10-10", 1));
+        assert_eq!(range("yesterday"), on("2026-10-10", 1));
+        assert_eq!(range("i förrgår"), on("2026-10-09", 1));
+        // On a Sunday, "i tisdags" is this week's Tuesday.
+        assert_eq!(range("Vad gjorde jag i tisdags?"), on("2026-10-06", 1));
+        assert_eq!(range("on Tuesday"), on("2026-10-06", 1));
+        assert_eq!(range("i lördags"), on("2026-10-10", 1));
+        // "i söndags" on a Sunday is a week ago; "söndag" is today.
+        assert_eq!(range("i söndags"), on("2026-10-04", 1));
+        assert_eq!(range("söndag"), on("2026-10-11", 1));
+        assert_eq!(range("förra veckan"), on("2026-09-28", 7));
+        assert_eq!(range("What did I do last week?"), on("2026-09-28", 7));
+        assert_eq!(range("i veckan"), on("2026-10-05", 7));
+        assert_eq!(range("förra månaden"), on("2026-09-01", 30));
+        assert_eq!(range("den 7 oktober"), on("2026-10-07", 1));
+        assert_eq!(range("7 okt"), on("2026-10-07", 1));
+        assert_eq!(range("on October 7"), on("2026-10-07", 1));
+        assert_eq!(range("2026-10-07?"), on("2026-10-07", 1));
+        // A date later this year is last year's.
+        assert_eq!(range("24 december"), on("2025-12-24", 1));
+        assert_eq!(range("Hur går det med Q3-offerten?"), None);
+        assert_eq!(range("Vem är Anna Example?"), None);
+    }
+
+    #[test]
+    fn search_words_leave_out_question_and_time_words() {
+        assert_eq!(
+            search_words(&words("Vad gjorde jag med Q3-offerten i tisdags?")),
+            ["q3", "offerten"]
+        );
+        assert_eq!(
+            search_words(&words("What did I work on with the launch last week?")),
+            ["launch"]
+        );
+        assert!(search_words(&words("Vad gjorde jag igår?")).is_empty());
+    }
+
+    #[test]
+    fn names_are_found_as_whole_words() {
+        let names = vec![
+            (1, "anna example".to_string()),
+            (1, "anna".to_string()),
+            (2, "bo".to_string()),
+            (3, "q3 lansering".to_string()),
+        ];
+        assert_eq!(
+            named_entities(&words("Vad pratade jag med Anna om?"), &names),
+            [1]
+        );
+        // "bo" is not found inside "bokade".
+        assert!(named_entities(&words("Vem bokade mötet?"), &names).is_empty());
+        assert_eq!(
+            named_entities(&words("Hur går Q3-lanseringen? Q3 lansering?"), &names),
+            [3]
+        );
+    }
+
+    fn at(day: u32, hour: u32) -> DateTime<Utc> {
+        stockholm()
+            .with_ymd_and_hms(2026, 10, day, hour, 0, 0)
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    fn episode(store: &mut Store, when: DateTime<Utc>, summary: &str) -> i64 {
+        let id = store
+            .insert(&NewCapture {
+                captured_at: when,
+                bundle_id: "com.example.mail",
+                app_name: "Mail",
+                window_title: "Synthetic window",
+                site: None,
+                text: "Synthetic text",
+            })
+            .unwrap()
+            .unwrap();
+        store
+            .record_episode(
+                &NewEpisode {
+                    summary: summary.to_string(),
+                    model: "example-model".to_string(),
+                    created_at: when,
+                },
+                &[id],
+            )
+            .unwrap()
+            .unwrap()
+    }
+
+    fn sample() -> Store {
+        let mut store = Store::open_in_memory().unwrap();
+        let tuesday = episode(&mut store, at(6, 10), "Mailade Anna om Q3-offerten.");
+        episode(&mut store, at(6, 14), "Läste nyheter.");
+        episode(&mut store, at(9, 9), "Planerade lanseringen med Bo.");
+        let friday = episode(&mut store, at(10, 11), "Ringde Anna om leveransen.");
+        for id in [tuesday, friday] {
+            store
+                .record_mentions(
+                    id,
+                    &[(EntityKind::Person, "Anna Example".to_string())],
+                    at(10, 12),
+                )
+                .unwrap();
+        }
+        store
+            .rename_entity(store.entity_names().unwrap()[0].0, "Anna")
+            .unwrap();
+        store
+    }
+
+    fn summaries(found: &Found) -> Vec<&str> {
+        found.episodes.iter().map(|e| e.summary.as_str()).collect()
+    }
+
+    #[test]
+    fn a_time_gives_that_time_and_puts_matches_first() {
+        let store = sample();
+        let found = gather(&store, "Vad gjorde jag i tisdags?", &now()).unwrap();
+        assert_eq!(
+            summaries(&found),
+            ["Mailade Anna om Q3-offerten.", "Läste nyheter."]
+        );
+        assert!(found.timed && !found.recent_only);
+        let found = gather(&store, "Vad gjorde jag igår?", &now()).unwrap();
+        assert_eq!(summaries(&found), ["Ringde Anna om leveransen."]);
+        let found = gather(&store, "Vad gjorde jag i torsdags?", &now()).unwrap();
+        assert!(found.episodes.is_empty() && found.timed);
+    }
+
+    #[test]
+    fn names_and_words_find_entries_at_any_time() {
+        let store = sample();
+        let found = gather(&store, "Vad har jag haft för mig med Anna?", &now()).unwrap();
+        assert_eq!(
+            summaries(&found),
+            ["Mailade Anna om Q3-offerten.", "Ringde Anna om leveransen."]
+        );
+        let found = gather(&store, "Hur går lanseringen?", &now()).unwrap();
+        assert_eq!(summaries(&found), ["Planerade lanseringen med Bo."]);
+    }
+
+    #[test]
+    fn without_anything_to_go_on_the_latest_entries_are_given() {
+        let store = sample();
+        let found = gather(&store, "Sammanfatta", &now()).unwrap();
+        assert!(found.recent_only);
+        assert_eq!(found.episodes.len(), 4);
+        // Oldest first.
+        assert_eq!(found.episodes[0].summary, "Mailade Anna om Q3-offerten.");
+    }
+
+    #[test]
+    fn the_budget_keeps_the_prompt_small() {
+        let mut store = Store::open_in_memory().unwrap();
+        let long = "Synthetic summary. ".repeat(30);
+        for hour in 0..24 {
+            episode(&mut store, at(10, hour), &long);
+        }
+        let found = gather(&store, "Vad gjorde jag igår?", &now()).unwrap();
+        let chars: usize = found
+            .episodes
+            .iter()
+            .map(|e| e.summary.chars().count())
+            .sum();
+        assert!(chars <= MAX_CHARS);
+        assert!(found.episodes.len() < 24);
+        // The end of the day is kept.
+        assert_eq!(found.episodes.last().unwrap().started_at, at(10, 23));
+    }
+
+    #[test]
+    fn answers_are_validated() {
+        let parse = |json: &str| structured::parse::<Reply>(json);
+        assert!(parse(r#"{"answer":"Du mailade Anna.","sources":[1]}"#).is_ok());
+        assert!(parse(r#"{"answer":"Rad ett\n- rad två","sources":[]}"#).is_ok());
+        assert!(parse(r#"{"answer":"  ","sources":[]}"#).is_err());
+        assert!(parse(r#"{"answer":"ok","sources":[1],"action":"send"}"#).is_err());
+        assert!(parse("{\"answer\":\"ok\u{202E}hidden\",\"sources\":[]}").is_err());
+        assert!(parse(r#"{"answer":"ok","sources":["1"]}"#).is_err());
+        assert!(
+            parse(&format!(
+                r#"{{"answer":"{}","sources":[]}}"#,
+                "a".repeat(4001)
+            ))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn entries_show_when_and_where() {
+        let episode = Episode {
+            id: 1,
+            started_at: at(6, 14),
+            ended_at: at(6, 14) + TimeDelta::minutes(15),
+            summary: "Mailade Anna.".to_string(),
+            app_names: vec!["Mail".to_string(), "Slack".to_string()],
+            captures: 3,
+        };
+        assert_eq!(
+            entry_text(3, &episode, &stockholm()),
+            "[3] Tue 2026-10-06 14:00–14:15 (Mail, Slack): Mailade Anna."
+        );
+        assert!(request("Vad gjorde jag?", &now()).starts_with("Today is Sunday 2026-10-11"));
+    }
+
+    /// Against a real model server, like `journal::tests::live_journal_episode`.
+    #[tokio::test]
+    #[ignore = "needs a local model server: LAX_LIVE_MODEL_URL, LAX_LIVE_CHAT_MODEL"]
+    async fn live_answer() {
+        let env = |name| std::env::var(name).unwrap_or_else(|_| panic!("{name} is not set"));
+        let store = sample();
+        let found = gather(&store, "Vad pratade jag med Anna om i tisdags?", &now()).unwrap();
+        let texts: Vec<String> = found
+            .episodes
+            .iter()
+            .enumerate()
+            .map(|(i, e)| entry_text(i + 1, e, &stockholm()))
+            .collect();
+        let reply = answer(
+            &env("LAX_LIVE_MODEL_URL"),
+            &env("LAX_LIVE_CHAT_MODEL"),
+            &request("Vad pratade jag med Anna om i tisdags?", &now()),
+            &texts,
+        )
+        .await
+        .expect("an answer");
+        assert!(reply.answer.to_lowercase().contains("offert"));
+        assert!(reply.sources.contains(&1));
+    }
+}

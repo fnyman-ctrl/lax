@@ -103,7 +103,32 @@ pub async fn ask<T: DeserializeOwned + Validate>(
     captured: &[Captured<'_>],
     max_tokens: u32,
 ) -> Result<T, StructuredError> {
+    ask_for(client, model, task, shape, None, captured, max_tokens).await
+}
+
+/// Like [`ask`], with a request from the user, such as a question typed into
+/// Lax, placed before the captured blocks.
+///
+/// `request` is the user's own words plus facts from Lax itself (such as
+/// today's date). It must never contain captured text, which still goes in
+/// only through `captured`.
+pub async fn ask_for<T: DeserializeOwned + Validate>(
+    client: &ModelClient,
+    model: &str,
+    task: &'static str,
+    shape: &'static str,
+    request: Option<&str>,
+    captured: &[Captured<'_>],
+    max_tokens: u32,
+) -> Result<T, StructuredError> {
     let blocks: Vec<String> = captured.iter().map(Captured::delimited).collect();
+    let content = match request {
+        Some(request) => format!(
+            "Request from the user:\n{request}\n\n{}",
+            blocks.join("\n\n")
+        ),
+        None => blocks.join("\n\n"),
+    };
     let messages = [
         ChatMessage {
             role: Role::System,
@@ -111,7 +136,7 @@ pub async fn ask<T: DeserializeOwned + Validate>(
         },
         ChatMessage {
             role: Role::User,
-            content: blocks.join("\n\n"),
+            content,
         },
     ];
     let reply = client

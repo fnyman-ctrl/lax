@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { Ask } from "./Ask";
 import { Exclusions } from "./Exclusions";
 import { Forget } from "./Forget";
 import { Journal } from "./Journal";
@@ -60,8 +61,8 @@ const MATCH_END = "\u0003";
  */
 export function Viewer() {
   const [tab, setTab] = useState<
-    "journal" | "memory" | "captures" | "exclusions" | "models" | "outbox"
-  >("journal");
+    "ask" | "journal" | "memory" | "captures" | "exclusions" | "models" | "outbox"
+  >("ask");
   const [query, setQuery] = useState("");
   // Bumped after a deletion, so the lists start over from the database.
   const [version, setVersion] = useState(0);
@@ -78,6 +79,13 @@ export function Viewer() {
         <Status />
       </header>
       <nav className="tabs" aria-label="Sections">
+        <button
+          type="button"
+          aria-current={tab === "ask" ? "page" : undefined}
+          onClick={() => setTab("ask")}
+        >
+          Ask
+        </button>
         <button
           type="button"
           aria-current={tab === "journal" ? "page" : undefined}
@@ -121,7 +129,12 @@ export function Viewer() {
           Sent
         </button>
       </nav>
-      {tab === "journal" ? (
+      {/* Kept mounted, so a question being answered and this session's
+          answers survive switching tabs. */}
+      <div hidden={tab !== "ask"}>
+        <Ask onShowJournal={() => setTab("journal")} />
+      </div>
+      {tab === "ask" ? null : tab === "journal" ? (
         <Journal onShowModels={() => setTab("models")} />
       ) : tab === "memory" ? (
         <Memory onShowModels={() => setTab("models")} />

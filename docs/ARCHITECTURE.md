@@ -65,6 +65,14 @@ previous one, so they can be built, tested and improved independently.
 - **User edits win.** If the user edits a page, the edit is treated as ground truth
   and the model is instructed not to contradict it.
 
+## Ask
+
+- A question typed into Lax is answered from the journal by the chat model
+  (`src-tauri/src/ask.rs`). The entries are found without a model call: a
+  time in the question ("i tisdags", "last week"), names the memory knows,
+  and a full-text search, within a size budget. The answer names the entries
+  it is based on. Semantic search with local embeddings comes later.
+
 ## Models
 
 | Task | Default | Notes |

@@ -772,3 +772,57 @@ mark {
 .entity .seen {
   font-size: 0.85em;
 }
+
+/* Ask (src/Ask.tsx) */
+
+.ask-form {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 1.25rem;
+}
+
+.ask-form input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.6rem 0.9rem;
+  border-radius: 999px;
+}
+
+.ask .hint {
+  margin: 0.4rem 0 0;
+  font-size: 0.85em;
+}
+
+.ask .examples {
+  margin-top: 1rem;
+}
+
+.turn {
+  margin-top: 1.25rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.turn .question {
+  margin: 0 0 0.4rem;
+  font-weight: 600;
+}
+
+.turn .answer {
+  margin: 0;
+  font-size: 1.02rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.turn .sources {
+  margin-top: 0.6rem;
+  font-size: 0.95em;
+}
+
+.turn .sources summary {
+  cursor: pointer;
+  color: var(--muted);
+}
