@@ -21,7 +21,7 @@ use crate::pause::CaptureState;
 use crate::redact::redact;
 
 mod memory;
-pub use memory::{EntityKind, UnrecognizedEpisode, name_key};
+pub use memory::{EntityKind, Merged, Renamed, UnrecognizedEpisode, name_key};
 
 pub const DATABASE_FILE: &str = "lax.sqlite";
 
@@ -34,6 +34,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0004_outbox.sql"),
     include_str!("../migrations/0005_journal.sql"),
     include_str!("../migrations/0006_memory.sql"),
+    include_str!("../migrations/0007_memory_choices.sql"),
 ];
 
 /// How long raw captures are kept unless the user chooses otherwise
@@ -966,6 +967,8 @@ impl Store {
                 // from the captures, are part of "everything".
                 self.conn.execute("DELETE FROM outbox", [])?;
                 self.conn.execute("DELETE FROM episodes", [])?;
+                // The names the user asked Lax not to learn are names too.
+                self.conn.execute("DELETE FROM dont_learn", [])?;
                 self.conn.execute("DELETE FROM captures", [])?
             }
         })

@@ -1,5 +1,6 @@
 //! The memory's tables (Stage 4, ADR 0008): entities, the names they go by,
-//! and the episodes that mention them. See `migrations/0006_memory.sql`.
+//! the episodes that mention them, and what the user decided about them.
+//! See `migrations/0006_memory.sql` and `0007_memory_choices.sql`.
 
 use chrono::{DateTime, Utc};
 use rusqlite::{OptionalExtension, params};
@@ -7,6 +8,10 @@ use rusqlite::{OptionalExtension, params};
 use super::{Result, Store, sql_limit};
 
 const MEMORY_KEY: &str = "memory_enabled";
+
+/// An entity is new, and Lax only notes it, until it is mentioned on this
+/// many different days, or the user keeps it (ADR 0008).
+pub const DAYS_TO_KEEP: usize = 2;
 
 /// What an entity is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -25,7 +30,7 @@ impl EntityKind {
         }
     }
 
-    fn parse(value: &str) -> Option<Self> {
+    pub fn parse(value: &str) -> Option<Self> {
         match value {
             "person" => Some(EntityKind::Person),
             "organisation" => Some(EntityKind::Organisation),
@@ -65,6 +70,42 @@ pub struct Entity {
     /// On how many different days (local time) it was mentioned.
     pub days: usize,
     pub last_seen: DateTime<Utc>,
+    /// The user chose to keep it.
+    pub kept: bool,
+}
+
+impl Entity {
+    /// Still new: not kept, and not yet mentioned on `DAYS_TO_KEEP` days.
+    pub fn is_new(&self) -> bool {
+        !self.kept && self.days < DAYS_TO_KEEP
+    }
+}
+
+/// A name on the "don't learn" list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DontLearn {
+    pub kind: EntityKind,
+    pub name: String,
+}
+
+/// What became of a rename.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Renamed {
+    Done,
+    NotFound,
+    /// Another entity of the same kind goes by that name: merge instead.
+    Taken {
+        by: String,
+    },
+}
+
+/// What became of a merge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Merged {
+    Done,
+    NotFound,
+    /// A person can't be merged into a project, and so on.
+    DifferentKinds,
 }
 
 impl Store {
@@ -132,6 +173,14 @@ impl Store {
             if key.is_empty() {
                 continue;
             }
+            let unwanted: bool = tx.query_row(
+                "SELECT EXISTS (SELECT 1 FROM dont_learn WHERE kind = ?1 AND key = ?2)",
+                params![kind.as_str(), key],
+                |row| row.get(0),
+            )?;
+            if unwanted {
+                continue;
+            }
             let known: Option<i64> = tx
                 .query_row(
                     "SELECT entity_id FROM aliases WHERE kind = ?1 AND key = ?2",
@@ -171,7 +220,8 @@ impl Store {
                      WHERE entity_id = n.id AND name != n.name),
                     count(*),
                     count(DISTINCT date(e.started_at / 1000, 'unixepoch', 'localtime')),
-                    max(e.ended_at)
+                    max(e.ended_at),
+                    n.kept
              FROM entities AS n
              JOIN mentions AS m ON m.entity_id = n.id
              JOIN episodes AS e ON e.id = m.episode_id
@@ -198,6 +248,7 @@ impl Store {
                     mentions: usize::try_from(mentions).unwrap_or(0),
                     days: usize::try_from(days).unwrap_or(0),
                     last_seen: DateTime::from_timestamp_millis(last).unwrap_or_default(),
+                    kept: row.get::<_, i64>(7)? != 0,
                 },
             ))
         })?;
@@ -215,24 +266,155 @@ impl Store {
     }
 
     /// Deletes an entity, the names it goes by and its mentions. The
-    /// episodes stay. Returns whether it existed.
+    /// episodes stay. With `dont_learn`, its names go on the "don't learn"
+    /// list first, so later episodes can't bring it back. Returns whether
+    /// it existed.
     ///
     /// The rows are short, so this skips the full rebuild of
     /// [`Store::forget`]: `secure_delete` overwrites the freed pages and the
     /// checkpoint empties the write-ahead log, as for [`Store::expire`].
-    pub fn forget_entity(&self, id: i64) -> Result<bool> {
-        let deleted = self
-            .conn
-            .execute("DELETE FROM entities WHERE id = ?1", [id])?;
+    pub fn forget_entity(&mut self, id: i64, dont_learn: bool, now: DateTime<Utc>) -> Result<bool> {
+        let tx = self.conn.transaction()?;
+        if dont_learn {
+            tx.execute(
+                "INSERT OR IGNORE INTO dont_learn (kind, key, name, created_at)
+                 SELECT kind, key, name, ?2 FROM aliases WHERE entity_id = ?1 ORDER BY rowid",
+                params![id, now.timestamp_millis()],
+            )?;
+        }
+        let deleted = tx.execute("DELETE FROM entities WHERE id = ?1", [id])?;
+        tx.commit()?;
         if deleted > 0 {
             self.checkpoint()?;
         }
         Ok(deleted > 0)
     }
 
+    /// Keeps an entity even though it is still new. Returns whether it
+    /// exists.
+    pub fn keep_entity(&self, id: i64) -> Result<bool> {
+        Ok(self
+            .conn
+            .execute("UPDATE entities SET kept = 1 WHERE id = ?1", [id])?
+            > 0)
+    }
+
+    /// Gives an entity a new name. The new name also becomes one of its
+    /// names, so later episodes that use it find the entity; the old names
+    /// stay. Refused if another entity of its kind goes by the name.
+    pub fn rename_entity(&mut self, id: i64, name: &str) -> Result<Renamed> {
+        let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+        let key = name_key(&name);
+        let tx = self.conn.transaction()?;
+        let Some(kind): Option<String> = tx
+            .query_row("SELECT kind FROM entities WHERE id = ?1", [id], |row| {
+                row.get(0)
+            })
+            .optional()?
+        else {
+            return Ok(Renamed::NotFound);
+        };
+        let owner: Option<(i64, String)> = tx
+            .query_row(
+                "SELECT a.entity_id, e.name FROM aliases AS a
+                 JOIN entities AS e ON e.id = a.entity_id
+                 WHERE a.kind = ?1 AND a.key = ?2",
+                params![kind, key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        match owner {
+            Some((other, by)) if other != id => return Ok(Renamed::Taken { by }),
+            Some(_) => {}
+            None => {
+                tx.execute(
+                    "INSERT INTO aliases (kind, key, name, entity_id) VALUES (?1, ?2, ?3, ?4)",
+                    params![kind, key, name, id],
+                )?;
+            }
+        }
+        tx.execute(
+            "UPDATE entities SET name = ?2 WHERE id = ?1",
+            params![id, name],
+        )?;
+        tx.commit()?;
+        Ok(Renamed::Done)
+    }
+
+    /// Merges entity `from` into `into`: its names become `into`'s other
+    /// names, its mentions become `into`'s, and `from` is gone. Kept if
+    /// either was.
+    pub fn merge_entities(&mut self, from: i64, into: i64) -> Result<Merged> {
+        if from == into {
+            return Ok(Merged::NotFound);
+        }
+        let tx = self.conn.transaction()?;
+        let kind = |id: i64| {
+            tx.query_row("SELECT kind FROM entities WHERE id = ?1", [id], |row| {
+                row.get::<_, String>(0)
+            })
+            .optional()
+        };
+        let (Some(from_kind), Some(into_kind)) = (kind(from)?, kind(into)?) else {
+            return Ok(Merged::NotFound);
+        };
+        if from_kind != into_kind {
+            return Ok(Merged::DifferentKinds);
+        }
+        tx.execute(
+            "UPDATE aliases SET entity_id = ?2 WHERE entity_id = ?1",
+            [from, into],
+        )?;
+        tx.execute(
+            "INSERT OR IGNORE INTO mentions (entity_id, episode_id)
+             SELECT ?2, episode_id FROM mentions WHERE entity_id = ?1",
+            [from, into],
+        )?;
+        tx.execute(
+            "UPDATE entities SET kept = max(kept, (SELECT kept FROM entities WHERE id = ?1))
+             WHERE id = ?2",
+            [from, into],
+        )?;
+        tx.execute("DELETE FROM entities WHERE id = ?1", [from])?;
+        tx.commit()?;
+        Ok(Merged::Done)
+    }
+
+    /// The "don't learn" list, newest first.
+    pub fn dont_learn(&self) -> Result<Vec<DontLearn>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT kind, name FROM dont_learn ORDER BY created_at DESC, rowid")?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        let mut list = Vec::new();
+        for row in rows {
+            let (kind, name) = row?;
+            if let Some(kind) = EntityKind::parse(&kind) {
+                list.push(DontLearn { kind, name });
+            }
+        }
+        Ok(list)
+    }
+
+    /// Takes a name off the "don't learn" list, so Lax may learn it again
+    /// from new episodes. Returns whether it was there.
+    pub fn allow_learning(&self, kind: EntityKind, name: &str) -> Result<bool> {
+        let removed = self.conn.execute(
+            "DELETE FROM dont_learn WHERE kind = ?1 AND key = ?2",
+            params![kind.as_str(), name_key(name)],
+        )?;
+        if removed > 0 {
+            self.checkpoint()?;
+        }
+        Ok(removed > 0)
+    }
+
     /// Forgets everything the memory noted and turns it off. Episodes it
     /// already read stay read, so turning it on again starts with new ones.
-    /// Returns how many entities were forgotten.
+    /// The "don't learn" list stays: it is the user's own choice. Returns
+    /// how many entities were forgotten.
     pub fn forget_memory(&self) -> Result<usize> {
         self.set_memory_enabled(false)?;
         let deleted = self.conn.execute("DELETE FROM entities", [])?;
@@ -504,9 +686,230 @@ mod tests {
             .record_mentions(id, &[person("Anna Example"), person("Bo Exempel")], at(30))
             .unwrap();
         let anna = store.entities().unwrap()[0].id;
-        assert!(store.forget_entity(anna).unwrap());
-        assert!(!store.forget_entity(anna).unwrap());
+        assert!(store.forget_entity(anna, false, at(40)).unwrap());
+        assert!(!store.forget_entity(anna, false, at(41)).unwrap());
         assert_eq!(names(&store), [("Bo Exempel".to_string(), 1)]);
         assert_eq!(store.episodes(None, 10).unwrap().len(), 1);
+    }
+
+    fn id_of(store: &Store, name: &str) -> i64 {
+        store
+            .entities()
+            .unwrap()
+            .into_iter()
+            .find(|e| e.name == name)
+            .unwrap()
+            .id
+    }
+
+    #[test]
+    fn an_entity_is_new_until_seen_on_two_days_or_kept() {
+        let mut store = Store::open_in_memory().unwrap();
+        let today = episode(&mut store, 0, "Mail");
+        store
+            .record_mentions(
+                today,
+                &[person("Anna Example"), person("Bo Exempel")],
+                at(10),
+            )
+            .unwrap();
+        assert!(store.entities().unwrap().iter().all(Entity::is_new));
+
+        let tomorrow = episode(&mut store, 24 * 60, "Mail");
+        store
+            .record_mentions(tomorrow, &[person("Anna Example")], at(24 * 60 + 10))
+            .unwrap();
+        let bo = id_of(&store, "Bo Exempel");
+        assert!(store.keep_entity(bo).unwrap());
+        assert!(!store.entities().unwrap().iter().any(Entity::is_new));
+    }
+
+    #[test]
+    fn forgotten_with_dont_learn_never_comes_back() {
+        let mut store = Store::open_in_memory().unwrap();
+        let first = episode(&mut store, 0, "Mail");
+        store
+            .record_mentions(first, &[person("Anna Example")], at(10))
+            .unwrap();
+        let anna = id_of(&store, "Anna Example");
+        store.rename_entity(anna, "Anna E.").unwrap();
+        assert!(store.forget_entity(anna, true, at(11)).unwrap());
+        assert_eq!(
+            store.dont_learn().unwrap(),
+            [
+                DontLearn {
+                    kind: EntityKind::Person,
+                    name: "Anna Example".to_string()
+                },
+                DontLearn {
+                    kind: EntityKind::Person,
+                    name: "Anna E.".to_string()
+                },
+            ]
+        );
+
+        // Under either name, in any case, she isn't learned again; a project
+        // of the same name still is.
+        let second = episode(&mut store, 20, "Mail");
+        store
+            .record_mentions(
+                second,
+                &[
+                    person("anna e."),
+                    person("ANNA EXAMPLE"),
+                    (EntityKind::Project, "Anna Example".to_string()),
+                ],
+                at(30),
+            )
+            .unwrap();
+        let left = store.entities().unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].kind, EntityKind::Project);
+
+        // Allowed again, she is learned from new episodes.
+        assert!(
+            store
+                .allow_learning(EntityKind::Person, "Anna Example")
+                .unwrap()
+        );
+        assert!(
+            !store
+                .allow_learning(EntityKind::Person, "Anna Example")
+                .unwrap()
+        );
+        let third = episode(&mut store, 40, "Mail");
+        store
+            .record_mentions(third, &[person("Anna Example")], at(50))
+            .unwrap();
+        assert_eq!(store.entities().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn forgetting_without_dont_learn_keeps_no_names() {
+        let mut store = Store::open_in_memory().unwrap();
+        let id = episode(&mut store, 0, "Mail");
+        store
+            .record_mentions(id, &[person("Anna Example")], at(10))
+            .unwrap();
+        let anna = id_of(&store, "Anna Example");
+        store.forget_entity(anna, false, at(11)).unwrap();
+        assert!(store.dont_learn().unwrap().is_empty());
+    }
+
+    #[test]
+    fn deleting_everything_clears_the_dont_learn_list() {
+        let mut store = Store::open_in_memory().unwrap();
+        let id = episode(&mut store, 0, "Mail");
+        store
+            .record_mentions(id, &[person("Anna Example")], at(10))
+            .unwrap();
+        let anna = id_of(&store, "Anna Example");
+        store.forget_entity(anna, true, at(11)).unwrap();
+        store.forget_memory().unwrap();
+        assert_eq!(store.dont_learn().unwrap().len(), 1);
+        store.forget(&crate::store::Forget::Everything).unwrap();
+        assert!(store.dont_learn().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_new_name_is_found_by_later_episodes() {
+        let mut store = Store::open_in_memory().unwrap();
+        let first = episode(&mut store, 0, "Mail");
+        store
+            .record_mentions(first, &[person("Anna")], at(10))
+            .unwrap();
+        let anna = id_of(&store, "Anna");
+        assert_eq!(
+            store.rename_entity(anna, "  Anna   Example ").unwrap(),
+            Renamed::Done
+        );
+        let second = episode(&mut store, 20, "Mail");
+        store
+            .record_mentions(second, &[person("anna example")], at(30))
+            .unwrap();
+        let entities = store.entities().unwrap();
+        assert_eq!(entities.len(), 1);
+        assert_eq!(entities[0].name, "Anna Example");
+        assert_eq!(entities[0].aliases, ["Anna"]);
+        assert_eq!(entities[0].mentions, 2);
+        // Back to an old name it already has.
+        assert_eq!(store.rename_entity(anna, "Anna").unwrap(), Renamed::Done);
+        assert_eq!(store.entities().unwrap()[0].aliases, ["Anna Example"]);
+    }
+
+    #[test]
+    fn a_name_taken_by_another_entity_is_refused() {
+        let mut store = Store::open_in_memory().unwrap();
+        let id = episode(&mut store, 0, "Mail");
+        store
+            .record_mentions(id, &[person("Anna Example"), person("Anna")], at(10))
+            .unwrap();
+        let anna = id_of(&store, "Anna");
+        assert_eq!(
+            store.rename_entity(anna, "anna example").unwrap(),
+            Renamed::Taken {
+                by: "Anna Example".to_string()
+            }
+        );
+        assert_eq!(store.rename_entity(9999, "Bo").unwrap(), Renamed::NotFound);
+    }
+
+    #[test]
+    fn merging_moves_names_and_mentions() {
+        let mut store = Store::open_in_memory().unwrap();
+        let first = episode(&mut store, 0, "Mail");
+        let second = episode(&mut store, 24 * 60, "Mail");
+        store
+            .record_mentions(first, &[person("Anna Example"), person("Anna")], at(10))
+            .unwrap();
+        store
+            .record_mentions(second, &[person("Anna")], at(24 * 60 + 10))
+            .unwrap();
+        let full = id_of(&store, "Anna Example");
+        let short = id_of(&store, "Anna");
+        store.keep_entity(short).unwrap();
+
+        assert_eq!(store.merge_entities(short, full).unwrap(), Merged::Done);
+        let entities = store.entities().unwrap();
+        assert_eq!(entities.len(), 1);
+        let anna = &entities[0];
+        assert_eq!(anna.name, "Anna Example");
+        assert_eq!(anna.aliases, ["Anna"]);
+        // The episode that named both counts once.
+        assert_eq!(anna.mentions, 2);
+        assert_eq!(anna.days, 2);
+        assert!(anna.kept);
+
+        // Later episodes under the merged name find it.
+        let third = episode(&mut store, 30, "Mail");
+        store
+            .record_mentions(third, &[person("anna")], at(40))
+            .unwrap();
+        assert_eq!(store.entities().unwrap()[0].mentions, 3);
+        assert_eq!(store.merge_entities(short, full).unwrap(), Merged::NotFound);
+        assert_eq!(store.merge_entities(full, full).unwrap(), Merged::NotFound);
+    }
+
+    #[test]
+    fn only_the_same_kind_can_be_merged() {
+        let mut store = Store::open_in_memory().unwrap();
+        let id = episode(&mut store, 0, "Mail");
+        store
+            .record_mentions(
+                id,
+                &[
+                    person("Anna Example"),
+                    (EntityKind::Project, "Q3 lansering".to_string()),
+                ],
+                at(10),
+            )
+            .unwrap();
+        let anna = id_of(&store, "Anna Example");
+        let project = id_of(&store, "Q3 lansering");
+        assert_eq!(
+            store.merge_entities(anna, project).unwrap(),
+            Merged::DifferentKinds
+        );
+        assert_eq!(store.entities().unwrap().len(), 2);
     }
 }

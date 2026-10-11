@@ -22,7 +22,7 @@ use crate::logging::{self, ErrorKind, Field};
 use crate::models::structured::{self, Captured, Entities, StructuredError};
 use crate::models::{Endpoint, ModelClient};
 use crate::pause::Pause;
-use crate::store::{EntityKind, ModelTask, Store, UnrecognizedEpisode, name_key};
+use crate::store::{EntityKind, Merged, ModelTask, Renamed, Store, UnrecognizedEpisode, name_key};
 
 /// At most this many episodes are read per round, so the journal gets its
 /// turn again soon.
@@ -237,6 +237,15 @@ pub struct EntityItem {
     pub mentions: usize,
     pub days: usize,
     pub last_seen: i64,
+    /// Still new: seen on fewer than two days, and not kept by the user.
+    pub is_new: bool,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DontLearnItem {
+    pub kind: &'static str,
+    pub name: String,
 }
 
 fn status(store: &Store) -> crate::store::Result<MemoryStatus> {
@@ -284,6 +293,7 @@ pub fn memory_entities(app: AppHandle) -> Result<Vec<EntityItem>, String> {
                 entities
                     .into_iter()
                     .map(|e| EntityItem {
+                        is_new: e.is_new(),
                         id: e.id,
                         kind: e.kind.as_str(),
                         name: e.name,
@@ -308,15 +318,110 @@ pub fn forget_memory(app: AppHandle) -> Result<usize, String> {
     })
 }
 
-/// Forgets one entity: its names and mentions. The episodes stay, and a
-/// later episode that names it again starts it anew.
+/// Forgets one entity: its names and mentions. The episodes stay. With
+/// `dont_learn`, its names go on the "don't learn" list so later episodes
+/// can't bring it back; without, a later episode that names it starts anew.
 #[tauri::command(async)]
-pub fn forget_entity(app: AppHandle, id: i64) -> Result<bool, String> {
+pub fn forget_entity(app: AppHandle, id: i64, dont_learn: bool) -> Result<bool, String> {
     command(&app, |store| {
         store
-            .forget_entity(id)
+            .forget_entity(id, dont_learn, Utc::now())
             .map_err(|_| "Lax couldn't forget it.".to_string())
     })
+}
+
+/// Keeps a new entity, as if it had been seen on two days.
+#[tauri::command(async)]
+pub fn keep_entity(app: AppHandle, id: i64) -> Result<bool, String> {
+    command(&app, |store| {
+        store
+            .keep_entity(id)
+            .map_err(|_| "Lax couldn't keep it.".to_string())
+    })
+}
+
+#[tauri::command(async)]
+pub fn rename_entity(app: AppHandle, id: i64, name: String) -> Result<(), String> {
+    let name = valid_name(&name)?;
+    command(&app, |store| {
+        match store
+            .rename_entity(id, &name)
+            .map_err(|_| "Lax couldn't rename it.".to_string())?
+        {
+            Renamed::Done => Ok(()),
+            Renamed::NotFound => Err("It's no longer in the memory.".to_string()),
+            Renamed::Taken { by } => Err(format!(
+                "{by} already goes by that name. To make them one, merge them."
+            )),
+        }
+    })
+}
+
+/// Merges `from` into `into`, which keeps its name.
+#[tauri::command(async)]
+pub fn merge_entities(app: AppHandle, from: i64, into: i64) -> Result<(), String> {
+    command(&app, |store| {
+        match store
+            .merge_entities(from, into)
+            .map_err(|_| "Lax couldn't merge them.".to_string())?
+        {
+            Merged::Done => Ok(()),
+            Merged::NotFound => Err("One of them is no longer in the memory.".to_string()),
+            Merged::DifferentKinds => {
+                Err("Only two people, two organisations or two projects can be merged.".to_string())
+            }
+        }
+    })
+}
+
+#[tauri::command(async)]
+pub fn dont_learn_list(app: AppHandle) -> Result<Vec<DontLearnItem>, String> {
+    command(&app, |store| {
+        store
+            .dont_learn()
+            .map(|list| {
+                list.into_iter()
+                    .map(|d| DontLearnItem {
+                        kind: d.kind.as_str(),
+                        name: d.name,
+                    })
+                    .collect()
+            })
+            .map_err(|_| "Lax couldn't read the list.".to_string())
+    })
+}
+
+/// Takes a name off the "don't learn" list.
+#[tauri::command(async)]
+pub fn allow_learning(app: AppHandle, kind: String, name: String) -> Result<bool, String> {
+    let kind = EntityKind::parse(&kind).ok_or("Unknown kind.")?;
+    command(&app, |store| {
+        store
+            .allow_learning(kind, &name)
+            .map_err(|_| "Lax couldn't change the list.".to_string())
+    })
+}
+
+/// A name the user typed, with whitespace collapsed; refused if empty, too
+/// long, or with control or invisible characters.
+fn valid_name(name: &str) -> Result<String, String> {
+    let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    if name.is_empty() {
+        return Err("Type a name.".to_string());
+    }
+    if name.chars().count() > structured::MAX_NAME_CHARS {
+        return Err(format!(
+            "A name can be at most {} characters.",
+            structured::MAX_NAME_CHARS
+        ));
+    }
+    if name
+        .chars()
+        .any(|c| c.is_control() || structured::is_invisible(c))
+    {
+        return Err("The name has characters that can't be shown.".to_string());
+    }
+    Ok(name)
 }
 
 fn command<T>(
@@ -401,6 +506,15 @@ mod tests {
         );
         assert_eq!(names_of("Cher"), ["Cher"]);
         assert!(names_of("").is_empty());
+    }
+
+    #[test]
+    fn typed_names_are_tidied_and_checked() {
+        assert_eq!(valid_name("  Anna   Example ").unwrap(), "Anna Example");
+        assert!(valid_name("   ").is_err());
+        assert!(valid_name(&"a".repeat(101)).is_err());
+        assert!(valid_name(&"å".repeat(100)).is_ok());
+        assert!(valid_name("Anna\u{202E}elpmaxE").is_err());
     }
 
     #[test]

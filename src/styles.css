@@ -742,9 +742,21 @@ mark {
   margin: 0;
 }
 
-.entity .confirm {
+.entity .confirm,
+.entity .change {
   flex-basis: 100%;
   margin-top: 0.25rem;
+}
+
+.entity .change {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.entity .change input[type="text"] {
+  min-width: 14rem;
 }
 
 .entity .confirm p {

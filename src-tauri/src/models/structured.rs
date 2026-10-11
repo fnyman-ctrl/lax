@@ -172,7 +172,7 @@ or Safari) are not organisations. Leave a list empty if there are none.";
 
 /// Most names per list, and the longest name, in characters.
 const MAX_NAMES: usize = 50;
-const MAX_NAME_CHARS: usize = 100;
+pub(crate) const MAX_NAME_CHARS: usize = 100;
 
 impl Validate for Entities {
     fn validate(&self) -> Result<(), &'static str> {
