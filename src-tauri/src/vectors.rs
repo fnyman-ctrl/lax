@@ -42,11 +42,9 @@ pub async fn round(app: &AppHandle) -> Result<(), ()> {
         .map(|(_, summary)| summary.clone())
         .collect();
     let turn = app.state::<ModelTurn>();
-    let embedded = async {
-        let _turn = turn.take().await;
-        embed(&choice.base_url, &choice.model, &texts).await
-    };
-    let Some(result) = app.state::<Pause>().unless_paused(embedded).await else {
+    let pause = app.state::<Pause>();
+    let embedded = embed(&choice.base_url, &choice.model, &texts);
+    let Some(result) = turn.background(&pause, embedded).await else {
         return Ok(());
     };
     let vectors: Vec<(i64, Vec<f32>)> = match result {
@@ -72,16 +70,12 @@ pub async fn round(app: &AppHandle) -> Result<(), ()> {
                 if app.state::<Pause>().is_paused() {
                     return Ok(());
                 }
-                let single = async {
-                    let _turn = turn.take().await;
-                    embed(
-                        &choice.base_url,
-                        &choice.model,
-                        std::slice::from_ref(summary),
-                    )
-                    .await
-                };
-                match app.state::<Pause>().unless_paused(single).await {
+                let single = embed(
+                    &choice.base_url,
+                    &choice.model,
+                    std::slice::from_ref(summary),
+                );
+                match turn.background(&pause, single).await {
                     None => return Ok(()),
                     Some(Err(error)) if error.unavailable() => return Err(()),
                     Some(Ok(mut v)) if v.len() == 1 => one_by_one.push((*id, v.remove(0))),

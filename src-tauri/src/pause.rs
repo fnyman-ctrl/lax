@@ -102,7 +102,7 @@ const PAUSE_CHECK: Duration = Duration::from_secs(1);
 
 /// `work`'s output, or `None` once `stop` returns `true` (checked every
 /// `every`), whichever comes first.
-async fn until<T>(
+pub(crate) async fn until<T>(
     stop: impl Fn() -> bool,
     every: Duration,
     work: impl Future<Output = T>,

@@ -83,12 +83,11 @@ pub async fn round(app: &AppHandle, setbacks: &mut Setbacks) -> Result<(), ()> {
             return Ok(());
         };
         let started = std::time::Instant::now();
-        let turn = app.state::<ModelTurn>();
-        let recognized = async {
-            let _turn = turn.take().await;
-            recognize(&work).await
-        };
-        let Some(answer) = app.state::<Pause>().unless_paused(recognized).await else {
+        let Some(answer) = app
+            .state::<ModelTurn>()
+            .background(&app.state::<Pause>(), recognize(&work))
+            .await
+        else {
             return Ok(());
         };
         if app.state::<Pause>().is_paused() {

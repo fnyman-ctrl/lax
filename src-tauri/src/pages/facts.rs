@@ -162,12 +162,11 @@ pub async fn round(app: &AppHandle, schedule: &mut Schedule) -> Result<(), ()> {
     let mut changed = false;
     for work in work {
         let started = Instant::now();
-        let turn = app.state::<ModelTurn>();
-        let asked = async {
-            let _turn = turn.take().await;
-            ask(&work).await
-        };
-        let Some(reply) = app.state::<Pause>().unless_paused(asked).await else {
+        let Some(reply) = app
+            .state::<ModelTurn>()
+            .background(&app.state::<Pause>(), ask(&work))
+            .await
+        else {
             break;
         };
         match reply {

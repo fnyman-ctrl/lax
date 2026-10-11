@@ -621,7 +621,11 @@ pub async fn ask_memory(app: AppHandle, question: String) -> Result<AskAnswer, S
     // embedding and the answer. A pause meanwhile drops the question
     // (GUARDRAILS §4).
     let turn = app.state::<ModelTurn>();
-    let Some(_turn) = app.state::<Pause>().unless_paused(turn.take()).await else {
+    let Some(_turn) = app
+        .state::<Pause>()
+        .unless_paused(turn.take_interactive())
+        .await
+    else {
         return Err("Lax was paused, so the question was dropped.".to_string());
     };
     // With an embedding model, the question as a vector. If the model can't
@@ -759,7 +763,11 @@ async fn answer(
     request: &str,
     texts: &[String],
 ) -> Result<Reply, StructuredError> {
-    let client = ModelClient::new(endpoint).map_err(StructuredError::Model)?;
+    // The user waits for this: no reasoning, which makes a small local model
+    // about ten times faster.
+    let client = ModelClient::new(endpoint)
+        .map_err(StructuredError::Model)?
+        .without_reasoning();
     let captured: Vec<Captured> = texts.iter().map(|t| Captured(t.as_str())).collect();
     structured::ask_for(
         &client,

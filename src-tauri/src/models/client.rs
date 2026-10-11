@@ -101,6 +101,10 @@ pub struct ModelClient {
     endpoint: Endpoint,
     backoff: [Duration; 2],
     retries: bool,
+    /// Let models that reason before answering do so. Off for questions the
+    /// user waits on: reasoning makes a small local model about ten times
+    /// slower.
+    reasoning: bool,
 }
 
 impl ModelClient {
@@ -125,6 +129,7 @@ impl ModelClient {
             endpoint,
             backoff: BACKOFF,
             retries: true,
+            reasoning: true,
         })
     }
 
@@ -157,6 +162,8 @@ impl ModelClient {
             messages: &'a [ChatMessage],
             #[serde(skip_serializing_if = "Option::is_none")]
             max_tokens: Option<u32>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            reasoning_effort: Option<&'static str>,
             stream: bool,
         }
         #[derive(Deserialize)]
@@ -176,6 +183,7 @@ impl ModelClient {
             model,
             messages,
             max_tokens,
+            reasoning_effort: (!self.reasoning).then_some("none"),
             stream: false,
         };
         let reply: Reply = self
@@ -290,6 +298,13 @@ impl ModelClient {
         );
         let bytes = result?;
         serde_json::from_slice(&bytes).map_err(|_| ModelError::InvalidResponse)
+    }
+
+    /// The same client, asking models not to reason before answering
+    /// (`reasoning_effort: "none"`, which servers without reasoning ignore).
+    pub fn without_reasoning(mut self) -> Self {
+        self.reasoning = false;
+        self
     }
 
     /// The same client without retries, for quick checks such as looking
@@ -425,6 +440,24 @@ mod tests {
         assert_eq!(sent["messages"][0]["content"], "Say hello");
         assert_eq!(sent["max_tokens"], 20);
         assert_eq!(sent["stream"], false);
+        // Models may reason unless told not to.
+        assert!(sent.get("reasoning_effort").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_client_without_reasoning_says_so() {
+        let server = MockServer::start(vec![(
+            200,
+            r#"{"choices":[{"message":{"role":"assistant","content":"Hej"}}]}"#,
+        )]);
+        server
+            .client()
+            .without_reasoning()
+            .chat("gemma", &[user("Say hello")], Some(20))
+            .await
+            .unwrap();
+        let sent: serde_json::Value = serde_json::from_str(&server.requests()[0].1).unwrap();
+        assert_eq!(sent["reasoning_effort"], "none");
     }
 
     #[tokio::test]
