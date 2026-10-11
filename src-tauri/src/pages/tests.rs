@@ -506,6 +506,132 @@ fn unchanged_files_are_not_read_again() {
     fs::set_permissions(folder.0.join(ANNA), Permissions::from_mode(0o600)).unwrap();
 }
 
+fn anna_page(store: &Store) -> crate::store::Page {
+    store.pages().unwrap().remove(0)
+}
+
+fn facts(list: &[&str]) -> Vec<String> {
+    list.iter().map(|f| f.to_string()).collect()
+}
+
+#[test]
+fn facts_lead_the_block_and_deleted_ones_never_come_back() {
+    let folder = Folder::new();
+    let mut store = sample();
+    sync_now(&mut store, &folder);
+    let page = anna_page(&store);
+    let sources: Vec<i64> = store
+        .episodes_mentioning(&[page.entity_id.unwrap()], None, 10)
+        .unwrap()
+        .iter()
+        .map(|e| e.id)
+        .collect();
+    let through = *sources.iter().max().unwrap();
+    assert!(
+        store
+            .set_facts(
+                &page.id,
+                &facts(&["Leder Q3-lanseringen.", "Jobbar på Exempelbolaget AB."]),
+                through,
+                &sources
+            )
+            .unwrap()
+    );
+    sync_now(&mut store, &folder);
+    let text = folder.read(ANNA);
+    assert!(
+        text.contains(
+            "-->\n- Leder Q3-lanseringen.\n- Jobbar på Exempelbolaget AB.\n\nMentioned in"
+        )
+    );
+
+    // The user deletes a fact: rejected, gone from the page, and kept out.
+    folder.put(ANNA, &text.replace("- Jobbar på Exempelbolaget AB.\n", ""));
+    assert_eq!(sync_now(&mut store, &folder).rejected, 1);
+    assert_eq!(
+        store.rejected_facts(&page.id).unwrap(),
+        ["Jobbar på Exempelbolaget AB."]
+    );
+    assert_eq!(anna_page(&store).facts.unwrap(), ["Leder Q3-lanseringen."]);
+    let text = folder.read(ANNA);
+    assert!(!text.contains("Exempelbolaget"));
+    // Not adopted as the user's either.
+    assert!(!text[..text.find("<!-- lax:begin").unwrap()].contains("Leder"));
+    assert_eq!(sync_now(&mut store, &folder), Synced::default());
+}
+
+#[test]
+fn facts_go_when_an_episode_they_drew_on_is_forgotten() {
+    let folder = Folder::new();
+    let mut store = sample();
+    sync_now(&mut store, &folder);
+    let page = anna_page(&store);
+    let sources: Vec<i64> = store
+        .episodes_mentioning(&[page.entity_id.unwrap()], None, 10)
+        .unwrap()
+        .iter()
+        .map(|e| e.id)
+        .collect();
+    let through = *sources.iter().max().unwrap();
+    store
+        .set_facts(
+            &page.id,
+            &facts(&["Leder Q3-lanseringen."]),
+            through,
+            &sources,
+        )
+        .unwrap();
+    sync_now(&mut store, &folder);
+    assert!(folder.read(ANNA).contains("Leder Q3-lanseringen."));
+
+    store
+        .forget(&Forget::App("com.example.mail".to_string()))
+        .unwrap();
+    let page = anna_page(&store);
+    assert_eq!((page.facts, page.facts_through), (None, None));
+    sync_now(&mut store, &folder);
+    assert!(!folder.read(ANNA).contains("Leder Q3-lanseringen."));
+    // And the page is up for rebuilding.
+    assert_eq!(store.stale_pages(5).unwrap().len(), 1);
+}
+
+#[test]
+fn facts_from_a_forgotten_episode_are_refused() {
+    let folder = Folder::new();
+    let mut store = sample();
+    sync_now(&mut store, &folder);
+    let page = anna_page(&store);
+    assert!(
+        !store
+            .set_facts(&page.id, &facts(&["Gammalt."]), 999, &[999])
+            .unwrap()
+    );
+    assert_eq!(anna_page(&store).facts, None);
+}
+
+#[test]
+fn pages_are_stale_until_their_facts_have_seen_every_mention() {
+    let folder = Folder::new();
+    let mut store = sample();
+    sync_now(&mut store, &folder);
+    assert_eq!(store.stale_pages(5).unwrap().len(), 1);
+    let page = anna_page(&store);
+    let sources: Vec<i64> = store
+        .episodes_mentioning(&[page.entity_id.unwrap()], None, 10)
+        .unwrap()
+        .iter()
+        .map(|e| e.id)
+        .collect();
+    let through = *sources.iter().max().unwrap();
+    store
+        .set_facts(&page.id, &facts(&["En sak."]), through, &sources)
+        .unwrap();
+    assert!(store.stale_pages(5).unwrap().is_empty());
+    let later = episode(&mut store, at(11, 9), "Mail", "Ringde Anna.");
+    mention(&mut store, later, "Anna Example");
+    assert_eq!(store.stale_pages(5).unwrap().len(), 1);
+}
+
 #[test]
 fn name_clashes_get_a_number() {
     let folder = Folder::new();

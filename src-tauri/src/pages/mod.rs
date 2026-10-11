@@ -16,6 +16,7 @@
 //!   on; forgetting one of them deletes the version.
 
 pub mod block;
+pub mod facts;
 
 use std::collections::HashMap;
 use std::fs::{self, DirBuilder, OpenOptions, Permissions};
@@ -29,7 +30,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::logging::{self, ErrorKind, Field};
 use crate::pause::Pause;
-use crate::store::{EntityKind, Episode, PageState, Store};
+use crate::store::{Entity, EntityKind, Episode, PageState, Store};
 
 /// The memory folder in the user's home folder.
 pub fn folder(home: &Path) -> PathBuf {
@@ -251,29 +252,28 @@ fn free_path(root: &Path, kind: EntityKind, name: &str) -> String {
 /// What Lax writes on a page, before the model writes facts (step 4): the
 /// names, how often and when it was mentioned, and the latest entries.
 /// Defused, since summaries come from captured text.
-fn content<Tz: TimeZone>(
-    aliases: &[String],
-    mentions: usize,
-    days: usize,
-    first: DateTime<Utc>,
-    last: DateTime<Utc>,
-    latest: &[Episode],
-    tz: &Tz,
-) -> String
+fn content<Tz: TimeZone>(facts: &[String], entity: &Entity, latest: &[Episode], tz: &Tz) -> String
 where
     Tz::Offset: std::fmt::Display,
 {
     let date = |t: DateTime<Utc>| t.with_timezone(tz).format("%Y-%m-%d").to_string();
     let mut text = String::new();
-    if !aliases.is_empty() {
-        text.push_str(&format!("Also known as: {}.\n", aliases.join(", ")));
+    if !facts.is_empty() {
+        for fact in facts {
+            text.push_str(&format!("- {}\n", fact.replace(['\n', '\r'], " ")));
+        }
+        text.push('\n');
     }
+    if !entity.aliases.is_empty() {
+        text.push_str(&format!("Also known as: {}.\n", entity.aliases.join(", ")));
+    }
+    let (mentions, days) = (entity.mentions, entity.days);
     let entries = if mentions == 1 { "entry" } else { "entries" };
     let on = if days == 1 { "day" } else { "days" };
     text.push_str(&format!(
         "Mentioned in {mentions} journal {entries} on {days} {on}, from {} to {}.\n",
-        date(first),
-        date(last)
+        date(entity.first_seen),
+        date(entity.last_seen)
     ));
     if !latest.is_empty() {
         text.push_str("\nLatest entries:\n");
@@ -302,6 +302,7 @@ pub struct Synced {
     pub adopted: usize,
     pub removed: usize,
     pub missing: usize,
+    pub rejected: usize,
 }
 
 /// Brings the pages in `dir` up to date with the memory: new pages for
@@ -372,16 +373,29 @@ where
         if !enabled {
             continue;
         }
+        // Facts the user deleted from the page are rejected: gone, and never
+        // written there again.
+        let mut facts = page.facts.clone().unwrap_or_default();
+        if let Some(relative) = &found
+            && let Ok(text) = fs::read_to_string(dir.join(relative))
+        {
+            for line in block::removed_lines(&text, &page.id, page.last_block.as_deref()) {
+                let Some(fact) = line.strip_prefix("- ") else {
+                    continue;
+                };
+                let key = crate::store::fact_key(fact);
+                if facts
+                    .iter()
+                    .any(|f| crate::store::fact_key(&block::defuse(f)) == key)
+                {
+                    store.reject_fact(&page.id, fact, now)?;
+                    facts.retain(|f| crate::store::fact_key(&block::defuse(f)) != key);
+                    done.rejected += 1;
+                }
+            }
+        }
         let latest = store.episodes_mentioning(&[entity.id], None, LATEST)?;
-        let content = content(
-            &entity.aliases,
-            entity.mentions,
-            entity.days,
-            entity.first_seen,
-            entity.last_seen,
-            &latest,
-            tz,
-        );
+        let content = content(&facts, entity, &latest, tz);
         let sources: Vec<i64> = latest.iter().map(|e| e.id).collect();
 
         match (page.state, found) {
@@ -475,15 +489,7 @@ where
             continue;
         };
         let latest = store.episodes_mentioning(&[entity.id], None, LATEST)?;
-        let content = content(
-            &entity.aliases,
-            entity.mentions,
-            entity.days,
-            entity.first_seen,
-            entity.last_seen,
-            &latest,
-            tz,
-        );
+        let content = content(&[], entity, &latest, tz);
         let path = free_path(dir, entity.kind, &entity.name);
         let Some(full) = inside(dir, &path) else {
             continue;
@@ -512,6 +518,7 @@ where
                 Field::Count("adopted", done.adopted as u64),
                 Field::Count("removed", done.removed as u64),
                 Field::Count("missing", done.missing as u64),
+                Field::Count("rejected", done.rejected as u64),
             ],
         );
     }

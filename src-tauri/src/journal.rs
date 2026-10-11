@@ -89,6 +89,7 @@ pub fn start(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut setbacks = Setbacks::default();
         let mut memory_setbacks = memory::Setbacks::default();
+        let mut facts_schedule = crate::pages::facts::Schedule::default();
         loop {
             // The memory reads the journal's episodes, right after it, so the
             // two never ask the model for two things at once (ADR 0008).
@@ -98,6 +99,9 @@ pub fn start(app: AppHandle) {
             }
             // No model: brings the memory's pages up to date.
             crate::pages::round(&app);
+            if result.is_ok() {
+                result = crate::pages::facts::round(&app, &mut facts_schedule).await;
+            }
             let wait = match result {
                 Ok(()) => ROUND,
                 Err(()) => AFTER_FAILURE,
@@ -326,7 +330,7 @@ async fn summarize(work: &Work) -> Result<String, StructuredError> {
     Ok(answer.summary)
 }
 
-fn idle_time() -> Option<Duration> {
+pub(crate) fn idle_time() -> Option<Duration> {
     #[cfg(target_os = "macos")]
     {
         crate::ax::idle_time()

@@ -184,6 +184,25 @@ fn same_user_text(written: &str, user: &str) -> bool {
     written.trim_end_matches('\n') == user.trim_end_matches('\n')
 }
 
+/// Lines Lax last wrote that are no longer in its block: the user deleted
+/// them. Empty if the page has no block of this id, or nothing is known of
+/// what Lax wrote.
+pub fn removed_lines(text: &str, id: &str, last_written: Option<&str>) -> Vec<String> {
+    let (Some(split), Some(last)) = (split(text), last_written) else {
+        return Vec::new();
+    };
+    if split.id != id {
+        return Vec::new();
+    }
+    let current = normalize(split.block);
+    let now: HashSet<&str> = current.lines().collect();
+    normalize(last)
+        .lines()
+        .filter(|line| !line.trim().is_empty() && !now.contains(line))
+        .map(String::from)
+        .collect()
+}
+
 /// The page without Lax's block: what remains is the user's. `None` if it
 /// has no block of this id.
 pub fn without_block(text: &str, id: &str) -> Option<String> {
@@ -359,6 +378,17 @@ mod tests {
         assert!(!only_a_title("# Anna\n\nNotes."));
         assert!(only_a_title("\n\n"));
         assert_eq!(without_block(&text, "0123456789abcdef"), None);
+    }
+
+    #[test]
+    fn removed_lines_are_what_the_user_deleted() {
+        let text = page("- One.\n- Two.\n- Three.").replace("- Two.\n", "");
+        assert_eq!(
+            removed_lines(&text, ID, Some("- One.\n- Two.\n- Three.")),
+            ["- Two."]
+        );
+        assert!(removed_lines(&text, ID, None).is_empty());
+        assert!(removed_lines("# No block\n", ID, Some("- One.")).is_empty());
     }
 
     #[test]
