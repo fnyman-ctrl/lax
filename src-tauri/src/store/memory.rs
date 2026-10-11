@@ -97,6 +97,8 @@ pub enum Renamed {
     Taken {
         by: String,
     },
+    /// An empty name.
+    Empty,
 }
 
 /// What became of a merge.
@@ -300,11 +302,15 @@ impl Store {
     }
 
     /// Gives an entity a new name. The new name also becomes one of its
-    /// names, so later episodes that use it find the entity; the old names
-    /// stay. Refused if another entity of its kind goes by the name.
+    /// names, so later episodes that use it find the entity, and comes off
+    /// the "don't learn" list, since the user wants it; the old names stay.
+    /// Refused if another entity of its kind goes by the name.
     pub fn rename_entity(&mut self, id: i64, name: &str) -> Result<Renamed> {
         let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
         let key = name_key(&name);
+        if key.is_empty() {
+            return Ok(Renamed::Empty);
+        }
         let tx = self.conn.transaction()?;
         let Some(kind): Option<String> = tx
             .query_row("SELECT kind FROM entities WHERE id = ?1", [id], |row| {
@@ -333,6 +339,10 @@ impl Store {
                 )?;
             }
         }
+        tx.execute(
+            "DELETE FROM dont_learn WHERE kind = ?1 AND key = ?2",
+            params![kind, key],
+        )?;
         tx.execute(
             "UPDATE entities SET name = ?2 WHERE id = ?1",
             params![id, name],
@@ -911,5 +921,28 @@ mod tests {
             Merged::DifferentKinds
         );
         assert_eq!(store.entities().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_name_the_user_gives_comes_off_the_dont_learn_list() {
+        let mut store = Store::open_in_memory().unwrap();
+        let first = episode(&mut store, 0, "Mail");
+        store
+            .record_mentions(first, &[person("Anna Example"), person("Anna")], at(10))
+            .unwrap();
+        let full = id_of(&store, "Anna Example");
+        store.forget_entity(full, true, at(11)).unwrap();
+        let anna = id_of(&store, "Anna");
+        assert_eq!(
+            store.rename_entity(anna, "Anna Example").unwrap(),
+            Renamed::Done
+        );
+        assert!(store.dont_learn().unwrap().is_empty());
+        let second = episode(&mut store, 20, "Mail");
+        store
+            .record_mentions(second, &[person("Anna Example")], at(30))
+            .unwrap();
+        assert_eq!(store.entities().unwrap()[0].mentions, 2);
+        assert_eq!(store.rename_entity(anna, "   ").unwrap(), Renamed::Empty);
     }
 }

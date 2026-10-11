@@ -353,6 +353,7 @@ pub fn rename_entity(app: AppHandle, id: i64, name: String) -> Result<(), String
             Renamed::Taken { by } => Err(format!(
                 "{by} already goes by that name. To make them one, merge them."
             )),
+            Renamed::Empty => Err("Type a name.".to_string()),
         }
     })
 }

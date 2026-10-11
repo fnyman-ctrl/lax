@@ -25,12 +25,6 @@ const SECTIONS: { kind: Kind; title: string }[] = [
   { kind: "project", title: "Projects" },
 ];
 
-const KIND_LABEL: Record<Kind, string> = {
-  person: "person",
-  organisation: "organisation",
-  project: "project",
-};
-
 /**
  * The memory (Stage 4, ADR 0008): the people, organisations and projects
  * the journal's entries name. Off until the user turns it on. Names come
@@ -302,7 +296,7 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
               <li key={`${item.kind} ${item.name}`} className="entity">
                 <div>
                   <p className="name">{item.name}</p>
-                  <p className="muted seen">{KIND_LABEL[item.kind]}</p>
+                  <p className="muted seen">{item.kind}</p>
                 </div>
                 <button
                   type="button"
@@ -383,6 +377,8 @@ function EntityRow({
   const merge = () => {
     const target = others.find((e) => String(e.id) === into);
     if (!target) {
+      setInto("");
+      run(Promise.reject("That one is no longer in the memory."));
       return;
     }
     run(
@@ -401,14 +397,14 @@ function EntityRow({
             ? `Forgot ${entity.name}, and Lax won't learn about it again.`
             : `Forgot ${entity.name}.`,
       ),
-    ).then(() => onOpen(false));
+    ).then((done) => done && onOpen(false));
 
   return (
     <li className="entity">
       <div>
         <p className="name">
           {entity.name}
-          {entity.isNew && <span className="muted"> · {KIND_LABEL[entity.kind]}</span>}
+          {entity.isNew && <span className="muted"> · {entity.kind}</span>}
         </p>
         {entity.aliases.length > 0 && (
           <p className="muted aliases">Also: {entity.aliases.join(", ")}</p>
@@ -475,8 +471,14 @@ function EntityRow({
                 ))}
               </select>
               <button type="button" disabled={busy || into === ""} onClick={merge}>
-                Merge
+                Merge into it
               </button>
+            </p>
+          )}
+          {others.length > 0 && (
+            <p className="muted hint">
+              Merging keeps the chosen name, and {entity.name} becomes one of its names. You can
+              rename it afterwards.
             </p>
           )}
           <p className="buttons">
