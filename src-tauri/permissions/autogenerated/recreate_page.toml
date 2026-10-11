@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-recreate-page"
+description = "Enables the recreate_page command without any pre-configured scope."
+commands.allow = ["recreate_page"]
+
+[[permission]]
+identifier = "deny-recreate-page"
+description = "Denies the recreate_page command without any pre-configured scope."
+commands.deny = ["recreate_page"]

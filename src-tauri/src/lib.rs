@@ -171,3 +171,37 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running Lax");
 }
+
+#[cfg(test)]
+mod tests {
+    /// Every command the window can call must be listed in `build.rs` and
+    /// allowed in `capabilities/default.json`; Tauri refuses any other
+    /// ("not allowed. Command not found"), and nothing else catches it.
+    #[test]
+    fn every_command_is_listed_and_allowed() {
+        let lib = include_str!("lib.rs");
+        let build = include_str!("../build.rs");
+        let capabilities = include_str!("../capabilities/default.json");
+        let start = lib.find("generate_handler![").expect("the handler");
+        let end = start + lib[start..].find(']').expect("its end");
+        let commands: Vec<&str> = lib[start..end]
+            .split(',')
+            .filter_map(|item| item.trim().rsplit("::").next())
+            .filter(|name| {
+                !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase() || c == '_')
+            })
+            .collect();
+        assert!(commands.len() > 40, "found {} commands", commands.len());
+        for command in commands {
+            assert!(
+                build.contains(&format!("\"{command}\"")),
+                "{command} is not listed in build.rs"
+            );
+            let permission = format!("\"allow-{}\"", command.replace('_', "-"));
+            assert!(
+                capabilities.contains(&permission),
+                "{command} is not allowed in capabilities/default.json"
+            );
+        }
+    }
+}

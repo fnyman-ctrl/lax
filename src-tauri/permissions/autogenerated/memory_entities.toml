@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-memory-entities"
+description = "Enables the memory_entities command without any pre-configured scope."
+commands.allow = ["memory_entities"]
+
+[[permission]]
+identifier = "deny-memory-entities"
+description = "Denies the memory_entities command without any pre-configured scope."
+commands.deny = ["memory_entities"]
