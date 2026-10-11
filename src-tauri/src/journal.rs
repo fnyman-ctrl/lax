@@ -133,8 +133,11 @@ async fn round(app: &AppHandle, setbacks: &mut Setbacks) -> Result<(), ()> {
             return Ok(());
         };
         let started = std::time::Instant::now();
-        let summary = summarize(&work).await;
-        // Paused while the model was writing: what it wrote is dropped.
+        // Paused while the model was writing: the request is dropped, and
+        // anything it wrote anyway is not stored.
+        let Some(summary) = app.state::<Pause>().unless_paused(summarize(&work)).await else {
+            return Ok(());
+        };
         if app.state::<Pause>().is_paused() {
             return Ok(());
         }
