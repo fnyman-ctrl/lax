@@ -176,14 +176,16 @@ pub fn run() {
 mod tests {
     /// Every command the window can call must be listed in `build.rs` and
     /// allowed in `capabilities/default.json`; Tauri refuses any other
-    /// ("not allowed. Command not found"), and nothing else catches it.
+    /// ("not allowed. Command not found"), and nothing else catches it. And
+    /// nothing is listed or allowed that isn't a command any more.
     #[test]
     fn every_command_is_listed_and_allowed() {
         let lib = include_str!("lib.rs");
         let build = include_str!("../build.rs");
         let capabilities = include_str!("../capabilities/default.json");
-        let start = lib.find("generate_handler![").expect("the handler");
-        let end = start + lib[start..].find(']').expect("its end");
+        let start =
+            lib.find("generate_handler![").expect("the handler") + "generate_handler![".len();
+        let end = start + lib[start..].find("])").expect("its end");
         let commands: Vec<&str> = lib[start..end]
             .split(',')
             .filter_map(|item| item.trim().rsplit("::").next())
@@ -192,7 +194,7 @@ mod tests {
             })
             .collect();
         assert!(commands.len() > 40, "found {} commands", commands.len());
-        for command in commands {
+        for command in &commands {
             assert!(
                 build.contains(&format!("\"{command}\"")),
                 "{command} is not listed in build.rs"
@@ -201,6 +203,24 @@ mod tests {
             assert!(
                 capabilities.contains(&permission),
                 "{command} is not allowed in capabilities/default.json"
+            );
+        }
+        // The other way: every allowed permission and listed name is a command.
+        for allowed in capabilities
+            .split('"')
+            .filter_map(|word| word.strip_prefix("allow-"))
+        {
+            assert!(
+                commands.contains(&allowed.replace('-', "_").as_str()),
+                "allow-{allowed} is granted but isn't a command"
+            );
+        }
+        let listed = &build[build.find(".commands(&[").expect("the list")..];
+        let listed = &listed[..listed.find("])").expect("its end")];
+        for name in listed.split('"').skip(1).step_by(2) {
+            assert!(
+                commands.contains(&name),
+                "{name} is listed in build.rs but isn't a command"
             );
         }
     }
