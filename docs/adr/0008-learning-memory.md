@@ -37,7 +37,9 @@ What is still open is how that works in practice:
   organisations and projects it names, using the existing `Entities` shape in
   `src-tauri/src/models/structured.rs`. It reads the episode summary, not the
   raw captures: the summary has already filtered out what wasn't the user's own
-  work, and keeps each step reading only the previous step's output.
+  work, and keeps each step reading only the previous step's output. The
+  episode's own apps (Slack, Mail, Safari) are not organisations: the model is
+  told so, and names equal to the episode's app names are dropped.
 - Entities live in SQLite: `entities` (kind, display name, state), `aliases`
   (every name an entity has been seen under) and `mentions` (entity, episode).
   Names are matched on a normalized form: case-folded, whitespace collapsed,
@@ -51,9 +53,12 @@ What is still open is how that works in practice:
 - **An entity earns a page.** A new entity is a *candidate* until it has been
   mentioned in episodes on at least two different days. Only then does Lax write
   its page. The user can promote a candidate early, or dismiss it.
-- **Dismissed and forgotten names are remembered as names only**, so they
-  aren't recreated: a dismissed name is never shown again, a forgotten entity's
-  aliases are kept as a short block list that the user can see and clear.
+- **Dismissed names are remembered, forgotten ones only if the user asks.** A
+  dismissed candidate's names go on a "don't learn" list so it isn't shown
+  again. Forgetting an entity keeps nothing by default; the forget dialog
+  offers "Don't learn about them again", which puts the names on the same
+  list. The list is visible in the Memory view and can be cleared, since it
+  still holds names.
 - The user is not an entity. Lax asks for the user's name (and other names
   they go by) when the memory is turned on, and those names go to `about-me.md`
   instead.
@@ -67,7 +72,7 @@ Each page is a Markdown file:
 
 Anything here is the user's. Lax never changes it.
 
-<!-- lax:begin: written by Lax. Edit freely; your edits are kept. -->
+<!-- lax:begin 01JA2Z6Q: written by Lax. Edit freely; your edits are kept. -->
 - Works at Exempelbolaget AB on the Q3 launch.
 - Usually in touch over Slack and Mail.
 <!-- lax:end -->
@@ -75,17 +80,29 @@ Anything here is the user's. Lax never changes it.
 
 - **Lax only ever replaces the text between its two markers.** Everything
   outside them belongs to the user. This is enforced by the code that writes
-  the file, not by the prompt: the writer reads the file, swaps the block and
-  checks that every byte outside the block is unchanged before it writes. A
-  test feeds it hostile model output to prove it.
+  the file, not by the prompt. The invariant, checked before every write: the
+  user's text (everything outside the block in the file as read) appears in
+  the new file unchanged, in the same order, and the only other text is a
+  block written by Lax. A test feeds the writer hostile model output to prove
+  it.
 - **When the user edits Lax's block, the edit becomes the user's.** Lax keeps a
-  hash of each block it wrote. If the block on disk no longer matches, Lax moves
-  the edited text out of its markers into the user's part of the page and
-  starts an empty block below it. From then on that text is ground truth, and
-  the model only adds what it doesn't already say.
+  hash of each block it wrote, over a normalized form (line endings, trailing
+  spaces and blank lines don't count), so an editor that tidies whitespace
+  isn't mistaken for an edit. If the block on disk no longer matches, Lax
+  turns the edited block into user text by removing its markers, and starts an
+  empty block below it. That is the one change Lax makes outside a block, and
+  it adds no text. From then on the edited text is ground truth, and the model
+  only adds what it doesn't already say.
+- **Removed facts stay removed.** Lines the user deleted from Lax's block are
+  kept as rejected facts for that page. They go into the prompt as "known to be
+  wrong", and any line in a later answer that matches one (after the same
+  normalization) is dropped before writing. Without this, the model would add
+  a fact the user deleted back at the next update, from the same episodes.
 - **Updates are batched.** Mentions mark a page as stale. Once an hour, while
   the Mac is idle and capture isn't paused, Lax updates at most a few stale
-  pages, most-mentioned first. The model gets the user's text (as ground truth
+  pages, most-mentioned first. All model work (journal, recognition, page
+  updates) goes through one queue, one request at a time, with the journal
+  first, so the local model is never asked to do two things at once. The model gets the user's text (as ground truth
   it must not contradict), its current block and the new episodes, and returns
   the new block as JSON (`{"facts": [string]}`). The answer is validated like
   every other model answer: a capped number of short lines, no control or
@@ -97,12 +114,17 @@ Anything here is the user's. Lax never changes it.
 - **Files are written safely.** Lax writes to a temporary file and renames it
   over the page. Just before the rename it checks that the page hasn't changed
   since it read it, and if it has, it tries again next round.
-- **Deleting a page file forgets the entity.** If the user deletes a page
-  outside Lax, Lax treats it as "forget this", the same as the button.
 - **Names and paths.** Pages live in `people/`, `organisations/` and
   `projects/`, named by a slug of the display name that keeps Swedish letters
-  (`åsa-lind.md`). Lax tracks pages by an ID in SQLite, so the user can rename a
-  file and Lax follows it.
+  (`åsa-exempel.md`). The page's ID is in its begin marker (`01JA2Z6Q` above),
+  so Lax finds a page the user renamed or moved within the folder, including
+  one an editor saved by deleting and recreating it.
+- **A missing page is never forgotten silently.** If no file in the folder
+  carries a page's ID, the Memory view shows it as missing, with "Recreate
+  page" and "Forget". Lax doesn't write it again on its own, and doesn't
+  forget it either: a sync conflict or a `git checkout` shouldn't erase
+  someone. If the user removes the markers from a page, Lax stops writing to
+  it and shows the same choice.
 
 ### What the memory may not record
 
@@ -133,8 +155,12 @@ model, not a promise to the user, and the docs say so.
   doesn't live on in the history. The user's own text is never touched by a
   forget.
 - Forgetting an entity deletes its page, its versions, its mentions and its
-  aliases (keeping the names on the block list above), and removes it from
-  other pages' blocks at their next update.
+  aliases (keeping the names only if the user chose "Don't learn about them
+  again"). It also takes effect in other pages at once: every line in another
+  page's Lax block that names one of its aliases is removed in the same step,
+  and those pages are queued for an update ahead of the others. Mentions of it
+  in the user's own text are listed in the forget dialog, since Lax doesn't
+  edit the user's text.
 
 ### Remote models
 
@@ -187,6 +213,11 @@ Each step is usable and reviewable on its own:
   still put the folder under git themselves.
 - **Extract entities from raw captures.** More names, mostly noise: everything
   on every page the user looked at.
+- **Ask for entities in the journal's own answer**
+  (`{"summary", "people", ...}`), saving a model call per episode. It would
+  read the raw captures, with the noise above, and change the journal prompt
+  that now writes good entries. The separate call reads only one to three
+  sentences, so it is short. Worth measuring once both exist.
 - **Merge entities automatically with embeddings.** Wrong merges mix two
   people's facts on one page, which is worse than a duplicate.
 - **Pages in the app's data folder.** One folder, as GUARDRAILS §6 says today,
