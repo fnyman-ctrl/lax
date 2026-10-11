@@ -50,12 +50,10 @@ pub struct Page {
     pub last_block: Option<String>,
     /// What the model learned, one fact per line; `None` until it has.
     pub facts: Option<Vec<String>>,
-    /// The newest episode the facts took into account.
-    pub facts_through: Option<i64>,
 }
 
 /// A page whose facts are out of date: never written, rebuilt after a
-/// forget, or with newer mentions than the facts took into account.
+/// forget, or with mentions the facts haven't seen.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StalePage {
     pub page: Page,
@@ -82,12 +80,11 @@ fn page_from_row(row: &Row) -> rusqlite::Result<Page> {
         facts: row
             .get::<_, Option<String>>(5)?
             .map(|facts| facts.lines().map(String::from).collect()),
-        facts_through: row.get(6)?,
     })
 }
 
 const PAGE_COLUMNS: &str = "p.id, p.entity_id, p.path, p.state,
-    (SELECT block FROM page_versions WHERE id = p.last_version), p.facts, p.facts_through";
+    (SELECT block FROM page_versions WHERE id = p.last_version), p.facts";
 
 /// How many of Lax's versions of a page are kept.
 pub const LAX_VERSIONS_KEPT: i64 = 20;
@@ -179,9 +176,11 @@ impl Store {
             "SELECT {PAGE_COLUMNS}, (SELECT count(*) FROM mentions WHERE entity_id = p.entity_id)
              FROM pages AS p
              WHERE p.entity_id IS NOT NULL AND p.state = 'ok'
-               AND (p.facts IS NULL OR p.facts_through <
-                    (SELECT max(episode_id) FROM mentions WHERE entity_id = p.entity_id))
-             ORDER BY 8 DESC, p.id
+               AND (p.facts IS NULL OR EXISTS (
+                    SELECT 1 FROM mentions AS m WHERE m.entity_id = p.entity_id
+                      AND m.episode_id NOT IN
+                          (SELECT episode_id FROM page_fact_sources WHERE page_id = p.id)))
+             ORDER BY 7 DESC, p.id
              LIMIT ?1"
         ))?;
         let rows = statement.query_map([super::sql_limit(limit)], page_from_row)?;
@@ -195,17 +194,35 @@ impl Store {
         Ok(stale)
     }
 
-    /// Stores what the model learned from `sources`, up to episode
-    /// `through`. Refused (`false`) if a source was forgotten meanwhile: the
-    /// facts may hold what was forgotten.
-    pub fn set_facts(
-        &mut self,
-        page: &str,
-        facts: &[String],
-        through: i64,
-        sources: &[i64],
-    ) -> Result<bool> {
+    /// The episodes mentioning the page's entity that its facts haven't
+    /// seen, oldest first.
+    pub fn unseen_mentions(&self, page: &str, entity: i64, limit: usize) -> Result<Vec<i64>> {
+        let mut statement = self.conn.prepare(
+            "SELECT m.episode_id FROM mentions AS m
+             JOIN episodes AS e ON e.id = m.episode_id
+             WHERE m.entity_id = ?2 AND m.episode_id NOT IN
+                   (SELECT episode_id FROM page_fact_sources WHERE page_id = ?1)
+             ORDER BY e.started_at, e.id LIMIT ?3",
+        )?;
+        let rows = statement.query_map(params![page, entity, super::sql_limit(limit)], |row| {
+            row.get(0)
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Stores what the model learned from `sources`. Refused (`false`) if
+    /// the page or a source was forgotten meanwhile: the facts may hold
+    /// what was forgotten.
+    pub fn set_facts(&mut self, page: &str, facts: &[String], sources: &[i64]) -> Result<bool> {
         let tx = self.conn.transaction()?;
+        let page_exists: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM pages WHERE id = ?1)",
+            [page],
+            |row| row.get(0),
+        )?;
+        if !page_exists {
+            return Ok(false);
+        }
         for episode in sources {
             let exists: bool = tx.query_row(
                 "SELECT EXISTS (SELECT 1 FROM episodes WHERE id = ?1)",
@@ -221,8 +238,8 @@ impl Store {
             )?;
         }
         let updated = tx.execute(
-            "UPDATE pages SET facts = ?2, facts_through = ?3 WHERE id = ?1",
-            params![page, facts.join("\n"), through],
+            "UPDATE pages SET facts = ?2 WHERE id = ?1",
+            params![page, facts.join("\n")],
         )?;
         tx.commit()?;
         Ok(updated > 0)

@@ -4,10 +4,9 @@
 -- once an episode they drew on is forgotten (then they are rebuilt from the
 -- episodes that remain).
 ALTER TABLE pages ADD COLUMN facts TEXT;
--- The newest episode the facts took into account.
-ALTER TABLE pages ADD COLUMN facts_through INTEGER;
 
--- The episodes the facts were written from.
+-- The episodes the facts were written from. A page whose entity has
+-- mentions that aren't here is out of date.
 CREATE TABLE page_fact_sources (
     page_id    TEXT NOT NULL REFERENCES pages (id) ON DELETE CASCADE,
     episode_id INTEGER NOT NULL REFERENCES episodes (id) ON DELETE CASCADE,
@@ -19,7 +18,7 @@ CREATE INDEX page_fact_sources_by_episode ON page_fact_sources (episode_id);
 -- Forgetting an episode the facts drew on forgets the facts (GUARDRAILS §4).
 CREATE TRIGGER page_fact_sources_after_delete AFTER DELETE ON page_fact_sources
 BEGIN
-    UPDATE pages SET facts = NULL, facts_through = NULL WHERE id = old.page_id;
+    UPDATE pages SET facts = NULL WHERE id = old.page_id;
     DELETE FROM page_fact_sources WHERE page_id = old.page_id;
 END;
 

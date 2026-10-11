@@ -84,10 +84,11 @@ impl Validate for Reply {
     }
 }
 
-/// The facts to keep from an answer: list marks taken off, duplicates and
-/// deleted facts dropped, at most `MAX_FACTS`.
-fn kept(reply: Reply, rejected: &[String]) -> Vec<String> {
-    let rejected: HashSet<String> = rejected.iter().map(|f| fact_key(f)).collect();
+/// The facts to keep from an answer: list marks taken off; duplicates,
+/// deleted facts and repeats of the user's notes dropped; at most
+/// `MAX_FACTS`.
+fn kept(reply: Reply, rejected: &[String], notes: &[String]) -> Vec<String> {
+    let rejected: HashSet<String> = rejected.iter().chain(notes).map(|f| fact_key(f)).collect();
     let mut seen = HashSet::new();
     reply
         .facts
@@ -121,16 +122,18 @@ struct Work {
     model: String,
     texts: Vec<String>,
     rejected: Vec<String>,
-    through: i64,
+    /// The user's notes, a line each, to keep repeats of them out.
+    notes: Vec<String>,
     sources: Vec<i64>,
 }
 
 /// Brings up to `PAGES_PER_RUN` pages' facts up to date, if it's time.
 /// `Err` means the model server is unavailable.
 pub async fn round(app: &AppHandle, schedule: &mut Schedule) -> Result<(), ()> {
+    // If idle time can't be read, the hourly schedule alone decides.
     if schedule.last.is_some_and(|last| last.elapsed() < EVERY)
         || app.state::<Pause>().is_paused()
-        || crate::journal::idle_time().is_none_or(|idle| idle < IDLE)
+        || crate::journal::idle_time().is_some_and(|idle| idle < IDLE)
     {
         return Ok(());
     }
@@ -152,9 +155,9 @@ pub async fn round(app: &AppHandle, schedule: &mut Schedule) -> Result<(), ()> {
         };
         match reply {
             Ok(reply) => {
-                let facts = kept(reply, &work.rejected);
+                let facts = kept(reply, &work.rejected, &work.notes);
                 let stored = with_store(app, |store| {
-                    store.set_facts(&work.page, &facts, work.through, &work.sources)
+                    store.set_facts(&work.page, &facts, &work.sources)
                 });
                 changed |= matches!(stored, Some(Ok(true)));
                 logging::info(
@@ -206,23 +209,38 @@ fn gather(store: &Store, dir: &std::path::Path) -> Vec<Work> {
             };
             let page = &stale.page;
             // Rebuilt facts start from the latest entries; current ones are
-            // updated from the entries they haven't seen.
-            let mut entries: Vec<Episode> = store
-                .episodes_mentioning(&[entity.id], None, 200)?
-                .into_iter()
-                .filter(|e| page.facts.is_none() || page.facts_through.is_none_or(|t| e.id > t))
-                .collect();
-            entries.truncate(ENTRIES);
-            entries.reverse();
-            let Some(through) = entries.iter().map(|e| e.id).max() else {
-                continue;
+            // updated from the entries they haven't seen, oldest first, so a
+            // busy week is taken in over a few runs rather than skipped.
+            let entries: Vec<Episode> = if page.facts.is_none() {
+                let mut latest = store.episodes_mentioning(&[entity.id], None, ENTRIES)?;
+                latest.reverse();
+                latest
+            } else {
+                let unseen = store.unseen_mentions(&page.id, entity.id, ENTRIES)?;
+                let mut found = store.episodes_mentioning(&[entity.id], None, 10_000)?;
+                found.retain(|e| unseen.contains(&e.id));
+                found.reverse();
+                found
             };
+            if entries.is_empty() {
+                continue;
+            }
             let notes = inside(dir, &page.path)
                 .and_then(|path| std::fs::read_to_string(path).ok())
                 .and_then(|text| block::without_block(&text, &page.id))
                 .map(|notes| notes.chars().take(MAX_NOTES_CHARS).collect::<String>())
                 .unwrap_or_default();
             let rejected = store.rejected_facts(&page.id)?;
+            let note_lines: Vec<String> = notes
+                .lines()
+                .map(|l| {
+                    l.trim()
+                        .trim_start_matches(['-', '*', '•', '#'])
+                        .trim()
+                        .to_string()
+                })
+                .filter(|l| !l.is_empty())
+                .collect();
             let current = page.facts.clone().unwrap_or_default();
             let kind = match entity.kind {
                 EntityKind::Person => "person",
@@ -249,7 +267,7 @@ fn gather(store: &Store, dir: &std::path::Path) -> Vec<Work> {
                 model: choice.model.clone(),
                 texts,
                 rejected,
-                through,
+                notes: note_lines,
                 sources: entries.iter().map(|e| e.id).collect(),
             });
         }
@@ -305,18 +323,26 @@ mod tests {
                 "  ",
             ]),
             &["Prefers Slack".to_string()],
+            &[],
         );
         assert_eq!(
             facts,
             ["Works at Exempelbolaget AB.", "Leads the Q3 launch"]
         );
+        // What the user's notes already say isn't repeated.
+        let facts = kept(
+            reply(&["Föredrar telefon framför mejl.", "Leder Q3."]),
+            &[],
+            &["Föredrar telefon framför mejl".to_string()],
+        );
+        assert_eq!(facts, ["Leder Q3."]);
     }
 
     #[test]
     fn at_most_twelve_facts_are_kept() {
         let many: Vec<String> = (0..20).map(|i| format!("Fact {i}")).collect();
         let many: Vec<&str> = many.iter().map(String::as_str).collect();
-        assert_eq!(kept(reply(&many), &[]).len(), MAX_FACTS);
+        assert_eq!(kept(reply(&many), &[], &[]).len(), MAX_FACTS);
     }
 
     #[test]
@@ -354,11 +380,11 @@ mod tests {
                     .to_string(),
             ],
             rejected: vec!["Anna jobbar på Exempelbolaget AB.".to_string()],
-            through: 2,
+            notes: vec!["Anna föredrar telefon framför mejl.".to_string()],
             sources: vec![1, 2],
         };
         let reply = ask(&work).await.expect("an answer");
-        let facts = kept(reply, &work.rejected);
+        let facts = kept(reply, &work.rejected, &work.notes);
         assert!(!facts.is_empty());
         assert!(
             facts
