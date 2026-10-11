@@ -39,6 +39,26 @@ pub struct Setbacks {
     failures: HashMap<i64, u32>,
 }
 
+impl Setbacks {
+    /// Counts a bad answer about `episode`. `true` once it has had
+    /// `ATTEMPTS_PER_EPISODE`: then it should be left unread, and is no
+    /// longer counted.
+    fn bad_answer(&mut self, episode: i64) -> bool {
+        let count = self.failures.entry(episode).or_insert(0);
+        *count += 1;
+        if *count >= ATTEMPTS_PER_EPISODE {
+            self.failures.remove(&episode);
+            return true;
+        }
+        false
+    }
+
+    /// The episode was read after all: stop counting it.
+    fn done(&mut self, episode: i64) {
+        self.failures.remove(&episode);
+    }
+}
+
 /// An episode to read, and the model to do it.
 struct Work {
     base_url: String,
@@ -65,7 +85,8 @@ pub async fn round(app: &AppHandle, setbacks: &mut Setbacks) -> Result<(), ()> {
         }
         match answer {
             Ok(entities) => {
-                let names = names_in(entities, &work.episode.app_names);
+                setbacks.done(work.episode.id);
+                let names = names_in(entities, &work.episode.app_names, &own_names());
                 let stored = with_store(app, |store| {
                     store.record_mentions(work.episode.id, &names, Utc::now())
                 });
@@ -90,25 +111,20 @@ pub async fn round(app: &AppHandle, setbacks: &mut Setbacks) -> Result<(), ()> {
                 if unavailable {
                     return Err(());
                 }
-                bad_answer(app, setbacks, work.episode.id);
+                if setbacks.bad_answer(work.episode.id) {
+                    // Marked read with nothing in it, so it doesn't hold up
+                    // the rest.
+                    let _ = with_store(app, |store| {
+                        store.record_mentions(work.episode.id, &[], Utc::now())
+                    });
+                    logging::warn("memory.episode_set_aside", &[]);
+                }
                 // Next round rather than at once, as in the journal.
                 return Ok(());
             }
         }
     }
     Ok(())
-}
-
-/// Counts a bad answer; after `ATTEMPTS_PER_EPISODE` the episode is marked
-/// read with nothing in it, so it doesn't hold up the rest.
-fn bad_answer(app: &AppHandle, setbacks: &mut Setbacks, episode: i64) {
-    let count = setbacks.failures.entry(episode).or_insert(0);
-    *count += 1;
-    if *count >= ATTEMPTS_PER_EPISODE {
-        setbacks.failures.remove(&episode);
-        let _ = with_store(app, |store| store.record_mentions(episode, &[], Utc::now()));
-        logging::warn("memory.episode_set_aside", &[]);
-    }
 }
 
 /// The next unread episode, if the memory is on and has a model.
@@ -148,10 +164,16 @@ async fn recognize(work: &Work) -> Result<Entities, StructuredError> {
     .await
 }
 
-/// The names in `entities`, by kind, without the episode's own apps: the
-/// model is told apps aren't organisations, and this makes sure (ADR 0008).
-fn names_in(entities: Entities, app_names: &[String]) -> Vec<(EntityKind, String)> {
+/// The names in `entities`, by kind, without the episode's own apps (the
+/// model is told apps aren't organisations, and this makes sure) and without
+/// the user, who is not an entity of their own memory (ADR 0008).
+fn names_in(
+    entities: Entities,
+    app_names: &[String],
+    own_names: &[String],
+) -> Vec<(EntityKind, String)> {
     let apps: Vec<String> = app_names.iter().map(|n| name_key(n)).collect();
+    let user: Vec<String> = own_names.iter().map(|n| name_key(n)).collect();
     let mut names = Vec::new();
     for (kind, list) in [
         (EntityKind::Person, entities.people),
@@ -159,10 +181,36 @@ fn names_in(entities: Entities, app_names: &[String]) -> Vec<(EntityKind, String
         (EntityKind::Project, entities.projects),
     ] {
         for name in list {
-            if !apps.contains(&name_key(&name)) {
-                names.push((kind, name));
+            let key = name_key(&name);
+            if apps.contains(&key) || (kind == EntityKind::Person && user.contains(&key)) {
+                continue;
             }
+            names.push((kind, name));
         }
+    }
+    names
+}
+
+/// The names the user goes by, from their macOS account: the full name and
+/// its first word ("Anna Example" and "Anna"). Another person with the same
+/// first name is left out too; asking the user for their names comes with
+/// `about-me.md` (ADR 0008).
+fn own_names() -> Vec<String> {
+    #[cfg(target_os = "macos")]
+    let full = objc2_foundation::NSFullUserName().to_string();
+    #[cfg(not(target_os = "macos"))]
+    let full = String::new();
+    names_of(&full)
+}
+
+fn names_of(full: &str) -> Vec<String> {
+    let full = full.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut names = Vec::new();
+    if let Some(first) = full.split(' ').next().filter(|f| *f != full) {
+        names.push(first.to_string());
+    }
+    if !full.is_empty() {
+        names.push(full);
     }
     names
 }
@@ -250,6 +298,16 @@ pub fn memory_entities(app: AppHandle) -> Result<Vec<EntityItem>, String> {
     })
 }
 
+/// Forgets everything the memory noted and turns it off.
+#[tauri::command(async)]
+pub fn forget_memory(app: AppHandle) -> Result<usize, String> {
+    command(&app, |store| {
+        store
+            .forget_memory()
+            .map_err(|_| "Lax couldn't forget what the memory noted.".to_string())
+    })
+}
+
 /// Forgets one entity: its names and mentions. The episodes stay, and a
 /// later episode that names it again starts it anew.
 #[tauri::command(async)]
@@ -292,6 +350,7 @@ mod tests {
         let found = names_in(
             entities(&["Anna Example"], &["Exempelbolaget AB"], &["Q3 lansering"]),
             &[],
+            &[],
         );
         assert_eq!(
             found,
@@ -312,6 +371,7 @@ mod tests {
                 &["Mail"],
             ),
             &["Slack".to_string(), "Mail".to_string()],
+            &[],
         );
         assert_eq!(
             found,
@@ -320,6 +380,39 @@ mod tests {
                 (EntityKind::Organisation, "Exempelbolaget AB".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn the_user_is_not_a_person_in_their_own_memory() {
+        let own = names_of("  Bo   Exempel ");
+        assert_eq!(own, ["Bo", "Bo Exempel"]);
+        let found = names_in(
+            entities(&["bo exempel", "Bo", "Anna Example"], &[], &["Bo"]),
+            &[],
+            &own,
+        );
+        assert_eq!(
+            found,
+            [
+                (EntityKind::Person, "Anna Example".to_string()),
+                // Only people: a project may share the name.
+                (EntityKind::Project, "Bo".to_string()),
+            ]
+        );
+        assert_eq!(names_of("Cher"), ["Cher"]);
+        assert!(names_of("").is_empty());
+    }
+
+    #[test]
+    fn an_episode_is_left_after_three_bad_answers() {
+        let mut setbacks = Setbacks::default();
+        assert!(!setbacks.bad_answer(7));
+        assert!(!setbacks.bad_answer(7));
+        assert!(setbacks.bad_answer(7));
+        // Counting starts over, and a good answer clears the count.
+        assert!(!setbacks.bad_answer(7));
+        setbacks.done(7);
+        assert!(setbacks.failures.is_empty());
     }
 
     /// Against a real model server, like `journal::tests::live_journal_episode`.
@@ -339,7 +432,7 @@ mod tests {
             },
         };
         let answer = recognize(&work).await.expect("an answer");
-        let names = names_in(answer, &work.episode.app_names);
+        let names = names_in(answer, &work.episode.app_names, &[]);
         assert!(
             names
                 .iter()

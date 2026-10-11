@@ -51,7 +51,7 @@ tokio = { version = "1", features = ["macros", "rt"] }
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSRunningApplication", "NSWorkspace"] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFArray", "CFNumber", "CFString", "CFURL"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSPathUtilities"] }
 
 [lints.rust]
 unsafe_code = "warn"

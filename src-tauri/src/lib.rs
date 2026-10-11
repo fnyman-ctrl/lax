@@ -69,6 +69,7 @@ pub fn run() {
             memory::set_memory_enabled,
             memory::memory_entities,
             memory::forget_entity,
+            memory::forget_memory,
         ])
         .setup(|app| {
             // Lax lives in the menu bar, without a Dock icon.

@@ -167,9 +167,8 @@ impl Store {
     pub fn entities(&self) -> Result<Vec<Entity>> {
         let mut statement = self.conn.prepare(
             "SELECT n.id, n.kind, n.name,
-                    (SELECT group_concat(a.name, char(10)) FROM
-                        (SELECT name FROM aliases WHERE entity_id = n.id AND name != n.name
-                         ORDER BY rowid) AS a),
+                    (SELECT group_concat(name, char(10) ORDER BY rowid) FROM aliases
+                     WHERE entity_id = n.id AND name != n.name),
                     count(*),
                     count(DISTINCT date(e.started_at / 1000, 'unixepoch', 'localtime')),
                     max(e.ended_at)
@@ -215,17 +214,32 @@ impl Store {
         Ok(entities)
     }
 
-    /// Deletes an entity, the names it goes by and its mentions, and makes
-    /// sure they are gone from the files on disk. The episodes stay. Returns
-    /// whether it existed.
+    /// Deletes an entity, the names it goes by and its mentions. The
+    /// episodes stay. Returns whether it existed.
+    ///
+    /// The rows are short, so this skips the full rebuild of
+    /// [`Store::forget`]: `secure_delete` overwrites the freed pages and the
+    /// checkpoint empties the write-ahead log, as for [`Store::expire`].
     pub fn forget_entity(&self, id: i64) -> Result<bool> {
         let deleted = self
             .conn
             .execute("DELETE FROM entities WHERE id = ?1", [id])?;
         if deleted > 0 {
-            self.scrub()?;
+            self.checkpoint()?;
         }
         Ok(deleted > 0)
+    }
+
+    /// Forgets everything the memory noted and turns it off. Episodes it
+    /// already read stay read, so turning it on again starts with new ones.
+    /// Returns how many entities were forgotten.
+    pub fn forget_memory(&self) -> Result<usize> {
+        self.set_memory_enabled(false)?;
+        let deleted = self.conn.execute("DELETE FROM entities", [])?;
+        if deleted > 0 {
+            self.checkpoint()?;
+        }
+        Ok(deleted)
     }
 }
 
@@ -444,6 +458,42 @@ mod tests {
                 .unwrap()
         );
         assert!(names(&store).is_empty());
+    }
+
+    #[test]
+    fn forgetting_the_memory_forgets_every_entity_and_turns_it_off() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.set_memory_enabled(true).unwrap();
+        let id = episode(&mut store, 0, "Mail");
+        store
+            .record_mentions(id, &[person("Anna Example"), person("Bo Exempel")], at(30))
+            .unwrap();
+        assert_eq!(store.forget_memory().unwrap(), 2);
+        assert!(names(&store).is_empty());
+        assert!(!store.memory_enabled().unwrap());
+        assert_eq!(store.unrecognized_count().unwrap(), 0);
+        assert_eq!(store.episodes(None, 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn other_names_are_listed_in_the_order_first_seen() {
+        let mut store = Store::open_in_memory().unwrap();
+        let id = episode(&mut store, 0, "Mail");
+        store
+            .record_mentions(id, &[person("Anna Example")], at(30))
+            .unwrap();
+        let anna = store.entities().unwrap()[0].id;
+        // Merging comes in a later step; add names the way it will.
+        for name in ["Anna E.", "Anna"] {
+            store
+                .conn
+                .execute(
+                    "INSERT INTO aliases (kind, key, name, entity_id) VALUES ('person', ?1, ?2, ?3)",
+                    params![name_key(name), name, anna],
+                )
+                .unwrap();
+        }
+        assert_eq!(store.entities().unwrap()[0].aliases, ["Anna E.", "Anna"]);
     }
 
     #[test]

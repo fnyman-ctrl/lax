@@ -33,7 +33,9 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
   const [message, setMessage] = useState<string | null>(null);
   const [pending, setPending] = useState<EntityItem | null>(null);
   const [busy, setBusy] = useState(false);
+  const [forgettingAll, setForgettingAll] = useState(false);
   const confirmButton = useRef<HTMLButtonElement>(null);
+  const confirmAllButton = useRef<HTMLButtonElement>(null);
 
   const refresh = useCallback(() => {
     invoke<MemoryStatus>("memory_status").then(setStatus, () => setStatus("failed"));
@@ -61,6 +63,31 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
       confirmButton.current?.focus();
     }
   }, [pending]);
+  useEffect(() => {
+    if (forgettingAll) {
+      confirmAllButton.current?.focus();
+    }
+  }, [forgettingAll]);
+
+  const forgetAll = () => {
+    setBusy(true);
+    setMessage(null);
+    invoke<number>("forget_memory")
+      .then(
+        (n) =>
+          setMessage(
+            n === 0
+              ? "The memory is off. There was nothing to forget."
+              : `The memory is off, and Lax forgot ${n} ${n === 1 ? "name" : "names"}.`,
+          ),
+        (e) => setMessage(String(e)),
+      )
+      .finally(() => {
+        setBusy(false);
+        setForgettingAll(false);
+        refresh();
+      });
+  };
 
   const toggle = (enabled: boolean) => {
     setMessage(null);
@@ -77,7 +104,7 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
     setMessage(null);
     invoke<boolean>("forget_entity", { id: pending.id })
       .then(
-        () => setMessage(`Forgot ${pending.name}.`),
+        (existed) => setMessage(existed ? `Forgot ${pending.name}.` : "It was already gone."),
         (e) => setMessage(String(e)),
       )
       .finally(() => {
@@ -116,6 +143,17 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
               <button type="button" className="secondary" onClick={() => toggle(false)}>
                 Turn the memory off
               </button>
+              <button
+                type="button"
+                className="secondary"
+                disabled={busy}
+                onClick={() => {
+                  setMessage(null);
+                  setForgettingAll(true);
+                }}
+              >
+                Turn off and forget what it noted…
+              </button>
             </p>
           </>
         ) : (
@@ -132,6 +170,19 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
                   Turn the memory on
                 </button>
                 <span className="muted">Uses {status.model}.</span>
+                {Array.isArray(entities) && entities.length > 0 && (
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={busy}
+                    onClick={() => {
+                      setMessage(null);
+                      setForgettingAll(true);
+                    }}
+                  >
+                    Forget what it noted…
+                  </button>
+                )}
               </p>
             ) : (
               <p className="buttons">
@@ -142,6 +193,34 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
               </p>
             )}
           </>
+        )}
+        {forgettingAll && (
+          <div className="confirm" role="alertdialog" aria-label="Confirm">
+            <p>
+              {status.enabled ? "Turn the memory off and forget" : "Forget"} every name it
+              noted? The journal entries stay. If you turn it on again, it starts with new
+              entries.
+            </p>
+            <p className="buttons">
+              <button
+                type="button"
+                className="danger"
+                disabled={busy}
+                onClick={forgetAll}
+                ref={confirmAllButton}
+              >
+                {busy ? "Forgetting…" : status.enabled ? "Turn off and forget" : "Forget"}
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                disabled={busy}
+                onClick={() => setForgettingAll(false)}
+              >
+                Cancel
+              </button>
+            </p>
+          </div>
         )}
       </div>
 
