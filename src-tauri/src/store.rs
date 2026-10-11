@@ -1160,6 +1160,7 @@ fn repair(conn: &Connection) -> Result<()> {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     };
     let outbox = columns("outbox")?;
+    let mut added = false;
     for (column, definition) in [
         ("covers_from", "covers_from INTEGER"),
         ("covers_to", "covers_to INTEGER"),
@@ -1167,7 +1168,18 @@ fn repair(conn: &Connection) -> Result<()> {
     ] {
         if !outbox.iter().any(|c| c == column) {
             conn.execute_batch(&format!("ALTER TABLE outbox ADD COLUMN {definition}"))?;
+            added = true;
         }
+    }
+    if added {
+        // Rows from before don't say which captures they came from. They are
+        // taken to cover everything up to when they were sent, so any
+        // forget of a time they might hold removes them: forgetting too much
+        // of the outbox is better than keeping something forgotten.
+        conn.execute(
+            "UPDATE outbox SET covers_from = 0, covers_to = sent_at WHERE covers_from IS NULL",
+            [],
+        )?;
     }
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS captures_by_app ON captures (bundle_id COLLATE NOCASE)",
@@ -1330,8 +1342,30 @@ mod tests {
                  content_rowid = 'id', tokenize = 'unicode61 remove_diacritics 0');",
         )
         .unwrap();
+        conn.execute(
+            "INSERT INTO outbox (sent_at, provider, task, model, payload, status, response_bytes)
+             VALUES (1000, 'api.example.com', 'summarize', 'm', '{}', 200, 2)",
+            [],
+        )
+        .unwrap();
         conn.pragma_update(None, "user_version", 4).unwrap();
         let store = Store::init(conn).unwrap();
+        // A row from before, which doesn't say what it covered, goes with
+        // any forget of a time up to when it was sent.
+        let from_before = |store: &Store| -> i64 {
+            store
+                .conn
+                .query_row("SELECT count(*) FROM outbox", [], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(from_before(&store), 1);
+        store
+            .forget(&Forget::Between(
+                DateTime::from_timestamp_millis(500).unwrap(),
+                DateTime::from_timestamp_millis(600).unwrap(),
+            ))
+            .unwrap();
+        assert_eq!(from_before(&store), 0);
         // Every kind of forget works, the ones that clean the outbox too.
         let now = Utc::now();
         for what in [
@@ -1358,7 +1392,11 @@ mod tests {
                 (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
             })
         }
-        let hashes: Vec<u64> = MIGRATIONS.iter().map(|sql| fnv(sql)).collect();
+        // Line endings don't count, so a checkout that converts them passes.
+        let hashes: Vec<u64> = MIGRATIONS
+            .iter()
+            .map(|sql| fnv(&sql.replace("\r\n", "\n")))
+            .collect();
         assert_eq!(
             hashes, KNOWN_MIGRATIONS,
             "a migration file changed; add a new one instead"
