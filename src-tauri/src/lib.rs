@@ -34,6 +34,7 @@ use tauri::{Manager, WindowEvent};
 pub fn run() {
     tauri::Builder::default()
         .manage(pause::Pause::default())
+        .manage(models::ModelTurn::default())
         .manage(capture::Heartbeat::default())
         .manage(exclusions::Current::default())
         .invoke_handler(tauri::generate_handler![

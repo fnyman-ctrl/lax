@@ -21,7 +21,7 @@ use tauri::{AppHandle, Manager};
 use crate::logging::{self, ErrorKind, Field};
 use crate::memory;
 use crate::models::structured::{self, Captured, StructuredError, Validate};
-use crate::models::{Endpoint, ModelClient, ModelError};
+use crate::models::{Endpoint, ModelClient, ModelError, ModelTurn};
 use crate::pause::Pause;
 use crate::store::{Capture, ModelTask, NewEpisode, Store};
 
@@ -143,7 +143,12 @@ async fn round(app: &AppHandle, setbacks: &mut Setbacks) -> Result<(), ()> {
         let started = std::time::Instant::now();
         // Paused while the model was writing: the request is dropped, and
         // anything it wrote anyway is not stored.
-        let Some(summary) = app.state::<Pause>().unless_paused(summarize(&work)).await else {
+        let turn = app.state::<ModelTurn>();
+        let summarized = async {
+            let _turn = turn.take().await;
+            summarize(&work).await
+        };
+        let Some(summary) = app.state::<Pause>().unless_paused(summarized).await else {
             return Ok(());
         };
         if app.state::<Pause>().is_paused() {

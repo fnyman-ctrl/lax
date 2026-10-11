@@ -23,7 +23,8 @@ use tauri::{AppHandle, Manager};
 use crate::journal::EpisodeItem;
 use crate::logging::{self, ErrorKind, Field};
 use crate::models::structured::{self, Captured, StructuredError, Validate};
-use crate::models::{Endpoint, ModelClient};
+use crate::models::{Endpoint, ModelClient, ModelTurn};
+use crate::pause::Pause;
 use crate::store::{Episode, ModelTask, Store};
 
 /// Most entries and characters of entries given to the model, so the prompt
@@ -97,8 +98,10 @@ fn gather<Tz: TimeZone>(
     let entities = named_entities(&asked, &store.entity_names()?);
     let search = search_words(&asked);
 
-    let mentioning: Vec<Episode> = store.episodes_mentioning(&entities, PER_SOURCE)?;
-    let matching: Vec<Episode> = store.search_episodes(&search, PER_SOURCE)?;
+    // Within a named time, every match there counts, not only the newest.
+    let limit = if range.is_some() { 500 } else { PER_SOURCE };
+    let mentioning: Vec<Episode> = store.episodes_mentioning(&entities, range, limit)?;
+    let matching: Vec<Episode> = store.search_episodes(&search, range, limit)?;
     let mut recent_only = false;
 
     // In order of priority; the budget cuts from the end.
@@ -336,7 +339,8 @@ const TIME_WORDS: &[&str] = &[
 ];
 
 /// The time `question` names, as a range in UTC, using the local calendar
-/// of `now`. Swedish and English.
+/// of `now`. Swedish and English. A question that names several times
+/// ("igår och idag") gets the span from the first to the last.
 fn time_range<Tz: TimeZone>(
     question: &str,
     now: &DateTime<Tz>,
@@ -346,17 +350,15 @@ fn time_range<Tz: TimeZone>(
     let has = |phrase: &str| text.contains(&format!(" {phrase} "));
     let today = now.date_naive();
     let tz = now.timezone();
-    let days = |from: NaiveDate, count: i64| {
-        let start = local_midnight(&tz, from)?;
-        let end = local_midnight(&tz, from + TimeDelta::days(count))?;
-        Some((start, end))
-    };
+    // Each named time as a span of days, end excluded.
+    let mut found: Vec<(NaiveDate, NaiveDate)> = Vec::new();
+    let span = |from: NaiveDate, count: i64| (from, from + TimeDelta::days(count));
 
-    if has("förrgår") || has("i förrgår") || has("day before yesterday") {
-        return days(today - TimeDelta::days(2), 1);
+    if has("förrgår") || has("day before yesterday") {
+        found.push(span(today - TimeDelta::days(2), 1));
     }
-    if has("igår") || has("i går") || has("yesterday") {
-        return days(today - TimeDelta::days(1), 1);
+    if has("igår") || has("i går") || (has("yesterday") && !has("day before yesterday")) {
+        found.push(span(today - TimeDelta::days(1), 1));
     }
     if has("idag")
         || has("i dag")
@@ -367,29 +369,32 @@ fn time_range<Tz: TimeZone>(
         || has("this afternoon")
         || has("i eftermiddag")
     {
-        return days(today, 1);
+        found.push(span(today, 1));
     }
     let monday = today - TimeDelta::days(i64::from(today.weekday().num_days_from_monday()));
     if has("förra veckan") || has("last week") {
-        return days(monday - TimeDelta::days(7), 7);
+        found.push(span(monday - TimeDelta::days(7), 7));
     }
     if has("den här veckan") || has("denna vecka") || has("i veckan") || has("this week") {
-        return days(monday, 7);
+        found.push(span(monday, 7));
     }
-    let first = today.with_day(1)?;
-    if has("förra månaden") || has("last month") {
-        let previous = first.checked_sub_months(Months::new(1))?;
-        return Some((local_midnight(&tz, previous)?, local_midnight(&tz, first)?));
+    if let Some(first) = today.with_day(1) {
+        if (has("förra månaden") || has("last month"))
+            && let Some(previous) = first.checked_sub_months(Months::new(1))
+        {
+            found.push((previous, first));
+        }
+        if (has("den här månaden") || has("denna månad") || has("this month"))
+            && let Some(next) = first.checked_add_months(Months::new(1))
+        {
+            found.push((first, next));
+        }
     }
-    if has("den här månaden") || has("denna månad") || has("this month") {
-        let next = first.checked_add_months(Months::new(1))?;
-        return Some((local_midnight(&tz, first)?, local_midnight(&tz, next)?));
-    }
-    // A date: 2026-10-07, "7 oktober", "7 okt", "October 7".
+    // Dates: 2026-10-07, "7 oktober", "7 okt", "October 7".
     for word in question.split_whitespace() {
         let word = word.trim_matches(|c: char| !c.is_ascii_digit());
         if let Ok(date) = NaiveDate::parse_from_str(word, "%Y-%m-%d") {
-            return days(date, 1);
+            found.push(span(date, 1));
         }
     }
     for pair in asked.windows(2) {
@@ -398,25 +403,29 @@ fn time_range<Tz: TimeZone>(
             (Err(_), Ok(day)) => (day, &pair[0]),
             _ => continue,
         };
-        if let Some(month) = month(name) {
-            let mut date = NaiveDate::from_ymd_opt(today.year(), month, day)?;
-            if date > today {
-                date = NaiveDate::from_ymd_opt(today.year() - 1, month, day)?;
-            }
-            return days(date, 1);
+        let Some(month) = month(name) else { continue };
+        // Not a date ("maj 2026", "31 februari"): look further. A date
+        // later this year means last year's.
+        let date = NaiveDate::from_ymd_opt(today.year(), month, day)
+            .filter(|date| *date <= today)
+            .or_else(|| NaiveDate::from_ymd_opt(today.year() - 1, month, day));
+        if let Some(date) = date {
+            found.push(span(date, 1));
         }
     }
-    // A weekday: "i tisdags" is the last one before today; "tisdag" or
+    // Weekdays: "i tisdags" is the last one before today; "tisdag" or
     // "Tuesday" may be today.
     for word in &asked {
         if let Some((day, past)) = weekday(word) {
             let back =
                 (7 + today.weekday().num_days_from_monday() - day.num_days_from_monday()) % 7;
             let back = if back == 0 && past { 7 } else { back };
-            return days(today - TimeDelta::days(i64::from(back)), 1);
+            found.push(span(today - TimeDelta::days(i64::from(back)), 1));
         }
     }
-    None
+    let from = found.iter().map(|(from, _)| *from).min()?;
+    let to = found.iter().map(|(_, to)| *to).max()?;
+    Some((local_midnight(&tz, from)?, local_midnight(&tz, to)?))
 }
 
 fn local_midnight<Tz: TimeZone>(tz: &Tz, date: NaiveDate) -> Option<DateTime<Utc>> {
@@ -530,6 +539,9 @@ pub async fn ask_memory(app: AppHandle, question: String) -> Result<AskAnswer, S
             "A question can be at most {MAX_QUESTION_CHARS} characters."
         ));
     }
+    if app.state::<Pause>().is_paused() {
+        return Err("Lax is paused. Resume it from the menu bar to ask.".to_string());
+    }
     let now = Local::now();
     let (choice, found) = {
         let store = app
@@ -558,6 +570,9 @@ pub async fn ask_memory(app: AppHandle, question: String) -> Result<AskAnswer, S
         });
     }
 
+    let Ok(endpoint) = Endpoint::parse(&choice.base_url) else {
+        return Err("The chat model's address isn't valid. Check it under Models.".to_string());
+    };
     let started = std::time::Instant::now();
     let texts: Vec<String> = found
         .episodes
@@ -565,13 +580,16 @@ pub async fn ask_memory(app: AppHandle, question: String) -> Result<AskAnswer, S
         .enumerate()
         .map(|(i, e)| entry_text(i + 1, e, &Local))
         .collect();
-    let reply = answer(
-        &choice.base_url,
-        &choice.model,
-        &request(&question, &now),
-        &texts,
-    )
-    .await;
+    // In turn with the journal and the memory; a pause meanwhile drops the
+    // question (GUARDRAILS §4).
+    let turn = app.state::<ModelTurn>();
+    let asked = async {
+        let _turn = turn.take().await;
+        answer(endpoint, &choice.model, &request(&question, &now), &texts).await
+    };
+    let Some(reply) = app.state::<Pause>().unless_paused(asked).await else {
+        return Err("Lax was paused, so the question was dropped.".to_string());
+    };
     let reply = reply.and_then(|reply| {
         if reply
             .sources
@@ -625,12 +643,11 @@ pub async fn ask_memory(app: AppHandle, question: String) -> Result<AskAnswer, S
 }
 
 async fn answer(
-    base_url: &str,
+    endpoint: Endpoint,
     model: &str,
     request: &str,
     texts: &[String],
 ) -> Result<Reply, StructuredError> {
-    let endpoint = Endpoint::parse(base_url).map_err(|_| StructuredError::NotTheRequestedJson)?;
     let client = ModelClient::new(endpoint).map_err(StructuredError::Model)?;
     let captured: Vec<Captured> = texts.iter().map(|t| Captured(t.as_str())).collect();
     structured::ask_for(
@@ -715,6 +732,12 @@ mod tests {
         assert_eq!(range("2026-10-07?"), on("2026-10-07", 1));
         // A date later this year is last year's.
         assert_eq!(range("24 december"), on("2025-12-24", 1));
+        // Several times: the span from the first to the last.
+        assert_eq!(range("Vad gjorde jag igår och idag?"), on("2026-10-10", 2));
+        assert_eq!(range("i måndags och i tisdags"), on("2026-10-05", 2));
+        // Not a date, but the weekday still counts.
+        assert_eq!(range("i tisdags, typ 2026 maj"), on("2026-10-06", 1));
+        assert_eq!(range("31 februari"), None);
         assert_eq!(range("Hur går det med Q3-offerten?"), None);
         assert_eq!(range("Vem är Anna Example?"), None);
     }
@@ -825,6 +848,32 @@ mod tests {
     }
 
     #[test]
+    fn within_a_time_every_match_there_comes_first() {
+        let mut store = sample();
+        // A busy Tuesday, more than the budget holds…
+        for hour in 11..23 {
+            let when = at(6, hour) + TimeDelta::minutes(30);
+            episode(&mut store, when, &"Synthetic. ".repeat(100));
+        }
+        // …and more newer entries about Anna than one search returns.
+        for day in 7..=10 {
+            for hour in 0..12 {
+                let id = episode(&mut store, at(day, hour), "Anna igen.");
+                store
+                    .record_mentions(id, &[(EntityKind::Person, "Anna".to_string())], at(10, 21))
+                    .unwrap();
+            }
+        }
+        let found = gather(&store, "Vad pratade jag med Anna om i tisdags?", &now()).unwrap();
+        assert!(
+            found
+                .episodes
+                .iter()
+                .any(|e| e.summary == "Mailade Anna om Q3-offerten.")
+        );
+    }
+
+    #[test]
     fn names_and_words_find_entries_at_any_time() {
         let store = sample();
         let found = gather(&store, "Vad har jag haft för mig med Anna?", &now()).unwrap();
@@ -914,7 +963,7 @@ mod tests {
             .map(|(i, e)| entry_text(i + 1, e, &stockholm()))
             .collect();
         let reply = answer(
-            &env("LAX_LIVE_MODEL_URL"),
+            Endpoint::parse(&env("LAX_LIVE_MODEL_URL")).unwrap(),
             &env("LAX_LIVE_CHAT_MODEL"),
             &request("Vad pratade jag med Anna om i tisdags?", &now()),
             &texts,

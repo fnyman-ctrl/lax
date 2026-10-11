@@ -36,9 +36,10 @@ serde = { version = "1", features = ["derive"] }
 # Cargo.lock through Tauri; TLS through macOS's own Security framework.
 reqwest = { version = "0.13", default-features = false, features = ["json", "native-tls"] }
 serde_json = "1"
-# Waiting between retries of a model call. Already in the dependency tree
-# through Tauri, which runs on it.
-tokio = { version = "1", features = ["time"] }
+# Waiting between retries of a model call, and taking turns at the model.
+# Already in the dependency tree through Tauri, which runs on it with both
+# features on.
+tokio = { version = "1", features = ["time", "sync"] }
 
 [dev-dependencies]
 # Async tests for the model client.

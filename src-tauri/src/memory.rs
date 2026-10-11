@@ -20,7 +20,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::logging::{self, ErrorKind, Field};
 use crate::models::structured::{self, Captured, Entities, StructuredError};
-use crate::models::{Endpoint, ModelClient};
+use crate::models::{Endpoint, ModelClient, ModelTurn};
 use crate::pause::Pause;
 use crate::store::{EntityKind, Merged, ModelTask, Renamed, Store, UnrecognizedEpisode, name_key};
 
@@ -77,7 +77,12 @@ pub async fn round(app: &AppHandle, setbacks: &mut Setbacks) -> Result<(), ()> {
             return Ok(());
         };
         let started = std::time::Instant::now();
-        let Some(answer) = app.state::<Pause>().unless_paused(recognize(&work)).await else {
+        let turn = app.state::<ModelTurn>();
+        let recognized = async {
+            let _turn = turn.take().await;
+            recognize(&work).await
+        };
+        let Some(answer) = app.state::<Pause>().unless_paused(recognized).await else {
             return Ok(());
         };
         if app.state::<Pause>().is_paused() {

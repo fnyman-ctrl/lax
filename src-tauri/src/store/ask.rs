@@ -36,11 +36,18 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
-    /// The newest episodes that mention any of `entities`, newest first.
-    pub fn episodes_mentioning(&self, entities: &[i64], limit: usize) -> Result<Vec<Episode>> {
+    /// The newest episodes that mention any of `entities`, newest first,
+    /// within `range` if given.
+    pub fn episodes_mentioning(
+        &self,
+        entities: &[i64],
+        range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+        limit: usize,
+    ) -> Result<Vec<Episode>> {
         if entities.is_empty() {
             return Ok(Vec::new());
         }
+        let (from, to) = bounds(range);
         // Ids are numbers from the database, so joining them is safe.
         let ids = entities
             .iter()
@@ -50,15 +57,21 @@ impl Store {
         let mut statement = self.conn.prepare(&format!(
             "SELECT {EPISODE_COLUMNS} FROM episodes AS e
              WHERE e.id IN (SELECT episode_id FROM mentions WHERE entity_id IN ({ids}))
-             ORDER BY e.started_at DESC, e.id DESC LIMIT ?1"
+               AND e.started_at < ?2 AND e.ended_at >= ?1
+             ORDER BY e.started_at DESC, e.id DESC LIMIT ?3"
         ))?;
-        let rows = statement.query_map([sql_limit(limit)], episode_from_row)?;
+        let rows = statement.query_map(params![from, to, sql_limit(limit)], episode_from_row)?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// Episodes whose summary has any of `words` (as a word or the start of
-    /// one), best matches first.
-    pub fn search_episodes(&self, words: &[String], limit: usize) -> Result<Vec<Episode>> {
+    /// one), best matches first, within `range` if given.
+    pub fn search_episodes(
+        &self,
+        words: &[String],
+        range: Option<(DateTime<Utc>, DateTime<Utc>)>,
+        limit: usize,
+    ) -> Result<Vec<Episode>> {
         let terms: Vec<String> = words
             .iter()
             .filter(|w| !w.is_empty())
@@ -70,11 +83,12 @@ impl Store {
         let mut statement = self.conn.prepare(&format!(
             "SELECT {EPISODE_COLUMNS} FROM episodes_fts
              JOIN episodes AS e ON e.id = episodes_fts.rowid
-             WHERE episodes_fts MATCH ?1
-             ORDER BY rank, e.started_at DESC LIMIT ?2"
+             WHERE episodes_fts MATCH ?1 AND e.started_at < ?3 AND e.ended_at >= ?2
+             ORDER BY rank, e.started_at DESC LIMIT ?4"
         ))?;
+        let (from, to) = bounds(range);
         let rows = statement.query_map(
-            params![terms.join(" OR "), sql_limit(limit)],
+            params![terms.join(" OR "), from, to, sql_limit(limit)],
             episode_from_row,
         )?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
@@ -86,6 +100,13 @@ impl Store {
         let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
+}
+
+/// `range` in Unix ms, or everything.
+fn bounds(range: Option<(DateTime<Utc>, DateTime<Utc>)>) -> (i64, i64) {
+    range.map_or((i64::MIN, i64::MAX), |(from, to)| {
+        (from.timestamp_millis(), to.timestamp_millis())
+    })
 }
 
 #[cfg(test)]
@@ -167,9 +188,15 @@ mod tests {
             .find(|(_, key)| key == "anna example")
             .unwrap()
             .0;
-        let found = store.episodes_mentioning(&[anna], 10).unwrap();
+        let found = store.episodes_mentioning(&[anna], None, 10).unwrap();
         assert_eq!(summaries(&found), ["Mailed Anna about the Q3 offer."]);
-        assert!(store.episodes_mentioning(&[], 10).unwrap().is_empty());
+        assert!(store.episodes_mentioning(&[], None, 10).unwrap().is_empty());
+        assert!(
+            store
+                .episodes_mentioning(&[anna], Some((at(30), at(200))), 10)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -180,16 +207,20 @@ mod tests {
         episode(&mut store, 120, "Läste nyheter.");
         let words = |list: &[&str]| list.iter().map(|w| w.to_string()).collect::<Vec<_>>();
         let found = store
-            .search_episodes(&words(&["offert", "lansering"]), 10)
+            .search_episodes(&words(&["offert", "lansering"]), None, 10)
             .unwrap();
         assert_eq!(found.len(), 2);
+        let found = store
+            .search_episodes(&words(&["offert", "lansering"]), Some((at(30), at(90))), 10)
+            .unwrap();
+        assert_eq!(summaries(&found), ["Planerade lanseringen."]);
         // Search syntax in a word is plain text.
         assert!(
             store
-                .search_episodes(&words(&["\"OR", "NEAR("]), 10)
+                .search_episodes(&words(&["\"OR", "NEAR("]), None, 10)
                 .unwrap()
                 .is_empty()
         );
-        assert!(store.search_episodes(&[], 10).unwrap().is_empty());
+        assert!(store.search_episodes(&[], None, 10).unwrap().is_empty());
     }
 }
