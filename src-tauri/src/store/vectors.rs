@@ -206,6 +206,21 @@ mod tests {
     }
 
     #[test]
+    fn an_episode_the_model_cant_take_is_set_aside() {
+        let mut store = Store::open_in_memory().unwrap();
+        let odd = episode(&mut store, 0, "Mail", "Något modellen inte tar.");
+        let fine = episode(&mut store, 60, "Mail", "Skrev offerten.");
+        store
+            .set_vectors("m", &[(odd, Vec::new()), (fine, vec![1.0, 0.0])])
+            .unwrap();
+        // Not sent again…
+        assert!(store.unvectored_episodes("m", 10).unwrap().is_empty());
+        // …and never the closest.
+        let found = store.nearest_episodes("m", &[1.0, 0.0], None, 1).unwrap();
+        assert_eq!(found[0].id, fine);
+    }
+
+    #[test]
     fn vectors_go_with_their_episodes() {
         let mut store = Store::open_in_memory().unwrap();
         let mail = episode(&mut store, 0, "Mail", "Skrev offerten.");

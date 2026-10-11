@@ -616,6 +616,14 @@ pub async fn ask_memory(app: AppHandle, question: String) -> Result<AskAnswer, S
         return Err("Lax is paused. Resume it from the menu bar to ask.".to_string());
     }
     let now = Local::now();
+    // One turn at the model for the whole question (in turn with the journal
+    // and the memory), so a background call can't slip in between the
+    // embedding and the answer. A pause meanwhile drops the question
+    // (GUARDRAILS §4).
+    let turn = app.state::<ModelTurn>();
+    let Some(_turn) = app.state::<Pause>().unless_paused(turn.take()).await else {
+        return Err("Lax was paused, so the question was dropped.".to_string());
+    };
     // With an embedding model, the question as a vector. If the model can't
     // be reached, the question is answered without it.
     let embedding = with_store(&app, |store| store.model_choice(ModelTask::Embeddings))
@@ -623,16 +631,11 @@ pub async fn ask_memory(app: AppHandle, question: String) -> Result<AskAnswer, S
         .flatten();
     let meaning = match embedding {
         Some(choice) => {
-            let turn = app.state::<ModelTurn>();
-            let embedded = async {
-                let _turn = turn.take().await;
-                crate::vectors::embed(
-                    &choice.base_url,
-                    &choice.model,
-                    std::slice::from_ref(&question),
-                )
-                .await
-            };
+            let embedded = crate::vectors::embed(
+                &choice.base_url,
+                &choice.model,
+                std::slice::from_ref(&question),
+            );
             app.state::<Pause>()
                 .unless_paused(embedded)
                 .await
@@ -693,13 +696,8 @@ pub async fn ask_memory(app: AppHandle, question: String) -> Result<AskAnswer, S
                 .map(|(i, e)| entry_text(i + 1, e, &Local)),
         )
         .collect();
-    // In turn with the journal and the memory; a pause meanwhile drops the
-    // question (GUARDRAILS §4).
-    let turn = app.state::<ModelTurn>();
-    let asked = async {
-        let _turn = turn.take().await;
-        answer(endpoint, &choice.model, &request(&question, &now), &texts).await
-    };
+    let request = request(&question, &now);
+    let asked = answer(endpoint, &choice.model, &request, &texts);
     let Some(reply) = app.state::<Pause>().unless_paused(asked).await else {
         return Err("Lax was paused, so the question was dropped.".to_string());
     };

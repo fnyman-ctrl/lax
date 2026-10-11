@@ -60,6 +60,20 @@ pub enum ModelError {
     OutOfRoom,
 }
 
+impl ModelError {
+    /// The server is unreachable, slow or erroring, or not allowed: not the
+    /// fault of what was asked, so worth waiting a while before asking again.
+    pub fn unavailable(&self) -> bool {
+        matches!(
+            self,
+            ModelError::Unreachable
+                | ModelError::Timeout
+                | ModelError::Status(_)
+                | ModelError::RemoteNotAllowed
+        )
+    }
+}
+
 impl fmt::Display for ModelError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

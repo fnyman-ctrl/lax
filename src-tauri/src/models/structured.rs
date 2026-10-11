@@ -63,15 +63,7 @@ impl StructuredError {
     /// Anything else (a malformed or invalid answer, or running out of room)
     /// may be the input's fault.
     pub fn model_unavailable(&self) -> bool {
-        matches!(
-            self,
-            StructuredError::Model(
-                ModelError::Unreachable
-                    | ModelError::Timeout
-                    | ModelError::Status(_)
-                    | ModelError::RemoteNotAllowed
-            )
-        )
+        matches!(self, StructuredError::Model(error) if error.unavailable())
     }
 }
 

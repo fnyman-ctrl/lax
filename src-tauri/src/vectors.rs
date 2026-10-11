@@ -49,35 +49,67 @@ pub async fn round(app: &AppHandle) -> Result<(), ()> {
     let Some(result) = app.state::<Pause>().unless_paused(embedded).await else {
         return Ok(());
     };
-    match result {
-        Ok(vectors) => {
-            let pairs: Vec<(i64, Vec<f32>)> =
-                episodes.iter().map(|(id, _)| *id).zip(vectors).collect();
-            let stored = with_store(app, |store| store.set_vectors(&choice.model, &pairs));
-            logging::info(
-                "vectors.batch",
-                &[
-                    Field::Count("stored", stored.and_then(Result::ok).unwrap_or(0) as u64),
-                    Field::Duration("elapsed", started.elapsed()),
-                ],
-            );
-            Ok(())
+    let vectors: Vec<(i64, Vec<f32>)> = match result {
+        Ok(vectors) if vectors.len() == episodes.len() => {
+            episodes.iter().map(|(id, _)| *id).zip(vectors).collect()
         }
-        Err(error) => {
-            let unavailable = matches!(
-                error,
-                ModelError::Unreachable | ModelError::Timeout | ModelError::Status(_)
-            );
+        Err(error) if error.unavailable() => {
             logging::warn(
                 "vectors.failed",
                 &[
-                    Field::Flag("model_unavailable", unavailable),
+                    Field::Flag("model_unavailable", true),
                     Field::Error(ErrorKind::Other),
                 ],
             );
-            if unavailable { Err(()) } else { Ok(()) }
+            return Err(());
         }
-    }
+        // The batch failed for something in it: each episode on its own,
+        // and one the model can't take gets an empty vector, which matches
+        // nothing, so it isn't sent again every round.
+        _ => {
+            let mut one_by_one = Vec::new();
+            for (id, summary) in &episodes {
+                if app.state::<Pause>().is_paused() {
+                    return Ok(());
+                }
+                let single = async {
+                    let _turn = turn.take().await;
+                    embed(
+                        &choice.base_url,
+                        &choice.model,
+                        std::slice::from_ref(summary),
+                    )
+                    .await
+                };
+                match app.state::<Pause>().unless_paused(single).await {
+                    None => return Ok(()),
+                    Some(Err(error)) if error.unavailable() => return Err(()),
+                    Some(Ok(mut v)) if v.len() == 1 => one_by_one.push((*id, v.remove(0))),
+                    Some(_) => one_by_one.push((*id, Vec::new())),
+                }
+            }
+            logging::warn(
+                "vectors.failed",
+                &[
+                    Field::Flag("model_unavailable", false),
+                    Field::Count(
+                        "skipped",
+                        one_by_one.iter().filter(|(_, v)| v.is_empty()).count() as u64,
+                    ),
+                ],
+            );
+            one_by_one
+        }
+    };
+    let stored = with_store(app, |store| store.set_vectors(&choice.model, &vectors));
+    logging::info(
+        "vectors.batch",
+        &[
+            Field::Count("stored", stored.and_then(Result::ok).unwrap_or(0) as u64),
+            Field::Duration("elapsed", started.elapsed()),
+        ],
+    );
+    Ok(())
 }
 
 /// Vectors for `texts`, in order, from the embedding model.
