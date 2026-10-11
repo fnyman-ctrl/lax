@@ -447,10 +447,45 @@ impl Store {
     pub fn forget_memory(&self) -> Result<usize> {
         self.set_memory_enabled(false)?;
         let deleted = self.conn.execute("DELETE FROM entities", [])?;
+        // about-me.md is something the memory noted too: its facts go, and
+        // its page is handed to the next sync like a forgotten entity's, which
+        // takes Lax's part out of the file.
+        self.conn.execute(
+            "DELETE FROM page_fact_sources
+             WHERE page_id IN (SELECT id FROM pages WHERE kind = 'about-me')",
+            [],
+        )?;
+        self.conn.execute(
+            "UPDATE pages SET kind = 'entity', entity_id = NULL, facts = NULL
+             WHERE kind = 'about-me'",
+            [],
+        )?;
         if deleted > 0 {
             self.checkpoint()?;
         }
         Ok(deleted)
+    }
+
+    /// Forgets the people noted under any of `names`: the user's own names,
+    /// which Lax shouldn't have noted. Returns how many.
+    pub fn forget_people_named(&mut self, names: &[String], now: DateTime<Utc>) -> Result<usize> {
+        let mut forgotten = 0;
+        for name in names {
+            let entity: Option<i64> = self
+                .conn
+                .query_row(
+                    "SELECT entity_id FROM aliases WHERE kind = 'person' AND key = ?1",
+                    [name_key(name)],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(entity) = entity
+                && self.forget_entity(entity, false, now)?
+            {
+                forgotten += 1;
+            }
+        }
+        Ok(forgotten)
     }
 }
 

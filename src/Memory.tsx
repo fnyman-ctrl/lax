@@ -395,7 +395,7 @@ function AboutYou({
       (next) => {
         onChanged(next);
         setNames(next.ownNames.join(", "));
-        onMessage("Saved. Lax won't note these names as people.");
+        onMessage("Saved. Lax won't note these names as people, and forgot any it had.");
       },
       (e) => onMessage(String(e)),
     );

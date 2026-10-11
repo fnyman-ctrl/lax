@@ -442,9 +442,14 @@ pub fn set_own_names(app: AppHandle, names: Vec<String>) -> Result<MemoryStatus,
     let mut status = command(&app, |store| {
         let failed = |_| "Lax couldn't save your names.".to_string();
         store.set_own_names(&clean).map_err(failed)?;
+        // Noted before the user named them as theirs: forgotten now.
+        store
+            .forget_people_named(&clean, Utc::now())
+            .map_err(failed)?;
         status(store).map_err(failed)
     })?;
     with_folder(&app, &mut status);
+    pages::sync_now(&app);
     Ok(status)
 }
 

@@ -269,12 +269,14 @@ fn gather(store: &Store, dir: &std::path::Path) -> Vec<Work> {
                 sources: entries.iter().map(|e| e.id).collect(),
             });
         }
-        // about-me.md, once a day, from the latest entries.
+        // about-me.md, once a day (or at once if a forget cleared its
+        // facts), from the latest entries.
         if let Some(page) = store.about_me_page()?
             && page.state == crate::store::PageState::Ok
-            && page
-                .facts_at
-                .is_none_or(|at| chrono::Utc::now() - at >= ABOUT_ME_EVERY)
+            && (page.facts.is_none()
+                || page
+                    .facts_at
+                    .is_none_or(|at| chrono::Utc::now() - at >= ABOUT_ME_EVERY))
         {
             let mut entries = store.episodes(None, ABOUT_ME_ENTRIES)?;
             entries.reverse();

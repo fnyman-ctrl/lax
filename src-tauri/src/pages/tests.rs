@@ -422,8 +422,10 @@ fn with_the_memory_off_nothing_is_written_but_forgetting_still_works() {
     assert!(!folder.0.join("people/bo-exempel.md").exists());
 
     store.forget_memory().unwrap();
-    assert_eq!(sync_now(&mut store, &folder).removed, 1);
+    // Anna's page and about-me.md, which had only Lax's part.
+    assert_eq!(sync_now(&mut store, &folder).removed, 2);
     assert!(!folder.0.join(ANNA).exists());
+    assert!(!folder.0.join("about-me.md").exists());
 }
 
 #[test]
@@ -758,6 +760,51 @@ fn about_me_keeps_the_users_text_and_takes_facts() {
     assert!(text.contains("Jag heter Anna i jobbet.\n"));
     assert!(text.contains("- Jobbar med Q3-lanseringen.\n"));
     assert_eq!(about_me(&store).facts_at, Some(at(11, 13)));
+}
+
+#[test]
+fn forgetting_what_the_memory_noted_includes_about_me() {
+    let folder = Folder::new();
+    let mut store = sample();
+    sync_now(&mut store, &folder);
+    folder.put(
+        "about-me.md",
+        &(folder.read("about-me.md") + "\nMina egna rader.\n"),
+    );
+    let page = about_me(&store);
+    let sources: Vec<i64> = store
+        .episodes(None, 10)
+        .unwrap()
+        .iter()
+        .map(|e| e.id)
+        .collect();
+    store
+        .set_facts(&page.id, &facts(&["Jobbar med Q3."]), &sources, at(11, 13))
+        .unwrap();
+    sync_now(&mut store, &folder);
+
+    store.forget_memory().unwrap();
+    sync_now(&mut store, &folder);
+    let text = folder.read("about-me.md");
+    assert_eq!(text, "# About me\n\nMina egna rader.\n");
+    assert!(store.pages().unwrap().is_empty());
+    assert!(store.fact_sources(&page.id).unwrap().is_empty());
+}
+
+#[test]
+fn naming_yourself_forgets_the_person_noted_under_that_name() {
+    let folder = Folder::new();
+    let mut store = sample();
+    sync_now(&mut store, &folder);
+    assert_eq!(
+        store
+            .forget_people_named(&["anna example".to_string()], at(11, 14))
+            .unwrap(),
+        1
+    );
+    sync_now(&mut store, &folder);
+    assert!(!folder.0.join(ANNA).exists());
+    assert!(!folder.read("about-me.md").contains("Anna"));
 }
 
 #[test]
