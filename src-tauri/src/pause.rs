@@ -2,7 +2,9 @@
 //!
 //! While paused, Lax reads nothing at all, not even app names. Everything that
 //! reads from the screen must check [`Pause::is_paused`] immediately before
-//! reading, and skip the read if it returns `true`.
+//! reading, and skip the read if it returns `true`. Work already under way,
+//! such as a model call, runs through [`Pause::unless_paused`], so a pause
+//! stops it too.
 //!
 //! Timed pauses end on the wall clock, so a pause still ends on time if the Mac
 //! sleeps in between.
