@@ -3,6 +3,8 @@
 use chrono::{DateTime, Utc};
 use rusqlite::{OptionalExtension, Row, params};
 
+use std::collections::HashSet;
+
 use super::{EntityKind, Result, Store};
 
 /// Where a page stands.
@@ -323,8 +325,10 @@ impl Store {
 
     /// Puts back the facts of one of Lax's earlier versions of a page. The
     /// next sync writes them, as a new version, so this can be undone too.
-    /// Returns the page, or `None` if the version is gone or isn't Lax's.
-    pub fn restore_facts(&mut self, version: i64) -> Result<Option<String>> {
+    /// Facts it takes away count as deleted by the user: rejected, so the
+    /// model doesn't write them again. Returns the page, or `None` if the
+    /// version is gone or isn't Lax's.
+    pub fn restore_facts(&mut self, version: i64, now: DateTime<Utc>) -> Result<Option<String>> {
         let tx = self.conn.transaction()?;
         let found: Option<(String, String)> = tx
             .query_row(
@@ -336,6 +340,21 @@ impl Store {
         let Some((page, block)) = found else {
             return Ok(None);
         };
+        let restored = facts_in(&block);
+        let current: Option<String> =
+            tx.query_row("SELECT facts FROM pages WHERE id = ?1", [&page], |row| {
+                row.get(0)
+            })?;
+        let kept: HashSet<String> = restored.iter().map(|f| fact_key(f)).collect();
+        for fact in current.unwrap_or_default().lines() {
+            if !kept.contains(&fact_key(fact)) {
+                tx.execute(
+                    "INSERT OR IGNORE INTO rejected_facts (page_id, key, fact, created_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![page, fact_key(fact), fact, now.timestamp_millis()],
+                )?;
+            }
+        }
         // The restored facts drew on the version's episodes: they become the
         // facts' sources, so forgetting one of them still clears the facts.
         // (Deleting the old sources clears the facts by trigger; they are set
@@ -348,7 +367,7 @@ impl Store {
         )?;
         tx.execute(
             "UPDATE pages SET facts = ?2 WHERE id = ?1",
-            params![page, facts_in(&block).join("\n")],
+            params![page, restored.join("\n")],
         )?;
         tx.commit()?;
         Ok(Some(page))

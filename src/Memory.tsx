@@ -717,6 +717,8 @@ function PageHistory({
     invoke<VersionItem[]>("page_history", { id: entityId }).then(setVersions, () =>
       setVersions("failed"),
     );
+  // The newest of Lax's versions is what its part of the page says now.
+  const current = Array.isArray(versions) ? versions.find((v) => v.byLax)?.id : undefined;
 
   return (
     <details
@@ -734,7 +736,7 @@ function PageHistory({
       )}
       {Array.isArray(versions) && (
         <ol className="versions">
-          {versions.map((version, i) => (
+          {versions.map((version) => (
             <li key={version.id}>
               <p className="muted when">
                 {new Date(version.writtenAt).toLocaleString(undefined, {
@@ -744,10 +746,10 @@ function PageHistory({
                   minute: "2-digit",
                 })}{" "}
                 · {version.byLax ? "Lax" : "your edit"}
-                {i === 0 && version.byLax && " · on the page now"}
+                {version.id === current && " · on the page now"}
               </p>
               <pre className="block">{version.block}</pre>
-              {version.byLax && i > 0 && version.facts.length > 0 && (
+              {version.byLax && version.id !== current && version.facts.length > 0 && (
                 <p className="buttons">
                   <button
                     type="button"
@@ -756,7 +758,8 @@ function PageHistory({
                     onClick={() =>
                       run(
                         invoke("restore_page_version", { version: version.id }).then(
-                          () => "Put back those facts. The page shows them again.",
+                          () =>
+                            "Put back those facts. The page shows them again, and the facts it took away won't be written again.",
                         ),
                       ).then(load)
                     }

@@ -866,7 +866,10 @@ fn earlier_facts_can_be_restored_and_the_restore_undone() {
         ["Leder Q3-lanseringen."]
     );
 
-    assert_eq!(store.restore_facts(good.id).unwrap(), Some(page.id.clone()));
+    assert_eq!(
+        store.restore_facts(good.id, at(11, 15)).unwrap(),
+        Some(page.id.clone())
+    );
     sync_now(&mut store, &folder);
     let text = folder.read(ANNA);
     assert!(text.contains("- Leder Q3-lanseringen."));
@@ -883,6 +886,8 @@ fn earlier_facts_can_be_restored_and_the_restore_undone() {
             .iter()
             .any(|v| crate::store::facts_in(&v.block) == ["Något dumt."])
     );
+    // What the restore took away is rejected, so the model can't add it back.
+    assert_eq!(store.rejected_facts(&page.id).unwrap(), ["Något dumt."]);
 
     // Restored facts still go with their episodes.
     store
@@ -902,8 +907,8 @@ fn only_laxs_versions_can_be_restored() {
         .unwrap();
     let mine = store.page_history(&page.id, 10).unwrap()[0].clone();
     assert!(!mine.by_lax);
-    assert_eq!(store.restore_facts(mine.id).unwrap(), None);
-    assert_eq!(store.restore_facts(999_999).unwrap(), None);
+    assert_eq!(store.restore_facts(mine.id, at(11, 15)).unwrap(), None);
+    assert_eq!(store.restore_facts(999_999, at(11, 15)).unwrap(), None);
 }
 
 #[test]

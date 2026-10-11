@@ -503,7 +503,7 @@ pub fn page_history(app: AppHandle, id: i64) -> Result<Vec<VersionItem>, String>
 pub fn restore_page_version(app: AppHandle, version: i64) -> Result<(), String> {
     command(&app, |store| {
         store
-            .restore_facts(version)
+            .restore_facts(version, Utc::now())
             .map_err(|_| "Lax couldn't restore it.".to_string())?
             .map(|_| ())
             .ok_or_else(|| "That version is no longer there.".to_string())
