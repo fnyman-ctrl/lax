@@ -26,7 +26,7 @@ mod pages;
 pub use memory::{Entity, EntityKind, Merged, Renamed, UnrecognizedEpisode, name_key};
 #[cfg(test)]
 pub use pages::LAX_VERSIONS_KEPT;
-pub use pages::{Page, PageKind, PageState, fact_key};
+pub use pages::{Page, PageKind, PageState, fact_key, facts_in};
 
 pub const DATABASE_FILE: &str = "lax.sqlite";
 

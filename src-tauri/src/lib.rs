@@ -76,6 +76,8 @@ pub fn run() {
             memory::forget_memory,
             memory::recreate_page,
             memory::recreate_about_me,
+            memory::page_history,
+            memory::restore_page_version,
             memory::set_own_names,
             memory::open_memory_folder,
             memory::keep_entity,
