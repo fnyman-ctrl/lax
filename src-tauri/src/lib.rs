@@ -25,6 +25,7 @@ mod site;
 #[allow(dead_code)] // Plain search and setting the capture interval await the settings window.
 mod store;
 mod tray;
+mod vectors;
 mod viewer;
 
 use std::sync::Mutex;

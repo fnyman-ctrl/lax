@@ -23,10 +23,13 @@ use crate::redact::redact;
 mod ask;
 mod memory;
 mod pages;
+mod vectors;
 pub use memory::{Entity, EntityKind, Merged, Renamed, UnrecognizedEpisode, name_key};
 #[cfg(test)]
 pub use pages::LAX_VERSIONS_KEPT;
 pub use pages::{Page, PageKind, PageState, fact_key, facts_in};
+#[cfg(test)]
+pub use vectors::cosine;
 
 pub const DATABASE_FILE: &str = "lax.sqlite";
 
@@ -43,6 +46,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0008_pages.sql"),
     include_str!("../migrations/0009_page_facts.sql"),
     include_str!("../migrations/0010_about_me.sql"),
+    include_str!("../migrations/0011_episode_vectors.sql"),
 ];
 
 /// How long raw captures are kept unless the user chooses otherwise

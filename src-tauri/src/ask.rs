@@ -33,6 +33,15 @@ const MAX_ENTRIES: usize = 60;
 const MAX_CHARS: usize = 14_000;
 /// Most entries taken from each way of finding them.
 const PER_SOURCE: usize = 40;
+/// Entries found by meaning.
+const NEAREST: usize = 12;
+
+/// The question as a vector, for finding entries by meaning.
+struct Meaning {
+    model: String,
+    vector: Vec<f32>,
+}
+
 /// Most named entities whose facts are given.
 const MAX_KNOWN_ENTITIES: usize = 5;
 /// Entries given when nothing in the question narrows it down.
@@ -98,6 +107,7 @@ struct Found {
 fn gather<Tz: TimeZone>(
     store: &Store,
     question: &str,
+    meaning: Option<&Meaning>,
     now: &DateTime<Tz>,
 ) -> crate::store::Result<Found> {
     let range = time_range(question, now);
@@ -109,6 +119,11 @@ fn gather<Tz: TimeZone>(
     let limit = if range.is_some() { 500 } else { PER_SOURCE };
     let mentioning: Vec<Episode> = store.episodes_mentioning(&entities, range, limit)?;
     let matching: Vec<Episode> = store.search_episodes(&search, range, limit)?;
+    // Closest in meaning, with vectors from the embedding model.
+    let near: Vec<Episode> = match meaning {
+        Some(meaning) => store.nearest_episodes(&meaning.model, &meaning.vector, range, NEAREST)?,
+        None => Vec::new(),
+    };
     let mut recent_only = false;
 
     // In order of priority; the budget cuts from the end.
@@ -116,18 +131,22 @@ fn gather<Tz: TimeZone>(
         Some((from, to)) => {
             let mut in_range = store.episodes_between(from, to, 500)?;
             in_range.reverse(); // Latest first, so the budget keeps the end of the time.
-            if entities.is_empty() && search.is_empty() {
+            if entities.is_empty() && search.is_empty() && near.is_empty() {
                 in_range
             } else {
-                let wanted: HashSet<i64> =
-                    mentioning.iter().chain(&matching).map(|e| e.id).collect();
+                let wanted: HashSet<i64> = mentioning
+                    .iter()
+                    .chain(&matching)
+                    .chain(&near)
+                    .map(|e| e.id)
+                    .collect();
                 let (first, rest): (Vec<Episode>, Vec<Episode>) =
                     in_range.into_iter().partition(|e| wanted.contains(&e.id));
                 first.into_iter().chain(rest).collect()
             }
         }
         None => {
-            let both: Vec<Episode> = mentioning.into_iter().chain(matching).collect();
+            let both: Vec<Episode> = mentioning.into_iter().chain(matching).chain(near).collect();
             if both.is_empty() {
                 recent_only = true;
                 store.episodes(None, RECENT)?
@@ -597,6 +616,35 @@ pub async fn ask_memory(app: AppHandle, question: String) -> Result<AskAnswer, S
         return Err("Lax is paused. Resume it from the menu bar to ask.".to_string());
     }
     let now = Local::now();
+    // With an embedding model, the question as a vector. If the model can't
+    // be reached, the question is answered without it.
+    let embedding = with_store(&app, |store| store.model_choice(ModelTask::Embeddings))
+        .and_then(Result::ok)
+        .flatten();
+    let meaning = match embedding {
+        Some(choice) => {
+            let turn = app.state::<ModelTurn>();
+            let embedded = async {
+                let _turn = turn.take().await;
+                crate::vectors::embed(
+                    &choice.base_url,
+                    &choice.model,
+                    std::slice::from_ref(&question),
+                )
+                .await
+            };
+            app.state::<Pause>()
+                .unless_paused(embedded)
+                .await
+                .and_then(Result::ok)
+                .and_then(|mut v| v.pop())
+                .map(|vector| Meaning {
+                    model: choice.model,
+                    vector,
+                })
+        }
+        None => None,
+    };
     let (choice, found) = {
         let store = app
             .try_state::<Mutex<Store>>()
@@ -607,7 +655,10 @@ pub async fn ask_memory(app: AppHandle, question: String) -> Result<AskAnswer, S
             .model_choice(ModelTask::Chat)
             .map_err(failed)?
             .ok_or("Choose a chat model under Models first.")?;
-        (choice, gather(&store, &question, &now).map_err(failed)?)
+        (
+            choice,
+            gather(&store, &question, meaning.as_ref(), &now).map_err(failed)?,
+        )
     };
     // A time with nothing in it is answered as such: what the memory knows
     // in general says nothing about that day.
@@ -722,6 +773,12 @@ async fn answer(
         MAX_TOKENS,
     )
     .await
+}
+
+fn with_store<T>(app: &AppHandle, work: impl FnOnce(&Store) -> T) -> Option<T> {
+    let store = app.try_state::<Mutex<Store>>()?;
+    let store = store.lock().unwrap_or_else(PoisonError::into_inner);
+    Some(work(&store))
 }
 
 fn item(e: &Episode) -> EpisodeItem {
@@ -897,15 +954,15 @@ mod tests {
     #[test]
     fn a_time_gives_that_time_and_puts_matches_first() {
         let store = sample();
-        let found = gather(&store, "Vad gjorde jag i tisdags?", &now()).unwrap();
+        let found = gather(&store, "Vad gjorde jag i tisdags?", None, &now()).unwrap();
         assert_eq!(
             summaries(&found),
             ["Mailade Anna om Q3-offerten.", "Läste nyheter."]
         );
         assert!(found.timed && !found.recent_only);
-        let found = gather(&store, "Vad gjorde jag igår?", &now()).unwrap();
+        let found = gather(&store, "Vad gjorde jag igår?", None, &now()).unwrap();
         assert_eq!(summaries(&found), ["Ringde Anna om leveransen."]);
-        let found = gather(&store, "Vad gjorde jag i torsdags?", &now()).unwrap();
+        let found = gather(&store, "Vad gjorde jag i torsdags?", None, &now()).unwrap();
         assert!(found.episodes.is_empty() && found.timed);
     }
 
@@ -926,7 +983,13 @@ mod tests {
                     .unwrap();
             }
         }
-        let found = gather(&store, "Vad pratade jag med Anna om i tisdags?", &now()).unwrap();
+        let found = gather(
+            &store,
+            "Vad pratade jag med Anna om i tisdags?",
+            None,
+            &now(),
+        )
+        .unwrap();
         assert!(
             found
                 .episodes
@@ -979,7 +1042,7 @@ mod tests {
             )
             .unwrap();
 
-        let found = gather(&store, "Vad gör Anna?", &now()).unwrap();
+        let found = gather(&store, "Vad gör Anna?", None, &now()).unwrap();
         assert_eq!(
             found.known,
             [
@@ -988,7 +1051,7 @@ mod tests {
             ]
         );
         // A question about no one still gets what the memory knows about the user.
-        let found = gather(&store, "Sammanfatta", &now()).unwrap();
+        let found = gather(&store, "Sammanfatta", None, &now()).unwrap();
         assert_eq!(found.known.len(), 1);
         // It counts against the budget: entries make room for it.
         let known: usize = found.known.iter().map(|k| k.chars().count()).sum();
@@ -1002,21 +1065,56 @@ mod tests {
     }
 
     #[test]
+    fn entries_are_found_by_meaning_too() {
+        let mut store = sample();
+        // Vectors: the offer and the delivery point one way, the rest another.
+        let all = store.episodes(None, 10).unwrap();
+        let vectors: Vec<(i64, Vec<f32>)> = all
+            .iter()
+            .map(|e| {
+                let about_the_deal = e.summary.contains("offert") || e.summary.contains("leverans");
+                (
+                    e.id,
+                    if about_the_deal {
+                        vec![1.0, 0.0]
+                    } else {
+                        vec![0.0, 1.0]
+                    },
+                )
+            })
+            .collect();
+        store.set_vectors("m", &vectors).unwrap();
+        let meaning = Meaning {
+            model: "m".to_string(),
+            vector: vec![0.9, 0.1],
+        };
+        // No name, word or time matches "budgeten", but the meaning does.
+        let found = gather(&store, "Hur gick det med budgeten?", Some(&meaning), &now()).unwrap();
+        assert!(!found.recent_only);
+        let summaries: Vec<&str> = found.episodes.iter().map(|e| e.summary.as_str()).collect();
+        assert!(summaries.contains(&"Mailade Anna om Q3-offerten."));
+        assert!(summaries.contains(&"Ringde Anna om leveransen."));
+        // Without vectors it falls back to the latest entries.
+        let found = gather(&store, "Hur gick det med budgeten?", None, &now()).unwrap();
+        assert!(found.recent_only);
+    }
+
+    #[test]
     fn names_and_words_find_entries_at_any_time() {
         let store = sample();
-        let found = gather(&store, "Vad har jag haft för mig med Anna?", &now()).unwrap();
+        let found = gather(&store, "Vad har jag haft för mig med Anna?", None, &now()).unwrap();
         assert_eq!(
             summaries(&found),
             ["Mailade Anna om Q3-offerten.", "Ringde Anna om leveransen."]
         );
-        let found = gather(&store, "Hur går lanseringen?", &now()).unwrap();
+        let found = gather(&store, "Hur går lanseringen?", None, &now()).unwrap();
         assert_eq!(summaries(&found), ["Planerade lanseringen med Bo."]);
     }
 
     #[test]
     fn without_anything_to_go_on_the_latest_entries_are_given() {
         let store = sample();
-        let found = gather(&store, "Sammanfatta", &now()).unwrap();
+        let found = gather(&store, "Sammanfatta", None, &now()).unwrap();
         assert!(found.recent_only);
         assert_eq!(found.episodes.len(), 4);
         // Oldest first.
@@ -1030,7 +1128,7 @@ mod tests {
         for hour in 0..24 {
             episode(&mut store, at(10, hour), &long);
         }
-        let found = gather(&store, "Vad gjorde jag igår?", &now()).unwrap();
+        let found = gather(&store, "Vad gjorde jag igår?", None, &now()).unwrap();
         let chars: usize = found
             .episodes
             .iter()
@@ -1083,7 +1181,13 @@ mod tests {
     async fn live_answer() {
         let env = |name| std::env::var(name).unwrap_or_else(|_| panic!("{name} is not set"));
         let store = sample();
-        let found = gather(&store, "Vad pratade jag med Anna om i tisdags?", &now()).unwrap();
+        let found = gather(
+            &store,
+            "Vad pratade jag med Anna om i tisdags?",
+            None,
+            &now(),
+        )
+        .unwrap();
         let texts: Vec<String> = found
             .episodes
             .iter()

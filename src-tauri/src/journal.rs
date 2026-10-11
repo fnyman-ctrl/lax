@@ -102,6 +102,9 @@ pub fn start(app: AppHandle) {
             if result.is_ok() {
                 result = crate::pages::facts::round(&app, &mut facts_schedule).await;
             }
+            if result.is_ok() {
+                result = crate::vectors::round(&app).await;
+            }
             let wait = match result {
                 Ok(()) => ROUND,
                 Err(()) => AFTER_FAILURE,

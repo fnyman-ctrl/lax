@@ -78,7 +78,9 @@ previous one, so they can be built, tested and improved independently.
   (`src-tauri/src/ask.rs`). The entries are found without a model call: a
   time in the question ("i tisdags", "last week"), names the memory knows,
   and a full-text search, within a size budget. The answer names the entries
-  it is based on. Semantic search with local embeddings comes later.
+  it is based on. With an embedding model chosen, episodes get vectors in the
+  background (`src-tauri/src/vectors.rs`), and Ask also finds entries close in
+  meaning to the question.
 
 ## Models
 

@@ -14,7 +14,7 @@ closer to them.
 | [2](https://github.com/fnyman-ctrl/lax/milestone/2) | Model layer | 🚧 Local models done; remote providers next |
 | [3](https://github.com/fnyman-ctrl/lax/milestone/3) | Journal | 🚧 First version, opt-in |
 | [4](https://github.com/fnyman-ctrl/lax/milestone/4) | Learning memory ⭐ | 🚧 First version done: entities, pages in ~/Lax with facts, about-me.md, history; a week of use to judge |
-| [5](https://github.com/fnyman-ctrl/lax/milestone/5) | Ask your memory | 🚧 First version: questions answered from the journal |
+| [5](https://github.com/fnyman-ctrl/lax/milestone/5) | Ask your memory | 🚧 Questions answered from the journal and the memory, found by time, name, words and meaning |
 | [6](https://github.com/fnyman-ctrl/lax/milestone/6) | Release 0.1 | Planned |
 
 ---
