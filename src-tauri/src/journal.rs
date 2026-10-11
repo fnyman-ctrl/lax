@@ -20,7 +20,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::logging::{self, ErrorKind, Field};
 use crate::models::structured::{self, Captured, StructuredError, Validate};
-use crate::models::{Endpoint, ModelClient};
+use crate::models::{Endpoint, ModelClient, ModelError};
 use crate::pause::Pause;
 use crate::store::{Capture, ModelTask, NewEpisode, Store};
 
@@ -45,7 +45,10 @@ const ATTEMPTS_PER_BLOCK: u32 = 3;
 const MAX_CAPTURES: usize = 200;
 const MAX_CHARS_PER_CAPTURE: usize = 1500;
 const MAX_CHARS_PER_BLOCK: usize = 12_000;
-const MAX_TOKENS: u32 = 700;
+/// Room for the answer. Models like Gemma 4 reason before answering, and with
+/// a full block that can take well over a thousand tokens; too little room
+/// leaves no answer at all (checked on a real Mac).
+const MAX_TOKENS: u32 = 3000;
 
 const TASK: &str = "Write a short work-journal entry, one to three sentences, about what the \
 user did in these windows: what they worked on, in which apps, and with whom. Write in the \
@@ -156,22 +159,34 @@ async fn round(app: &AppHandle, setbacks: &mut Setbacks) -> Result<(), ()> {
                 );
             }
             Err(error) => {
-                // A server that's down isn't the block's fault; a bad answer
-                // may be.
-                if !matches!(error, StructuredError::Model(_)) {
-                    setbacks.bad_answer(&work.block_ids);
-                }
+                // A server that's down or busy isn't the block's fault: wait
+                // a while. Anything else (a malformed or invalid answer, or
+                // running out of room) may be, so the block is counted and
+                // the journal goes on.
+                let unavailable = matches!(
+                    error,
+                    StructuredError::Model(
+                        ModelError::Unreachable
+                            | ModelError::Timeout
+                            | ModelError::Status(_)
+                            | ModelError::RemoteNotAllowed
+                    )
+                );
                 logging::warn(
                     "journal.failed",
                     &[
+                        Field::Flag("model_unavailable", unavailable),
                         Field::Flag(
-                            "model_unavailable",
-                            matches!(error, StructuredError::Model(_)),
+                            "out_of_room",
+                            matches!(error, StructuredError::Model(ModelError::OutOfRoom)),
                         ),
                         Field::Error(ErrorKind::Other),
                     ],
                 );
-                return Err(());
+                if unavailable {
+                    return Err(());
+                }
+                setbacks.bad_answer(&work.block_ids);
             }
         }
     }
