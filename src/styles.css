@@ -638,6 +638,34 @@ mark {
   margin: 0 0 0.25rem;
 }
 
+/* A model on the left, its two choices in a fixed column on the right. */
+.model-list {
+  margin: 0.25rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.model-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem 1.5rem;
+  align-items: baseline;
+  padding: 0.45rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.model-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.model-actions {
+  display: grid;
+  grid-template-columns: 7.5rem 9.5rem;
+  justify-items: end;
+  white-space: nowrap;
+}
+
 .models .card ol {
   margin: 0.25rem 0 0;
   padding-left: 1.2rem;

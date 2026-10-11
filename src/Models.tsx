@@ -159,7 +159,7 @@ export function Models() {
           {server.models.length === 0 ? (
             <p className="muted">It's running, but has no models. Download one in {server.name}.</p>
           ) : (
-            <ul className="excluded">
+            <ul className="model-list">
               {server.models.map((model) => {
                 // A guess from the name; both choices stay available,
                 // since not every embedding model says "embed".
@@ -167,21 +167,22 @@ export function Models() {
                 const recommended = TASKS.find((t) => t.task === guess)?.recommended ?? "";
                 const chosenFor = (task: Task) =>
                   settings[task]?.model === model && settings[task]?.baseUrl.startsWith(server.baseUrl);
-                const order: Task[] = guess === "chat" ? ["chat", "embeddings"] : ["embeddings", "chat"];
+                // Always in the same order, so the choices line up in a column.
+                const order: Task[] = ["chat", "embeddings"];
                 return (
-                  <li key={model}>
-                    <span>
+                  <li key={model} className="model-row">
+                    <span className="model-name">
                       {model}{" "}
                       <span className="muted">
                         · probably {guess === "chat" ? "chat" : "embeddings"}
                         {model.toLowerCase().includes(recommended) ? " · recommended" : ""}
                       </span>
                     </span>
-                    <span className="buttons">
+                    <span className="model-actions">
                       {order.map((task) =>
                         chosenFor(task) ? (
                           <span key={task} className="muted">
-                            Chosen for {task}
+                            ✓ Chosen<span className="visually-hidden"> for {task}</span>
                           </span>
                         ) : (
                           <button
