@@ -65,7 +65,8 @@ impl ModelTurn {
 
     /// Runs background work in turn. `None` if capture was paused or the
     /// user asked something first: then the work was dropped, or never
-    /// started, and should be tried again in a later round.
+    /// started. Callers must treat `None` like a pause: store nothing from
+    /// it, and try again in a later round.
     pub async fn background<T>(&self, pause: &Pause, work: impl Future<Output = T>) -> Option<T> {
         let run = async {
             let _turn = self.lock.lock().await;

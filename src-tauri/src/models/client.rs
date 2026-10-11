@@ -179,21 +179,36 @@ impl ModelClient {
         struct Message {
             content: Option<String>,
         }
-        let request = Request {
+        let mut request = Request {
             model,
             messages,
             max_tokens,
             reasoning_effort: (!self.reasoning).then_some("none"),
             stream: false,
         };
-        let reply: Reply = self
+        let mut reply: Result<Reply, ModelError> = self
             .call(
                 "model.chat",
                 "chat/completions",
                 Some(&request),
                 CHAT_TIMEOUT,
             )
-            .await?;
+            .await;
+        // A server that doesn't take "none" refuses the request; ask again
+        // without it, and let the model reason.
+        if request.reasoning_effort.is_some() && matches!(reply, Err(ModelError::Status(400 | 422)))
+        {
+            request.reasoning_effort = None;
+            reply = self
+                .call(
+                    "model.chat",
+                    "chat/completions",
+                    Some(&request),
+                    CHAT_TIMEOUT,
+                )
+                .await;
+        }
+        let reply = reply?;
         let choice = reply
             .choices
             .into_iter()
@@ -442,6 +457,28 @@ mod tests {
         assert_eq!(sent["stream"], false);
         // Models may reason unless told not to.
         assert!(sent.get("reasoning_effort").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_server_that_refuses_no_reasoning_is_asked_again() {
+        let server = MockServer::start(vec![
+            (400, r#"{"error":"unknown reasoning_effort"}"#),
+            (
+                200,
+                r#"{"choices":[{"message":{"role":"assistant","content":"Hej"}}]}"#,
+            ),
+        ]);
+        let reply = server
+            .client()
+            .without_reasoning()
+            .chat("gemma", &[user("Say hello")], Some(20))
+            .await
+            .unwrap();
+        assert_eq!(reply, "Hej");
+        let requests = server.requests();
+        assert_eq!(requests.len(), 2);
+        let second: serde_json::Value = serde_json::from_str(&requests[1].1).unwrap();
+        assert!(second.get("reasoning_effort").is_none());
     }
 
     #[tokio::test]
