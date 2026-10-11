@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { usePaged } from "./usePaged";
 
 // Shapes returned by src-tauri/src/journal.rs.
 type JournalStatus = { enabled: boolean; model: string | null; waiting: number };
@@ -15,6 +16,8 @@ type Episode = {
 const PAGE = 100;
 const REFRESH_MS = 30_000;
 
+const startedAt = (episode: Episode) => episode.startedAt;
+
 /**
  * The journal (Stage 3): short episodes the chosen model writes from the
  * captures, as a timeline of each day. Off until the user turns it on.
@@ -23,68 +26,15 @@ const REFRESH_MS = 30_000;
  */
 export function Journal({ onShowModels }: { onShowModels: () => void }) {
   const [status, setStatus] = useState<JournalStatus | null | "failed">(null);
-  const [episodes, setEpisodes] = useState<Episode[] | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [more, setMore] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [olderFailed, setOlderFailed] = useState(false);
-  const episodesRef = useRef<Episode[]>([]);
+  const paged = usePaged("journal_episodes", startedAt, PAGE);
+  const episodes = paged.items;
+  const refreshEpisodes = paged.refresh;
 
-  const show = (next: Episode[]) => {
-    episodesRef.current = next;
-    setEpisodes(next);
-  };
-
-  // Fetches the newest page and replaces what it covers, so new entries
-  // appear and forgotten ones disappear. Older pages already loaded are kept.
   const refresh = useCallback(() => {
     invoke<JournalStatus>("journal_status").then(setStatus, () => setStatus("failed"));
-    invoke<Episode[]>("journal_episodes", { limit: PAGE }).then(
-      (newest) => {
-        if (newest.length < PAGE) {
-          // That is everything there is.
-          setMore(false);
-          show(newest);
-          return;
-        }
-        const last = newest[newest.length - 1];
-        const older = episodesRef.current.filter(
-          (e) => e.startedAt < last.startedAt || (e.startedAt === last.startedAt && e.id < last.id),
-        );
-        if (older.length === 0) {
-          setMore(true);
-        }
-        show([...newest, ...older]);
-      },
-      () => {
-        if (episodesRef.current.length === 0) {
-          show([]);
-        }
-      },
-    );
-  }, []);
-
-  const loadOlder = () => {
-    const last = episodesRef.current[episodesRef.current.length - 1];
-    if (!last) {
-      return;
-    }
-    setLoadingMore(true);
-    setOlderFailed(false);
-    invoke<Episode[]>("journal_episodes", {
-      beforeAt: last.startedAt,
-      beforeId: last.id,
-      limit: PAGE,
-    })
-      .then(
-        (older) => {
-          setMore(older.length === PAGE);
-          show([...episodesRef.current, ...older]);
-        },
-        () => setOlderFailed(true),
-      )
-      .finally(() => setLoadingMore(false));
-  };
+    refreshEpisodes();
+  }, [refreshEpisodes]);
 
   useEffect(() => {
     refresh();
@@ -163,6 +113,7 @@ export function Journal({ onShowModels }: { onShowModels: () => void }) {
         {message && <p className="error">{message}</p>}
       </div>
 
+      {paged.failed && <p className="error">Lax couldn't read the newest entries.</p>}
       {episodes !== null && episodes.length === 0 && status.enabled && (
         <p className="muted empty">
           No entries yet. The first one appears about 15 minutes after capture starts.
@@ -187,11 +138,16 @@ export function Journal({ onShowModels }: { onShowModels: () => void }) {
             </ul>
           </section>
         ))}
-      {olderFailed && <p className="error">Lax couldn't read older entries.</p>}
-      {more && (
+      {paged.olderFailed && <p className="error">Lax couldn't read older entries.</p>}
+      {paged.more && (
         <p className="actions">
-          <button type="button" className="secondary" onClick={loadOlder} disabled={loadingMore}>
-            {loadingMore ? "Loading…" : "Show older"}
+          <button
+            type="button"
+            className="secondary"
+            onClick={paged.loadOlder}
+            disabled={paged.loadingMore}
+          >
+            {paged.loadingMore ? "Loading…" : "Show older"}
           </button>
         </p>
       )}
