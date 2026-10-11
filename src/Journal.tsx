@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 // Shapes returned by src-tauri/src/journal.rs.
@@ -25,11 +25,66 @@ export function Journal({ onShowModels }: { onShowModels: () => void }) {
   const [status, setStatus] = useState<JournalStatus | null | "failed">(null);
   const [episodes, setEpisodes] = useState<Episode[] | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [more, setMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [olderFailed, setOlderFailed] = useState(false);
+  const episodesRef = useRef<Episode[]>([]);
 
+  const show = (next: Episode[]) => {
+    episodesRef.current = next;
+    setEpisodes(next);
+  };
+
+  // Fetches the newest page and replaces what it covers, so new entries
+  // appear and forgotten ones disappear. Older pages already loaded are kept.
   const refresh = useCallback(() => {
     invoke<JournalStatus>("journal_status").then(setStatus, () => setStatus("failed"));
-    invoke<Episode[]>("journal_episodes", { limit: PAGE }).then(setEpisodes, () => setEpisodes([]));
+    invoke<Episode[]>("journal_episodes", { limit: PAGE }).then(
+      (newest) => {
+        if (newest.length < PAGE) {
+          // That is everything there is.
+          setMore(false);
+          show(newest);
+          return;
+        }
+        const last = newest[newest.length - 1];
+        const older = episodesRef.current.filter(
+          (e) => e.startedAt < last.startedAt || (e.startedAt === last.startedAt && e.id < last.id),
+        );
+        if (older.length === 0) {
+          setMore(true);
+        }
+        show([...newest, ...older]);
+      },
+      () => {
+        if (episodesRef.current.length === 0) {
+          show([]);
+        }
+      },
+    );
   }, []);
+
+  const loadOlder = () => {
+    const last = episodesRef.current[episodesRef.current.length - 1];
+    if (!last) {
+      return;
+    }
+    setLoadingMore(true);
+    setOlderFailed(false);
+    invoke<Episode[]>("journal_episodes", {
+      beforeAt: last.startedAt,
+      beforeId: last.id,
+      limit: PAGE,
+    })
+      .then(
+        (older) => {
+          setMore(older.length === PAGE);
+          show([...episodesRef.current, ...older]);
+        },
+        () => setOlderFailed(true),
+      )
+      .finally(() => setLoadingMore(false));
+  };
 
   useEffect(() => {
     refresh();
@@ -132,6 +187,14 @@ export function Journal({ onShowModels }: { onShowModels: () => void }) {
             </ul>
           </section>
         ))}
+      {olderFailed && <p className="error">Lax couldn't read older entries.</p>}
+      {more && (
+        <p className="actions">
+          <button type="button" className="secondary" onClick={loadOlder} disabled={loadingMore}>
+            {loadingMore ? "Loading…" : "Show older"}
+          </button>
+        </p>
+      )}
     </section>
   );
 }
