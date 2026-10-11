@@ -253,6 +253,7 @@ impl Store {
         conn.pragma_update(None, "secure_delete", "ON")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         migrate(&mut conn)?;
+        repair(&conn)?;
         Ok(Store {
             conn,
             recent_forgets: RefCell::new(Vec::new()),
@@ -1145,6 +1146,35 @@ impl Store {
     }
 }
 
+/// Brings back schema that a database can lack although its version says it
+/// has it: a few migrations were changed after they had already run on the
+/// maintainer's database during development, so his `outbox` lacked the
+/// columns forgetting needs, and `captures` an index. Safe to run every time.
+/// From now on, a migration is never changed once merged; `migration_files_
+/// are_never_changed` holds that.
+fn repair(conn: &Connection) -> Result<()> {
+    let columns = |table: &str| -> Result<Vec<String>> {
+        let mut statement =
+            conn.prepare(&format!("SELECT name FROM pragma_table_info('{table}')"))?;
+        let rows = statement.query_map([], |row| row.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    };
+    let outbox = columns("outbox")?;
+    for (column, definition) in [
+        ("covers_from", "covers_from INTEGER"),
+        ("covers_to", "covers_to INTEGER"),
+        ("apps", "apps TEXT NOT NULL DEFAULT ''"),
+    ] {
+        if !outbox.iter().any(|c| c == column) {
+            conn.execute_batch(&format!("ALTER TABLE outbox ADD COLUMN {definition}"))?;
+        }
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS captures_by_app ON captures (bundle_id COLLATE NOCASE)",
+    )?;
+    Ok(())
+}
+
 fn migrate(conn: &mut Connection) -> Result<()> {
     let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
     let supported = schema_version();
@@ -1280,6 +1310,74 @@ mod tests {
         Store::open(&tmp.0).unwrap();
         assert_eq!(mode(&tmp.0.join(DATABASE_FILE)), 0o600);
     }
+
+    #[test]
+    fn a_database_from_an_earlier_outbox_is_repaired() {
+        // The outbox as an early version of 0004 made it, before the columns
+        // forgetting needs; and no captures_by_app index.
+        let conn = Connection::open_in_memory().unwrap();
+        for sql in &MIGRATIONS[..4] {
+            conn.execute_batch(sql).unwrap();
+        }
+        conn.execute_batch(
+            "DROP INDEX captures_by_app;
+             DROP TABLE outbox_fts; DROP TABLE outbox;
+             CREATE TABLE outbox (
+                 id INTEGER PRIMARY KEY, sent_at INTEGER NOT NULL, provider TEXT NOT NULL,
+                 task TEXT NOT NULL, model TEXT NOT NULL, payload TEXT NOT NULL,
+                 status INTEGER NOT NULL, response_bytes INTEGER NOT NULL) STRICT;
+             CREATE VIRTUAL TABLE outbox_fts USING fts5(payload, content = 'outbox',
+                 content_rowid = 'id', tokenize = 'unicode61 remove_diacritics 0');",
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 4).unwrap();
+        let store = Store::init(conn).unwrap();
+        // Every kind of forget works, the ones that clean the outbox too.
+        let now = Utc::now();
+        for what in [
+            Forget::Since(now - TimeDelta::minutes(15)),
+            Forget::Before(now - TimeDelta::days(1)),
+            Forget::Between(now - TimeDelta::hours(2), now - TimeDelta::hours(1)),
+            Forget::App("com.example.mail".to_string()),
+            Forget::Everything,
+        ] {
+            store.forget(&what).unwrap();
+        }
+        // And repairing again changes nothing.
+        repair(&store.conn).unwrap();
+    }
+
+    /// A migration that has run anywhere must never change: a database that
+    /// already ran it would never get the change (that is how the outbox
+    /// above lost its columns). Change the schema with a new migration; add
+    /// a new file's hash here when it is merged.
+    #[test]
+    fn migration_files_are_never_changed() {
+        fn fnv(text: &str) -> u64 {
+            text.bytes().fold(0xcbf2_9ce4_8422_2325, |hash, byte| {
+                (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+            })
+        }
+        let hashes: Vec<u64> = MIGRATIONS.iter().map(|sql| fnv(sql)).collect();
+        assert_eq!(
+            hashes, KNOWN_MIGRATIONS,
+            "a migration file changed; add a new one instead"
+        );
+    }
+
+    const KNOWN_MIGRATIONS: &[u64] = &[
+        1269219197457439031,  // 0001 captures
+        5865538975833966697,  // 0002 settings
+        6648104758707644946,  // 0003 exclusions
+        9557723628897049019,  // 0004 outbox
+        1421081335903528270,  // 0005 journal
+        16283696603318477248, // 0006 memory
+        520382079594332428,   // 0007 memory choices
+        11210449842226117433, // 0008 pages
+        15278673770390570042, // 0009 page facts
+        2814010323252384379,  // 0010 about me
+        1465373273103624669,  // 0011 episode vectors
+    ];
 
     #[test]
     fn migrations_run_once() {
