@@ -49,6 +49,14 @@ the pull request if a significant part was AI-generated.
 Never include real personal data: no screenshots of your own activity, no real
 captured text, no database files. Use synthetic examples.
 
+## Your own test files
+
+Put anything you test with (exported pages, screenshots, notes, sample
+captures) in a `local/` folder at the top of the repository, or name it
+`*.local.*`. Both are in `.gitignore`, so they can't be committed by mistake.
+Never put real captured content in tests or fixtures; use synthetic data
+("Anna Example", `example.com`).
+
 ## Security issues
 
 Don't open a public issue. See [SECURITY.md](SECURITY.md).
