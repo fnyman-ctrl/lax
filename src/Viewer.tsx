@@ -1,10 +1,11 @@
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Exclusions } from "./Exclusions";
 import { Forget } from "./Forget";
 import { Journal } from "./Journal";
 import { Models } from "./Models";
 import { Outbox } from "./Outbox";
+import { usePaged } from "./usePaged";
 // The app icon is the one source of the mascot (docs/BRAND.md).
 import laxIcon from "../src-tauri/icons/app-icon.svg";
 
@@ -27,6 +28,8 @@ type CaptureItem = {
   preview: string;
   textChars: number;
 };
+
+const capturedAt = (item: CaptureItem) => item.capturedAt;
 
 type Hit = { capture: CaptureItem; snippet: string };
 
@@ -217,65 +220,14 @@ function Status() {
 }
 
 function Timeline() {
-  const [items, setItems] = useState<CaptureItem[] | null>(null);
-  const [error, setError] = useState(false);
-  const [more, setMore] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const itemsRef = useRef<CaptureItem[]>([]);
-
-  const show = (next: CaptureItem[]) => {
-    itemsRef.current = next;
-    setItems(next);
-  };
-
-  // Fetches the newest page and replaces what it covers, so new captures
-  // appear and deleted ones disappear. Older pages already loaded are kept.
-  const refresh = useCallback(() => {
-    invoke<CaptureItem[]>("recent_captures", { limit: PAGE }).then(
-      (newest) => {
-        setError(false);
-        if (newest.length < PAGE) {
-          // That is everything there is.
-          setMore(false);
-          show(newest);
-          return;
-        }
-        const last = newest[newest.length - 1];
-        const older = itemsRef.current.filter(
-          (c) => c.capturedAt < last.capturedAt || (c.capturedAt === last.capturedAt && c.id < last.id),
-        );
-        if (older.length === 0) {
-          setMore(true);
-        }
-        show([...newest, ...older]);
-      },
-      () => setError(true),
-    );
-  }, []);
+  const { items, failed, olderFailed, more, loadingMore, refresh, loadOlder } = usePaged(
+    "recent_captures",
+    capturedAt,
+    PAGE,
+  );
   useRefresh(refresh);
 
-  const loadOlder = () => {
-    const last = itemsRef.current[itemsRef.current.length - 1];
-    if (!last) {
-      return;
-    }
-    setLoadingMore(true);
-    invoke<CaptureItem[]>("recent_captures", {
-      beforeAt: last.capturedAt,
-      beforeId: last.id,
-      limit: PAGE,
-    })
-      .then(
-        (older) => {
-          setMore(older.length === PAGE);
-          show([...itemsRef.current, ...older]);
-        },
-        () => setError(true),
-      )
-      .finally(() => setLoadingMore(false));
-  };
-
-  if (error && items === null) {
+  if (failed && items === null) {
     return <p className="error">Lax couldn't read what it has captured.</p>;
   }
   if (items === null) {
@@ -291,7 +243,7 @@ function Timeline() {
   }
   return (
     <>
-      {error && <p className="error">Lax couldn't read the newest captures.</p>}
+      {failed && <p className="error">Lax couldn't read the newest captures.</p>}
       {groupByDayAndApp(items).map((day) => (
         <section key={day.key} className="day">
           <h2>{day.label}</h2>
@@ -300,6 +252,7 @@ function Timeline() {
           ))}
         </section>
       ))}
+      {olderFailed && <p className="error">Lax couldn't read older captures.</p>}
       {more && (
         <p className="actions">
           <button type="button" className="secondary" onClick={loadOlder} disabled={loadingMore}>

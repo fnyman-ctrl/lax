@@ -2,12 +2,18 @@
 //!
 //! While paused, Lax reads nothing at all, not even app names. Everything that
 //! reads from the screen must check [`Pause::is_paused`] immediately before
-//! reading, and skip the read if it returns `true`.
+//! reading, and skip the read if it returns `true`. Work already under way,
+//! such as a model call, runs through [`Pause::unless_paused`], so a pause
+//! stops it too.
 //!
 //! Timed pauses end on the wall clock, so a pause still ends on time if the Mac
 //! sleeps in between.
 
+use std::future::{Future, poll_fn};
+use std::pin::pin;
 use std::sync::{Mutex, PoisonError};
+use std::task::Poll;
+use std::time::Duration;
 
 use chrono::{DateTime, Local, NaiveTime, TimeDelta, TimeZone, Utc};
 
@@ -91,6 +97,37 @@ fn next_midnight<Tz: TimeZone>(now: &DateTime<Tz>) -> DateTime<Tz> {
         .unwrap_or_else(|| now.clone() + TimeDelta::days(1))
 }
 
+/// How often work in progress checks whether capture was paused meanwhile.
+const PAUSE_CHECK: Duration = Duration::from_secs(1);
+
+/// `work`'s output, or `None` once `stop` returns `true` (checked every
+/// `every`), whichever comes first.
+async fn until<T>(
+    stop: impl Fn() -> bool,
+    every: Duration,
+    work: impl Future<Output = T>,
+) -> Option<T> {
+    let mut work = pin!(work);
+    let mut check = tokio::time::interval(every);
+    check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    poll_fn(|cx| {
+        if stop() {
+            return Poll::Ready(None);
+        }
+        if let Poll::Ready(output) = work.as_mut().poll(cx) {
+            return Poll::Ready(Some(output));
+        }
+        // Wakes this future again at the next check.
+        while check.poll_tick(cx).is_ready() {
+            if stop() {
+                return Poll::Ready(None);
+            }
+        }
+        Poll::Pending
+    })
+    .await
+}
+
 /// The shared pause state of the running app.
 #[derive(Default)]
 pub struct Pause {
@@ -120,6 +157,14 @@ impl Pause {
         self.state().is_paused()
     }
 
+    /// Runs `work`, such as a model call, unless capture is paused first.
+    /// Then `work` is dropped, which for a model call closes the connection
+    /// so the server can stop, and the result is `None`: pausing stops
+    /// pending processing, not only reading (GUARDRAILS §4).
+    pub async fn unless_paused<T>(&self, work: impl Future<Output = T>) -> Option<T> {
+        until(|| self.is_paused(), PAUSE_CHECK, work).await
+    }
+
     /// Takes over the state saved before Lax was last quit.
     pub fn restore(&self, saved: CaptureState) {
         self.set(saved);
@@ -140,6 +185,8 @@ impl Pause {
 mod tests {
     use super::*;
     use chrono::FixedOffset;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 
     fn stockholm_summer() -> FixedOffset {
         FixedOffset::east_opt(2 * 3600).unwrap()
@@ -241,5 +288,68 @@ mod tests {
     fn label_of_expired_pause_says_running() {
         let state = CaptureState::paused(PauseLength::FifteenMinutes, &at(14, 0));
         assert_eq!(state.label(&at(14, 30)), "Capture is on");
+    }
+
+    /// Sets a flag when dropped, to see that paused work is let go.
+    struct Dropped(Arc<AtomicBool>);
+
+    impl Drop for Dropped {
+        fn drop(&mut self) {
+            self.0.store(true, SeqCst);
+        }
+    }
+
+    const CHECK: Duration = Duration::from_millis(5);
+
+    #[tokio::test]
+    async fn work_that_finishes_gives_its_output() {
+        let work = async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            "episode"
+        };
+        assert_eq!(until(|| false, CHECK, work).await, Some("episode"));
+    }
+
+    #[tokio::test]
+    async fn pausing_stops_work_in_progress() {
+        let paused = Arc::new(AtomicBool::new(false));
+        let dropped = Arc::new(AtomicBool::new(false));
+        let guard = Dropped(dropped.clone());
+        let work = async move {
+            let _guard = guard;
+            // A model that would take far longer than the test.
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            "episode"
+        };
+        let flag = paused.clone();
+        let pause_soon = async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            flag.store(true, SeqCst);
+        };
+        let started = std::time::Instant::now();
+        let (output, ()) = tokio::join!(until(|| paused.load(SeqCst), CHECK, work), pause_soon,);
+        assert_eq!(output, None);
+        assert!(started.elapsed() < Duration::from_secs(5));
+        assert!(dropped.load(SeqCst));
+    }
+
+    #[tokio::test]
+    async fn nothing_starts_while_paused() {
+        let started = Arc::new(AtomicBool::new(false));
+        let flag = started.clone();
+        let work = async move {
+            flag.store(true, SeqCst);
+        };
+        assert_eq!(until(|| true, CHECK, work).await, None);
+        assert!(!started.load(SeqCst));
+    }
+
+    #[tokio::test]
+    async fn pause_ends_work_through_the_shared_state() {
+        let pause = Pause::default();
+        pause.pause(PauseLength::UntilResumed);
+        assert_eq!(pause.unless_paused(async { 1 }).await, None);
+        pause.resume();
+        assert_eq!(pause.unless_paused(async { 1 }).await, Some(1));
     }
 }

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { usePaged } from "./usePaged";
 
 // Shapes returned by src-tauri/src/journal.rs.
 type JournalStatus = { enabled: boolean; model: string | null; waiting: number };
@@ -15,6 +16,8 @@ type Episode = {
 const PAGE = 100;
 const REFRESH_MS = 30_000;
 
+const startedAt = (episode: Episode) => episode.startedAt;
+
 /**
  * The journal (Stage 3): short episodes the chosen model writes from the
  * captures, as a timeline of each day. Off until the user turns it on.
@@ -23,13 +26,15 @@ const REFRESH_MS = 30_000;
  */
 export function Journal({ onShowModels }: { onShowModels: () => void }) {
   const [status, setStatus] = useState<JournalStatus | null | "failed">(null);
-  const [episodes, setEpisodes] = useState<Episode[] | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const paged = usePaged("journal_episodes", startedAt, PAGE);
+  const episodes = paged.items;
+  const refreshEpisodes = paged.refresh;
 
   const refresh = useCallback(() => {
     invoke<JournalStatus>("journal_status").then(setStatus, () => setStatus("failed"));
-    invoke<Episode[]>("journal_episodes", { limit: PAGE }).then(setEpisodes, () => setEpisodes([]));
-  }, []);
+    refreshEpisodes();
+  }, [refreshEpisodes]);
 
   useEffect(() => {
     refresh();
@@ -108,6 +113,7 @@ export function Journal({ onShowModels }: { onShowModels: () => void }) {
         {message && <p className="error">{message}</p>}
       </div>
 
+      {paged.failed && <p className="error">Lax couldn't read the newest entries.</p>}
       {episodes !== null && episodes.length === 0 && status.enabled && (
         <p className="muted empty">
           No entries yet. The first one appears about 15 minutes after capture starts.
@@ -132,6 +138,19 @@ export function Journal({ onShowModels }: { onShowModels: () => void }) {
             </ul>
           </section>
         ))}
+      {paged.olderFailed && <p className="error">Lax couldn't read older entries.</p>}
+      {paged.more && (
+        <p className="actions">
+          <button
+            type="button"
+            className="secondary"
+            onClick={paged.loadOlder}
+            disabled={paged.loadingMore}
+          >
+            {paged.loadingMore ? "Loading…" : "Show older"}
+          </button>
+        </p>
+      )}
     </section>
   );
 }
