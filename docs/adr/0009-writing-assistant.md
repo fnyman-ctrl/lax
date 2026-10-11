@@ -1,0 +1,117 @@
+# 0009. A writing assistant called with the Option key
+
+- **Status:** Proposed
+- **Date:** 2026-10-11
+
+## Context
+
+What people like most about Goldfish is one key press in any text field: it
+drafts a reply, rewrites text or summarizes a thread, with the context it
+already has. Lax has that context now: the journal, pages about the people and
+projects the user works with, and `about-me.md` (ADR 0008). Issue #63 asks for
+the same in Lax.
+
+The maintainer's requirements:
+
+- **Nothing in text fields until called.** Goldfish shows a fish in every text
+  field, which is distracting. Lax appears only when the user presses ⌥ Option,
+  and only in the field they are in.
+- Typical use: in a reply, type "write a reply in my tone", press the key, and
+  get a proper mail in place of the instruction.
+
+This is the first time Lax would write into another app. Until now the model
+can only return text that Lax shows (GUARDRAILS §5: "The model has no tools
+that act"). The message being answered is untrusted, and may be written to
+steer the draft ("include the recipient's account number").
+
+On a Swedish Mac keyboard Option is used all the time (⌥2 is @, ⌥8 is [), so
+the key on its own can't simply be a shortcut.
+
+## Decision
+
+### Calling Lax
+
+- **Tap Option on its own**: press and release ⌥ with no other key in between,
+  within half a second. ⌥2, ⌥-click and holding ⌥ do nothing.
+- To tell a tap from ⌥2, Lax must notice that *some* key was pressed while ⌥
+  was down. It listens to modifier changes and to the fact that a key went
+  down, **never which key**: no key codes, no characters, nothing stored or
+  logged. A test proves the listener has no access to key identity.
+- A setting turns the shortcut off, and it does nothing while capture is
+  paused or the focused app, window or site is excluded. Password fields and
+  private windows never get it.
+
+### What appears
+
+- A small panel by the text cursor: the salmon, the instruction, and the
+  draft as it is written. Nothing is inserted yet.
+- The instruction is the text the user typed in the field (or selected), or
+  what they type into the panel.
+- **Enter inserts the draft** in place of the instruction (or selection);
+  Escape closes the panel and leaves the field as it was. Lax never presses
+  send, never presses Enter in the other app, and never writes anywhere but
+  the field the user called it to.
+
+### Context for the draft
+
+- The text of the focused window, read under the same rules as capture
+  (exclusions first, secrets redacted), now, not stored.
+- `about-me.md` for who the user is and how they write, and the pages of
+  people and projects named in the window.
+- All of it goes to the model as `Captured` data. The instruction is the
+  user's request (`structured::ask_for`). The answer is validated as
+  `{"draft": string}`: a length cap, no control or invisible characters.
+- The local model, in turn with the journal and memory (`ModelTurn`). Remote
+  models only through per-task routing with consent (#16, #20), when that
+  exists.
+
+### Inserting
+
+- Text fields that accept it get the draft through Accessibility (replacing
+  the selected text). Web views, such as Mail's compose window, get it by
+  selecting the instruction and pasting, with the clipboard restored
+  afterwards. Either way the app's own undo (⌘Z) takes it back.
+- Nothing about the draft is stored: not the instruction, not the draft, not
+  the window text. Logs hold counts and timings.
+
+## Consequences
+
+- GUARDRAILS §5 changes. "The model has no tools that act" becomes: models
+  have no tools; Lax inserts model text only into the field the user called it
+  to, after the user confirms, and never sends. The change is made in the PR
+  that builds this.
+- Listening for "a key was pressed" is close to a key logger in what it could
+  do, even if it doesn't. It needs the same care as capture: one module, no key
+  identity in its types, and a CLAIMS row with a test.
+- A preview before inserting costs one key press, but a draft written from an
+  untrusted message is never put in a field the user hasn't read.
+- Small local models write passable mail in Swedish and English, but "in my
+  tone" will be uneven at first. It gets better as `about-me.md` and the pages
+  fill up.
+- Pasting into web views briefly replaces the clipboard. If the user copies
+  something in that moment, it can be lost; the window is a fraction of a
+  second.
+
+## Alternatives considered
+
+- **A fixed shortcut such as ⌃⌥Space.** Simpler and no need to detect taps,
+  but not what the maintainer asked for. It could be offered as a setting
+  later.
+- **Double-tap Option.** Fewer accidental calls than a single tap, but slower,
+  and a single tap that opens a panel which Escape closes is cheap to get
+  wrong.
+- **Insert directly, without a preview.** One key press fewer, but a draft
+  steered by a hostile message would land in the field unread.
+- **An indicator in every text field**, as Goldfish does. Rejected by the
+  maintainer.
+
+## Questions for the maintainer
+
+1. Tap Option alone (as Goldfish), or double-tap?
+2. Preview in the panel, then Enter to insert (recommended), or straight in
+   with ⌘Z to undo?
+3. In every app except the exclusions (recommended), or only apps the user
+   lists?
+4. Is it OK that nothing is stored, so Lax can't learn from the drafts the user
+   kept? (Recommended: yes for now; learning from sent mail can come later,
+   through capture.)
