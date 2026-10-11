@@ -181,8 +181,8 @@ export function Models() {
                     <span className="model-actions">
                       {order.map((task) =>
                         chosenFor(task) ? (
-                          <span key={task} className="muted" title={`Chosen for ${task}`}>
-                            ✓ Chosen
+                          <span key={task} className="muted">
+                            ✓ Chosen<span className="visually-hidden"> for {task}</span>
                           </span>
                         ) : (
                           <button
