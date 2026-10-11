@@ -16,9 +16,13 @@ dist/
 .idea/
 
 # Local data and models (never commit personal memory)
+# Put your own test files in local/: nothing in it is ever committed.
+/local/
+*.local.*
 *.sqlite
 *.sqlite-*
 *.db
 *.gguf
 *.bin
 .env
+.*.lax-tmp
