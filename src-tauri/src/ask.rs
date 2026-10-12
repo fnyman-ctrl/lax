@@ -25,14 +25,27 @@ use crate::logging::{self, ErrorKind, Field};
 use crate::models::structured::{self, Captured, StructuredError, Validate};
 use crate::models::{Endpoint, ModelClient, ModelTurn};
 use crate::pause::Pause;
-use crate::store::{Episode, ModelTask, Store};
+use crate::store::{EntityKind, Episode, ModelTask, Store};
 
 /// Most entries and characters of entries given to the model, so the prompt
 /// fits a small local model's context and is answered within the timeout.
-const MAX_ENTRIES: usize = 60;
-const MAX_CHARS: usize = 14_000;
+const MAX_ENTRIES: usize = 40;
+/// Smaller than the journal's blocks: the user waits while the model reads
+/// it, and finding by meaning picks fewer, better entries.
+const MAX_CHARS: usize = 8_000;
 /// Most entries taken from each way of finding them.
 const PER_SOURCE: usize = 40;
+/// Entries found by meaning.
+const NEAREST: usize = 12;
+
+/// The question as a vector, for finding entries by meaning.
+struct Meaning {
+    model: String,
+    vector: Vec<f32>,
+}
+
+/// Most named entities whose facts are given.
+const MAX_KNOWN_ENTITIES: usize = 5;
 /// Entries given when nothing in the question narrows it down.
 const RECENT: usize = 40;
 /// Room for a model that reasons before answering, as for the journal.
@@ -40,11 +53,14 @@ const MAX_TOKENS: u32 = 2000;
 const MAX_QUESTION_CHARS: usize = 1000;
 const MAX_ANSWER_CHARS: usize = 4000;
 
-const TASK: &str = "Answer the user's question using only the journal entries in the \
-captured blocks. Each entry starts with its number in brackets, then when it happened and in \
-which apps. Answer briefly and directly, in the language of the question. For several things, \
-use short lines starting with \"- \". Put the numbers of the entries the answer is based on in \
-sources. If the entries don't answer the question, say so plainly; don't guess.";
+const TASK: &str = "Answer the user's question using only the captured blocks: what the \
+memory knows about the user and about people, organisations and projects, and journal entries. \
+Each journal entry starts with its number in brackets, then when it happened and in which apps. \
+Answer briefly and directly, in the language of the question. For several things, use short \
+lines starting with \"- \". Put the numbers of the journal entries the answer is based on in \
+sources, as a list of numbers such as [1, 4] (what the memory knows has no number). Don't put \
+entry numbers in the answer. If the blocks don't answer the question, say so plainly; don't \
+guess.";
 const SHAPE: &str = r#"{"answer": string, "sources": [number]}"#;
 
 /// What the model must answer.
@@ -52,7 +68,70 @@ const SHAPE: &str = r#"{"answer": string, "sources": [number]}"#;
 #[serde(deny_unknown_fields)]
 struct Reply {
     answer: String,
+    #[serde(deserialize_with = "sources")]
     sources: Vec<u32>,
+}
+
+/// Entry numbers as the model writes them: a list of numbers as asked, but
+/// also, from small models answering without reasoning, numbers as text
+/// ("4", "[4]"), ranges ("1-8"), comma-separated text ("1, 3") and lists
+/// in lists ([[5]]). Anything else, such as words, is refused. Whether the
+/// numbers were given is checked afterwards.
+fn sources<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<u32>, D::Error> {
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let mut out = Vec::new();
+    if collect(&value, 0, &mut out).is_none() {
+        return Err(serde::de::Error::custom("not entry numbers"));
+    }
+    // The same entry twice is one source.
+    out.sort_unstable();
+    out.dedup();
+    Ok(out)
+}
+
+fn collect(value: &serde_json::Value, depth: usize, out: &mut Vec<u32>) -> Option<()> {
+    use serde_json::Value;
+    match value {
+        Value::Number(n) => {
+            // Whole numbers, also written as 1.0.
+            let whole = match n.as_u64() {
+                Some(n) => n,
+                None => {
+                    let f = n.as_f64()?;
+                    (f >= 0.0 && f.fract() == 0.0 && f <= f64::from(u32::MAX))
+                        .then_some(f as u64)?
+                }
+            };
+            out.push(u32::try_from(whole).ok()?);
+        }
+        Value::String(text) => numbers(text, out)?,
+        Value::Array(items) if depth < 3 => {
+            for item in items {
+                collect(item, depth + 1, out)?;
+            }
+        }
+        _ => return None,
+    }
+    Some(())
+}
+
+/// "4", "[4]", "1-8", "1, 3" or "1–3" as numbers.
+fn numbers(text: &str, out: &mut Vec<u32>) -> Option<()> {
+    let text = text.trim().trim_start_matches('[').trim_end_matches(']');
+    for part in text.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        let part = part.trim_start_matches('[').trim_end_matches(']').trim();
+        match part.split_once(['-', '–']) {
+            Some((from, to)) => {
+                let (from, to): (u32, u32) = (from.trim().parse().ok()?, to.trim().parse().ok()?);
+                if to < from || to - from > MAX_ENTRIES as u32 {
+                    return None;
+                }
+                out.extend(from..=to);
+            }
+            None => out.push(part.parse().ok()?),
+        }
+    }
+    Some(())
 }
 
 impl Validate for Reply {
@@ -81,6 +160,9 @@ impl Validate for Reply {
 #[derive(Debug)]
 struct Found {
     episodes: Vec<Episode>,
+    /// What the memory's pages say about the user and about the entities
+    /// the question names, a block each.
+    known: Vec<String>,
     /// Nothing in the question narrowed it down, so these are the latest.
     recent_only: bool,
     /// The question named a time.
@@ -91,6 +173,7 @@ struct Found {
 fn gather<Tz: TimeZone>(
     store: &Store,
     question: &str,
+    meaning: Option<&Meaning>,
     now: &DateTime<Tz>,
 ) -> crate::store::Result<Found> {
     let range = time_range(question, now);
@@ -102,6 +185,11 @@ fn gather<Tz: TimeZone>(
     let limit = if range.is_some() { 500 } else { PER_SOURCE };
     let mentioning: Vec<Episode> = store.episodes_mentioning(&entities, range, limit)?;
     let matching: Vec<Episode> = store.search_episodes(&search, range, limit)?;
+    // Closest in meaning, with vectors from the embedding model.
+    let near: Vec<Episode> = match meaning {
+        Some(meaning) => store.nearest_episodes(&meaning.model, &meaning.vector, range, NEAREST)?,
+        None => Vec::new(),
+    };
     let mut recent_only = false;
 
     // In order of priority; the budget cuts from the end.
@@ -109,18 +197,22 @@ fn gather<Tz: TimeZone>(
         Some((from, to)) => {
             let mut in_range = store.episodes_between(from, to, 500)?;
             in_range.reverse(); // Latest first, so the budget keeps the end of the time.
-            if entities.is_empty() && search.is_empty() {
+            if entities.is_empty() && search.is_empty() && near.is_empty() {
                 in_range
             } else {
-                let wanted: HashSet<i64> =
-                    mentioning.iter().chain(&matching).map(|e| e.id).collect();
+                let wanted: HashSet<i64> = mentioning
+                    .iter()
+                    .chain(&matching)
+                    .chain(&near)
+                    .map(|e| e.id)
+                    .collect();
                 let (first, rest): (Vec<Episode>, Vec<Episode>) =
                     in_range.into_iter().partition(|e| wanted.contains(&e.id));
                 first.into_iter().chain(rest).collect()
             }
         }
         None => {
-            let both: Vec<Episode> = mentioning.into_iter().chain(matching).collect();
+            let both: Vec<Episode> = mentioning.into_iter().chain(matching).chain(near).collect();
             if both.is_empty() {
                 recent_only = true;
                 store.episodes(None, RECENT)?
@@ -130,8 +222,10 @@ fn gather<Tz: TimeZone>(
         }
     };
 
+    // What the memory knows comes first, and counts against the budget.
+    let known = known(store, &entities)?;
     let mut seen = HashSet::new();
-    let mut chars = 0;
+    let mut chars: usize = known.iter().map(|k| k.chars().count()).sum();
     let mut episodes = Vec::new();
     for episode in candidates {
         if episodes.len() >= MAX_ENTRIES {
@@ -149,10 +243,55 @@ fn gather<Tz: TimeZone>(
     }
     episodes.sort_by_key(|e| (e.started_at, e.id));
     Ok(Found {
+        known,
         episodes,
         recent_only,
         timed: range.is_some(),
     })
+}
+
+/// The facts on the pages of the named entities, and on `about-me.md`.
+fn known(store: &Store, entities: &[i64]) -> crate::store::Result<Vec<String>> {
+    let mut known = Vec::new();
+    if let Some(facts) = store.about_me_page()?.and_then(|p| p.facts)
+        && !facts.is_empty()
+    {
+        known.push(format!(
+            "What the memory knows about the user:\n{}",
+            bullets(&facts)
+        ));
+    }
+    let all = store.entities()?;
+    for id in entities.iter().take(MAX_KNOWN_ENTITIES) {
+        let (Some(entity), Some(facts)) = (
+            all.iter().find(|e| e.id == *id),
+            store.page_of(*id)?.and_then(|p| p.facts),
+        ) else {
+            continue;
+        };
+        if facts.is_empty() {
+            continue;
+        }
+        let kind = match entity.kind {
+            EntityKind::Person => "person",
+            EntityKind::Organisation => "organisation",
+            EntityKind::Project => "project",
+        };
+        known.push(format!(
+            "What the memory knows about {} ({kind}):\n{}",
+            entity.name,
+            bullets(&facts)
+        ));
+    }
+    Ok(known)
+}
+
+fn bullets(lines: &[String]) -> String {
+    lines
+        .iter()
+        .map(|l| format!("- {l}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The words of `text`, lowercased, split at anything that isn't a letter
@@ -543,6 +682,42 @@ pub async fn ask_memory(app: AppHandle, question: String) -> Result<AskAnswer, S
         return Err("Lax is paused. Resume it from the menu bar to ask.".to_string());
     }
     let now = Local::now();
+    // One turn at the model for the whole question (in turn with the journal
+    // and the memory), so a background call can't slip in between the
+    // embedding and the answer. A pause meanwhile drops the question
+    // (GUARDRAILS §4).
+    let turn = app.state::<ModelTurn>();
+    let Some(_turn) = app
+        .state::<Pause>()
+        .unless_paused(turn.take_interactive())
+        .await
+    else {
+        return Err("Lax was paused, so the question was dropped.".to_string());
+    };
+    // With an embedding model, the question as a vector. If the model can't
+    // be reached, the question is answered without it.
+    let embedding = with_store(&app, |store| store.model_choice(ModelTask::Embeddings))
+        .and_then(Result::ok)
+        .flatten();
+    let meaning = match embedding {
+        Some(choice) => {
+            let embedded = crate::vectors::embed(
+                &choice.base_url,
+                &choice.model,
+                std::slice::from_ref(&question),
+            );
+            app.state::<Pause>()
+                .unless_paused(embedded)
+                .await
+                .and_then(Result::ok)
+                .and_then(|mut v| v.pop())
+                .map(|vector| Meaning {
+                    model: choice.model,
+                    vector,
+                })
+        }
+        None => None,
+    };
     let (choice, found) = {
         let store = app
             .try_state::<Mutex<Store>>()
@@ -553,9 +728,14 @@ pub async fn ask_memory(app: AppHandle, question: String) -> Result<AskAnswer, S
             .model_choice(ModelTask::Chat)
             .map_err(failed)?
             .ok_or("Choose a chat model under Models first.")?;
-        (choice, gather(&store, &question, &now).map_err(failed)?)
+        (
+            choice,
+            gather(&store, &question, meaning.as_ref(), &now).map_err(failed)?,
+        )
     };
-    if found.episodes.is_empty() {
+    // A time with nothing in it is answered as such: what the memory knows
+    // in general says nothing about that day.
+    if found.episodes.is_empty() && (found.timed || found.known.is_empty()) {
         return Ok(AskAnswer {
             answer: if found.timed {
                 "There's nothing in the journal from that time.".to_string()
@@ -575,18 +755,19 @@ pub async fn ask_memory(app: AppHandle, question: String) -> Result<AskAnswer, S
     };
     let started = std::time::Instant::now();
     let texts: Vec<String> = found
-        .episodes
+        .known
         .iter()
-        .enumerate()
-        .map(|(i, e)| entry_text(i + 1, e, &Local))
+        .cloned()
+        .chain(
+            found
+                .episodes
+                .iter()
+                .enumerate()
+                .map(|(i, e)| entry_text(i + 1, e, &Local)),
+        )
         .collect();
-    // In turn with the journal and the memory; a pause meanwhile drops the
-    // question (GUARDRAILS §4).
-    let turn = app.state::<ModelTurn>();
-    let asked = async {
-        let _turn = turn.take().await;
-        answer(endpoint, &choice.model, &request(&question, &now), &texts).await
-    };
+    let request = request(&question, &now);
+    let asked = answer(endpoint, &choice.model, &request, &texts);
     let Some(reply) = app.state::<Pause>().unless_paused(asked).await else {
         return Err("Lax was paused, so the question was dropped.".to_string());
     };
@@ -615,7 +796,7 @@ pub async fn ask_memory(app: AppHandle, question: String) -> Result<AskAnswer, S
                 ],
             );
             Ok(AskAnswer {
-                answer: reply.answer.trim().to_string(),
+                answer: without_references(&reply.answer),
                 sources: cited
                     .into_iter()
                     .map(|i| item(&found.episodes[i]))
@@ -648,7 +829,11 @@ async fn answer(
     request: &str,
     texts: &[String],
 ) -> Result<Reply, StructuredError> {
-    let client = ModelClient::new(endpoint).map_err(StructuredError::Model)?;
+    // The user waits for this: no reasoning, which makes a small local model
+    // about ten times faster.
+    let client = ModelClient::new(endpoint)
+        .map_err(StructuredError::Model)?
+        .without_reasoning();
     let captured: Vec<Captured> = texts.iter().map(|t| Captured(t.as_str())).collect();
     structured::ask_for(
         &client,
@@ -660,6 +845,49 @@ async fn answer(
         MAX_TOKENS,
     )
     .await
+}
+
+fn with_store<T>(app: &AppHandle, work: impl FnOnce(&Store) -> T) -> Option<T> {
+    let store = app.try_state::<Mutex<Store>>()?;
+    let store = store.lock().unwrap_or_else(PoisonError::into_inner);
+    Some(work(&store))
+}
+
+/// The answer without entry references such as "[3]" or "[1-8]", which
+/// models put in although sources are shown on their own.
+fn without_references(answer: &str) -> String {
+    let mut out = String::with_capacity(answer.len());
+    let mut rest = answer;
+    while let Some(open) = rest.find('[') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        match after.find(']') {
+            Some(close)
+                if close > 0
+                    && after[..close]
+                        .chars()
+                        .all(|c| c.is_ascii_digit() || matches!(c, ',' | '-' | '–' | ' '))
+                    && after[..close].chars().any(|c| c.is_ascii_digit()) =>
+            {
+                // Drop the space before it too.
+                while out.ends_with(' ') {
+                    out.pop();
+                }
+                rest = &after[close + 1..];
+            }
+            _ => {
+                out.push('[');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out.lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
 }
 
 fn item(e: &Episode) -> EpisodeItem {
@@ -835,15 +1063,15 @@ mod tests {
     #[test]
     fn a_time_gives_that_time_and_puts_matches_first() {
         let store = sample();
-        let found = gather(&store, "Vad gjorde jag i tisdags?", &now()).unwrap();
+        let found = gather(&store, "Vad gjorde jag i tisdags?", None, &now()).unwrap();
         assert_eq!(
             summaries(&found),
             ["Mailade Anna om Q3-offerten.", "Läste nyheter."]
         );
         assert!(found.timed && !found.recent_only);
-        let found = gather(&store, "Vad gjorde jag igår?", &now()).unwrap();
+        let found = gather(&store, "Vad gjorde jag igår?", None, &now()).unwrap();
         assert_eq!(summaries(&found), ["Ringde Anna om leveransen."]);
-        let found = gather(&store, "Vad gjorde jag i torsdags?", &now()).unwrap();
+        let found = gather(&store, "Vad gjorde jag i torsdags?", None, &now()).unwrap();
         assert!(found.episodes.is_empty() && found.timed);
     }
 
@@ -864,7 +1092,13 @@ mod tests {
                     .unwrap();
             }
         }
-        let found = gather(&store, "Vad pratade jag med Anna om i tisdags?", &now()).unwrap();
+        let found = gather(
+            &store,
+            "Vad pratade jag med Anna om i tisdags?",
+            None,
+            &now(),
+        )
+        .unwrap();
         assert!(
             found
                 .episodes
@@ -874,21 +1108,122 @@ mod tests {
     }
 
     #[test]
+    fn what_the_memory_knows_comes_along() {
+        let mut store = sample();
+        let anna = store.entity_names().unwrap()[0].0;
+        store.keep_entity(anna).unwrap();
+        let folder = std::env::temp_dir().join(format!(
+            "lax-ask-test-{}",
+            crate::pages::block::new_id().unwrap()
+        ));
+        crate::pages::prepare_folder(&folder).unwrap();
+        store.set_memory_enabled(true).unwrap();
+        crate::pages::sync(
+            &mut store,
+            &folder,
+            &mut crate::pages::ScanCache::new(),
+            at(11, 12),
+            &stockholm(),
+        )
+        .unwrap();
+        let page = store.page_of(anna).unwrap().unwrap();
+        let sources: Vec<i64> = store
+            .episodes_mentioning(&[anna], None, 10)
+            .unwrap()
+            .iter()
+            .map(|e| e.id)
+            .collect();
+        store
+            .set_facts(
+                &page.id,
+                &["Leder Q3-lanseringen.".to_string()],
+                &sources,
+                at(11, 12),
+            )
+            .unwrap();
+        let about = store.about_me_page().unwrap().unwrap();
+        store
+            .set_facts(
+                &about.id,
+                &["Jobbar med lanseringar.".to_string()],
+                &sources,
+                at(11, 12),
+            )
+            .unwrap();
+
+        let found = gather(&store, "Vad gör Anna?", None, &now()).unwrap();
+        assert_eq!(
+            found.known,
+            [
+                "What the memory knows about the user:\n- Jobbar med lanseringar.",
+                "What the memory knows about Anna (person):\n- Leder Q3-lanseringen.",
+            ]
+        );
+        // A question about no one still gets what the memory knows about the user.
+        let found = gather(&store, "Sammanfatta", None, &now()).unwrap();
+        assert_eq!(found.known.len(), 1);
+        // It counts against the budget: entries make room for it.
+        let known: usize = found.known.iter().map(|k| k.chars().count()).sum();
+        let entries: usize = found
+            .episodes
+            .iter()
+            .map(|e| e.summary.chars().count() + 60)
+            .sum();
+        assert!(known + entries <= MAX_CHARS);
+        let _ = std::fs::remove_dir_all(folder);
+    }
+
+    #[test]
+    fn entries_are_found_by_meaning_too() {
+        let mut store = sample();
+        // Vectors: the offer and the delivery point one way, the rest another.
+        let all = store.episodes(None, 10).unwrap();
+        let vectors: Vec<(i64, Vec<f32>)> = all
+            .iter()
+            .map(|e| {
+                let about_the_deal = e.summary.contains("offert") || e.summary.contains("leverans");
+                (
+                    e.id,
+                    if about_the_deal {
+                        vec![1.0, 0.0]
+                    } else {
+                        vec![0.0, 1.0]
+                    },
+                )
+            })
+            .collect();
+        store.set_vectors("m", &vectors).unwrap();
+        let meaning = Meaning {
+            model: "m".to_string(),
+            vector: vec![0.9, 0.1],
+        };
+        // No name, word or time matches "budgeten", but the meaning does.
+        let found = gather(&store, "Hur gick det med budgeten?", Some(&meaning), &now()).unwrap();
+        assert!(!found.recent_only);
+        let summaries: Vec<&str> = found.episodes.iter().map(|e| e.summary.as_str()).collect();
+        assert!(summaries.contains(&"Mailade Anna om Q3-offerten."));
+        assert!(summaries.contains(&"Ringde Anna om leveransen."));
+        // Without vectors it falls back to the latest entries.
+        let found = gather(&store, "Hur gick det med budgeten?", None, &now()).unwrap();
+        assert!(found.recent_only);
+    }
+
+    #[test]
     fn names_and_words_find_entries_at_any_time() {
         let store = sample();
-        let found = gather(&store, "Vad har jag haft för mig med Anna?", &now()).unwrap();
+        let found = gather(&store, "Vad har jag haft för mig med Anna?", None, &now()).unwrap();
         assert_eq!(
             summaries(&found),
             ["Mailade Anna om Q3-offerten.", "Ringde Anna om leveransen."]
         );
-        let found = gather(&store, "Hur går lanseringen?", &now()).unwrap();
+        let found = gather(&store, "Hur går lanseringen?", None, &now()).unwrap();
         assert_eq!(summaries(&found), ["Planerade lanseringen med Bo."]);
     }
 
     #[test]
     fn without_anything_to_go_on_the_latest_entries_are_given() {
         let store = sample();
-        let found = gather(&store, "Sammanfatta", &now()).unwrap();
+        let found = gather(&store, "Sammanfatta", None, &now()).unwrap();
         assert!(found.recent_only);
         assert_eq!(found.episodes.len(), 4);
         // Oldest first.
@@ -902,7 +1237,7 @@ mod tests {
         for hour in 0..24 {
             episode(&mut store, at(10, hour), &long);
         }
-        let found = gather(&store, "Vad gjorde jag igår?", &now()).unwrap();
+        let found = gather(&store, "Vad gjorde jag igår?", None, &now()).unwrap();
         let chars: usize = found
             .episodes
             .iter()
@@ -915,6 +1250,24 @@ mod tests {
     }
 
     #[test]
+    fn entry_references_are_taken_out_of_answers() {
+        assert_eq!(
+            without_references("Du mailade Anna [1] och planerade mötet [2-3].\n[1-8]"),
+            "Du mailade Anna och planerade mötet."
+        );
+        assert_eq!(without_references("Se [1, 4] nedan"), "Se nedan");
+        // Brackets that aren't references stay.
+        assert_eq!(
+            without_references("Lista [a] och [ ] och [x1]"),
+            "Lista [a] och [ ] och [x1]"
+        );
+        assert_eq!(
+            without_references("- rad ett\n- rad två"),
+            "- rad ett\n- rad två"
+        );
+    }
+
+    #[test]
     fn answers_are_validated() {
         let parse = |json: &str| structured::parse::<Reply>(json);
         assert!(parse(r#"{"answer":"Du mailade Anna.","sources":[1]}"#).is_ok());
@@ -922,7 +1275,52 @@ mod tests {
         assert!(parse(r#"{"answer":"  ","sources":[]}"#).is_err());
         assert!(parse(r#"{"answer":"ok","sources":[1],"action":"send"}"#).is_err());
         assert!(parse("{\"answer\":\"ok\u{202E}hidden\",\"sources\":[]}").is_err());
-        assert!(parse(r#"{"answer":"ok","sources":["1"]}"#).is_err());
+        // Numbers as small models write them without reasoning.
+        let sources = |json: &str| parse(json).map(|r| r.sources).ok();
+        assert_eq!(sources(r#"{"answer":"ok","sources":["1"]}"#), Some(vec![1]));
+        assert_eq!(
+            sources(r#"{"answer":"ok","sources":"1-3"}"#),
+            Some(vec![1, 2, 3])
+        );
+        assert_eq!(
+            sources(r#"{"answer":"ok","sources":"1, 4"}"#),
+            Some(vec![1, 4])
+        );
+        assert_eq!(
+            sources(r#"{"answer":"ok","sources":[2, "5-6"]}"#),
+            Some(vec![2, 5, 6])
+        );
+        // Not numbers, or a range too long to be real, is refused.
+        assert!(parse(r#"{"answer":"ok","sources":"all of them"}"#).is_err());
+        assert!(parse(r#"{"answer":"ok","sources":"1-100000"}"#).is_err());
+        assert!(parse(r#"{"answer":"ok","sources":"5-2"}"#).is_err());
+        assert!(parse(r#"{"answer":"ok","sources":[true]}"#).is_err());
+        assert!(parse(r#"{"answer":"ok","sources":[[[[1]]]]}"#).is_err());
+        assert!(parse(r#"{"answer":"ok","sources":[-1]}"#).is_err());
+        // More shapes from the live probe.
+        assert_eq!(sources(r#"{"answer":"ok","sources":[[5]]}"#), Some(vec![5]));
+        assert_eq!(
+            sources(r#"{"answer":"ok","sources":["[1]", "[2]"]}"#),
+            Some(vec![1, 2])
+        );
+        assert_eq!(
+            sources(r#"{"answer":"ok","sources":"[3, 4]"}"#),
+            Some(vec![3, 4])
+        );
+        assert_eq!(
+            sources(r#"{"answer":"ok","sources":"2–3"}"#),
+            Some(vec![2, 3])
+        );
+        assert_eq!(
+            sources(r#"{"answer":"ok","sources":[1.0, 3.0]}"#),
+            Some(vec![1, 3])
+        );
+        assert!(parse(r#"{"answer":"ok","sources":[1.5]}"#).is_err());
+        // Repeats count once.
+        assert_eq!(
+            sources(r#"{"answer":"ok","sources":["1-30", 1, 2, 3, 30]}"#),
+            Some((1..=30).collect())
+        );
         assert!(
             parse(&format!(
                 r#"{{"answer":"{}","sources":[]}}"#,
@@ -955,7 +1353,13 @@ mod tests {
     async fn live_answer() {
         let env = |name| std::env::var(name).unwrap_or_else(|_| panic!("{name} is not set"));
         let store = sample();
-        let found = gather(&store, "Vad pratade jag med Anna om i tisdags?", &now()).unwrap();
+        let found = gather(
+            &store,
+            "Vad pratade jag med Anna om i tisdags?",
+            None,
+            &now(),
+        )
+        .unwrap();
         let texts: Vec<String> = found
             .episodes
             .iter()

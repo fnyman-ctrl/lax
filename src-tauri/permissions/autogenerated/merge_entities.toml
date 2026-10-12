@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-merge-entities"
+description = "Enables the merge_entities command without any pre-configured scope."
+commands.allow = ["merge_entities"]
+
+[[permission]]
+identifier = "deny-merge-entities"
+description = "Denies the merge_entities command without any pre-configured scope."
+commands.deny = ["merge_entities"]

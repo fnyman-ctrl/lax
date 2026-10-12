@@ -24,7 +24,8 @@ previous one, so they can be built, tested and improved independently.
   full address. The page's navigation, header and footer, which repeat on every
   page, are skipped.
 - Reading slows down while the user is away from the keyboard or on battery,
-  and a window whose text keeps changing is stored at most every 30 seconds.
+  and stops after ten minutes without input until they are back. A window
+  whose text keeps changing is stored at most every 30 seconds.
   See [PERFORMANCE.md](PERFORMANCE.md).
 - If an app exposes no accessible text, fall back to a screenshot of the window
   (ScreenCaptureKit) and on-device OCR (Apple Vision). The screenshot is discarded
@@ -42,6 +43,9 @@ previous one, so they can be built, tested and improved independently.
   The journal is off until the user turns it on and has chosen a chat model
   (`src-tauri/src/journal.rs`). It skips captures younger than two minutes, sends
   each window once with its latest content, and stops while capture is paused.
+  No background work uses the model while the Mac runs on battery; it catches
+  up on mains power (`journal::may_use_model`). Questions are not background
+  work.
 - Episodes are what the rest of the system reads. A raw capture expires only after
   it has been summarized, or at the maximum age (default 90 days, configurable).
 
@@ -49,8 +53,10 @@ previous one, so they can be built, tested and improved independently.
 
 - Extract **entities** (people, organisations, projects) from new episodes
   using structured LLM output (JSON). The memory is off until the user turns
-  it on, and runs in the journal's loop right after it
-  (`src-tauri/src/memory.rs`, [ADR 0008](adr/0008-learning-memory.md)).
+  it on, and runs in the journal's loop right after it, but only after two
+  minutes without keyboard or mouse input, so the Mac stays quiet while it's
+  used (`src-tauri/src/memory.rs`, [ADR 0008](adr/0008-learning-memory.md)).
+  Episodes are given their vectors for Ask the same way.
 - Resolve them against known entities to avoid duplicates. For now only an
   exact match of the normalized name (case and spacing ignored, diacritics
   kept) joins a known entity; embeddings can suggest merges later, such as
@@ -78,7 +84,9 @@ previous one, so they can be built, tested and improved independently.
   (`src-tauri/src/ask.rs`). The entries are found without a model call: a
   time in the question ("i tisdags", "last week"), names the memory knows,
   and a full-text search, within a size budget. The answer names the entries
-  it is based on. Semantic search with local embeddings comes later.
+  it is based on. With an embedding model chosen, episodes get vectors in the
+  background (`src-tauri/src/vectors.rs`), and Ask also finds entries close in
+  meaning to the question.
 
 ## Models
 

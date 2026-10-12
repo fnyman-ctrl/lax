@@ -49,6 +49,15 @@ the pull request if a significant part was AI-generated.
 Never include real personal data: no screenshots of your own activity, no real
 captured text, no database files. Use synthetic examples.
 
+## Database migrations
+
+A migration in `src-tauri/migrations/` is never changed once it is merged:
+a database that already ran it would never get the change. Change the
+schema with a new migration. The test `migration_files_are_never_changed`
+holds this; add the new file's hash to it when it is merged. If you run a
+branch with an unmerged migration against your own data, delete or back up
+that data before the migration changes.
+
 ## Your own test files
 
 Put anything you test with (exported pages, screenshots, notes, sample

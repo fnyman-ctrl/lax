@@ -830,6 +830,88 @@ fn a_version_goes_when_an_episode_its_facts_drew_on_is_forgotten() {
 }
 
 #[test]
+fn earlier_facts_can_be_restored_and_the_restore_undone() {
+    let folder = Folder::new();
+    let mut store = sample();
+    sync_now(&mut store, &folder);
+    let page = anna_page(&store);
+    let sources: Vec<i64> = store
+        .episodes_mentioning(&[page.entity_id.unwrap()], None, 10)
+        .unwrap()
+        .iter()
+        .map(|e| e.id)
+        .collect();
+    store
+        .set_facts(
+            &page.id,
+            &facts(&["Leder Q3-lanseringen."]),
+            &sources,
+            at(11, 13),
+        )
+        .unwrap();
+    sync_now(&mut store, &folder);
+    store
+        .set_facts(&page.id, &facts(&["Något dumt."]), &sources, at(11, 14))
+        .unwrap();
+    sync_now(&mut store, &folder);
+    assert!(folder.read(ANNA).contains("- Något dumt."));
+
+    let history = store.page_history(&page.id, 10).unwrap();
+    assert!(history.iter().all(|v| v.by_lax));
+    // Newest first: "Något dumt", then "Leder", then the page without facts.
+    assert_eq!(crate::store::facts_in(&history[0].block), ["Något dumt."]);
+    let good = &history[1];
+    assert_eq!(
+        crate::store::facts_in(&good.block),
+        ["Leder Q3-lanseringen."]
+    );
+
+    assert_eq!(
+        store.restore_facts(good.id, at(11, 15)).unwrap(),
+        Some(page.id.clone())
+    );
+    sync_now(&mut store, &folder);
+    let text = folder.read(ANNA);
+    assert!(text.contains("- Leder Q3-lanseringen."));
+    assert!(!text.contains("Något dumt"));
+    // The restore is a version of its own, and the one before it is still
+    // there to restore.
+    let history = store.page_history(&page.id, 10).unwrap();
+    assert_eq!(
+        crate::store::facts_in(&history[0].block),
+        ["Leder Q3-lanseringen."]
+    );
+    assert!(
+        history
+            .iter()
+            .any(|v| crate::store::facts_in(&v.block) == ["Något dumt."])
+    );
+    // What the restore took away is rejected, so the model can't add it back.
+    assert_eq!(store.rejected_facts(&page.id).unwrap(), ["Något dumt."]);
+
+    // Restored facts still go with their episodes.
+    store
+        .forget(&Forget::App("com.example.mail".to_string()))
+        .unwrap();
+    assert_eq!(anna_page(&store).facts, None);
+}
+
+#[test]
+fn only_laxs_versions_can_be_restored() {
+    let folder = Folder::new();
+    let mut store = sample();
+    sync_now(&mut store, &folder);
+    let page = anna_page(&store);
+    store
+        .page_edited_by_user(&page.id, "- Mitt.", at(11, 13))
+        .unwrap();
+    let mine = store.page_history(&page.id, 10).unwrap()[0].clone();
+    assert!(!mine.by_lax);
+    assert_eq!(store.restore_facts(mine.id, at(11, 15)).unwrap(), None);
+    assert_eq!(store.restore_facts(999_999, at(11, 15)).unwrap(), None);
+}
+
+#[test]
 fn name_clashes_get_a_number() {
     let folder = Folder::new();
     fs::create_dir_all(folder.0.join("people")).unwrap();

@@ -845,3 +845,38 @@ mark {
   flex: 1;
   min-width: 14rem;
 }
+
+.entity .history {
+  margin-top: 0.5rem;
+}
+
+.entity .history summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.versions {
+  margin: 0.25rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.versions li {
+  padding: 0.4rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.versions .when {
+  margin: 0;
+  font-size: 0.85em;
+}
+
+.versions .block {
+  margin: 0.25rem 0;
+  font-family: var(--font-mono);
+  font-size: 0.8em;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 12em;
+  overflow: auto;
+}

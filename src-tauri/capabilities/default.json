@@ -33,6 +33,23 @@
     "allow-set-outbox-retention-days",
     "allow-journal-status",
     "allow-set-journal-enabled",
-    "allow-journal-episodes"
+    "allow-journal-episodes",
+    "allow-ask-memory",
+    "allow-memory-status",
+    "allow-set-memory-enabled",
+    "allow-memory-entities",
+    "allow-forget-entity",
+    "allow-forget-memory",
+    "allow-keep-entity",
+    "allow-rename-entity",
+    "allow-merge-entities",
+    "allow-dont-learn-list",
+    "allow-allow-learning",
+    "allow-recreate-page",
+    "allow-recreate-about-me",
+    "allow-open-memory-folder",
+    "allow-set-own-names",
+    "allow-page-history",
+    "allow-restore-page-version"
   ]
 }

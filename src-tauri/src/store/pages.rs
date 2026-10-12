@@ -3,6 +3,8 @@
 use chrono::{DateTime, Utc};
 use rusqlite::{OptionalExtension, Row, params};
 
+use std::collections::HashSet;
+
 use super::{EntityKind, Result, Store};
 
 /// Where a page stands.
@@ -62,6 +64,26 @@ pub enum PageKind {
     Entity,
     /// The user: `about-me.md`.
     AboutMe,
+}
+
+/// One version of a page's block: what Lax wrote, or an edit of the user's
+/// that Lax found in its part.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageVersion {
+    pub id: i64,
+    pub written_at: DateTime<Utc>,
+    pub by_lax: bool,
+    pub block: String,
+}
+
+/// The facts at the top of a block Lax wrote: the "- " lines before
+/// anything else.
+pub fn facts_in(block: &str) -> Vec<String> {
+    block
+        .lines()
+        .map_while(|line| line.strip_prefix("- "))
+        .map(String::from)
+        .collect()
 }
 
 /// A page whose facts are out of date: never written, rebuilt after a
@@ -282,6 +304,73 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// A page's versions, newest first.
+    pub fn page_history(&self, page: &str, limit: usize) -> Result<Vec<PageVersion>> {
+        let mut statement = self.conn.prepare(
+            "SELECT id, written_at, by, block FROM page_versions
+             WHERE page_id = ?1 ORDER BY id DESC LIMIT ?2",
+        )?;
+        let rows = statement.query_map(params![page, super::sql_limit(limit)], |row| {
+            Ok(PageVersion {
+                id: row.get(0)?,
+                written_at: DateTime::from_timestamp_millis(row.get(1)?).unwrap_or_default(),
+                by_lax: row.get::<_, String>(2)? == "lax",
+                block: row.get(3)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Puts back the facts of one of Lax's earlier versions of a page. The
+    /// next sync writes them, as a new version, so this can be undone too.
+    /// Facts it takes away count as deleted by the user: rejected, so the
+    /// model doesn't write them again. Returns the page, or `None` if the
+    /// version is gone or isn't Lax's.
+    pub fn restore_facts(&mut self, version: i64, now: DateTime<Utc>) -> Result<Option<String>> {
+        let tx = self.conn.transaction()?;
+        let found: Option<(String, String)> = tx
+            .query_row(
+                "SELECT page_id, block FROM page_versions WHERE id = ?1 AND by = 'lax'",
+                [version],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((page, block)) = found else {
+            return Ok(None);
+        };
+        let restored = facts_in(&block);
+        let current: Option<String> =
+            tx.query_row("SELECT facts FROM pages WHERE id = ?1", [&page], |row| {
+                row.get(0)
+            })?;
+        let kept: HashSet<String> = restored.iter().map(|f| fact_key(f)).collect();
+        for fact in current.unwrap_or_default().lines() {
+            if !kept.contains(&fact_key(fact)) {
+                tx.execute(
+                    "INSERT OR IGNORE INTO rejected_facts (page_id, key, fact, created_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![page, fact_key(fact), fact, now.timestamp_millis()],
+                )?;
+            }
+        }
+        // The restored facts drew on the version's episodes: they become the
+        // facts' sources, so forgetting one of them still clears the facts.
+        // (Deleting the old sources clears the facts by trigger; they are set
+        // again below.)
+        tx.execute("DELETE FROM page_fact_sources WHERE page_id = ?1", [&page])?;
+        tx.execute(
+            "INSERT INTO page_fact_sources (page_id, episode_id)
+             SELECT ?1, episode_id FROM page_version_sources WHERE version_id = ?2",
+            params![page, version],
+        )?;
+        tx.execute(
+            "UPDATE pages SET facts = ?2 WHERE id = ?1",
+            params![page, restored.join("\n")],
+        )?;
+        tx.commit()?;
+        Ok(Some(page))
     }
 
     /// Pages whose facts are out of date, most-mentioned entities first.

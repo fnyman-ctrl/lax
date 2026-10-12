@@ -652,6 +652,7 @@ function EntityRow({
               Forget…
             </button>
           </p>
+          {entity.page && <PageHistory entityId={entity.id} busy={busy} run={run} />}
           {confirming && (
             <div className="confirm" role="alertdialog" aria-label="Confirm">
               <p>
@@ -686,6 +687,92 @@ function EntityRow({
         </div>
       )}
     </li>
+  );
+}
+
+type VersionItem = {
+  id: number;
+  writtenAt: number;
+  byLax: boolean;
+  block: string;
+  facts: string[];
+};
+
+/**
+ * What Lax wrote on a page over time, and the user's edits it found in its
+ * part, with a way to put back earlier facts. Loaded when opened.
+ */
+function PageHistory({
+  entityId,
+  busy,
+  run,
+}: {
+  entityId: number;
+  busy: boolean;
+  run: (work: Promise<string>) => Promise<boolean>;
+}) {
+  const [versions, setVersions] = useState<VersionItem[] | null | "failed">(null);
+
+  const load = () =>
+    invoke<VersionItem[]>("page_history", { id: entityId }).then(setVersions, () =>
+      setVersions("failed"),
+    );
+  // The newest of Lax's versions is what its part of the page says now.
+  const current = Array.isArray(versions) ? versions.find((v) => v.byLax)?.id : undefined;
+
+  return (
+    <details
+      className="history"
+      onToggle={(e) => {
+        if ((e.target as HTMLDetailsElement).open) {
+          load();
+        }
+      }}
+    >
+      <summary>History</summary>
+      {versions === "failed" && <p className="error">Lax couldn't read the history.</p>}
+      {Array.isArray(versions) && versions.length === 0 && (
+        <p className="muted">No versions yet.</p>
+      )}
+      {Array.isArray(versions) && (
+        <ol className="versions">
+          {versions.map((version) => (
+            <li key={version.id}>
+              <p className="muted when">
+                {new Date(version.writtenAt).toLocaleString(undefined, {
+                  day: "numeric",
+                  month: "short",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })}{" "}
+                · {version.byLax ? "Lax" : "your edit"}
+                {version.id === current && " · on the page now"}
+              </p>
+              <pre className="block">{version.block}</pre>
+              {version.byLax && version.id !== current && version.facts.length > 0 && (
+                <p className="buttons">
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={busy}
+                    onClick={() =>
+                      run(
+                        invoke("restore_page_version", { version: version.id }).then(
+                          () =>
+                            "Put back those facts. The page shows them again, and the facts it took away won't be written again.",
+                        ),
+                      ).then(load)
+                    }
+                  >
+                    Restore these facts
+                  </button>
+                </p>
+              )}
+            </li>
+          ))}
+        </ol>
+      )}
+    </details>
   );
 }
 

@@ -18,6 +18,7 @@ use chrono::Utc;
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
+use crate::journal::{When, may_use_model};
 use crate::logging::{self, ErrorKind, Field};
 use crate::models::structured::{self, Captured, Entities, StructuredError};
 use crate::models::{Endpoint, ModelClient, ModelTurn};
@@ -76,19 +77,18 @@ struct Work {
 /// model server is unavailable and the loop should wait a while.
 pub async fn round(app: &AppHandle, setbacks: &mut Setbacks) -> Result<(), ()> {
     for _ in 0..EPISODES_PER_ROUND {
-        if app.state::<Pause>().is_paused() {
+        if app.state::<Pause>().is_paused() || !may_use_model(When::Later) {
             return Ok(());
         }
         let Some(work) = next_work(app) else {
             return Ok(());
         };
         let started = std::time::Instant::now();
-        let turn = app.state::<ModelTurn>();
-        let recognized = async {
-            let _turn = turn.take().await;
-            recognize(&work).await
-        };
-        let Some(answer) = app.state::<Pause>().unless_paused(recognized).await else {
+        let Some(answer) = app
+            .state::<ModelTurn>()
+            .background(&app.state::<Pause>(), recognize(&work))
+            .await
+        else {
             return Ok(());
         };
         if app.state::<Pause>().is_paused() {
@@ -455,6 +455,62 @@ pub fn set_own_names(app: AppHandle, names: Vec<String>) -> Result<MemoryStatus,
 
 /// Most other names the user can give.
 const MAX_OWN_NAMES: usize = 10;
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionItem {
+    pub id: i64,
+    pub written_at: i64,
+    pub by_lax: bool,
+    pub block: String,
+    /// The facts this version would restore; empty if none.
+    pub facts: Vec<String>,
+}
+
+/// How many versions of a page are shown.
+const HISTORY: usize = 30;
+
+/// The versions of an entity's page, newest first.
+#[tauri::command(async)]
+pub fn page_history(app: AppHandle, id: i64) -> Result<Vec<VersionItem>, String> {
+    command(&app, |store| {
+        let failed = |_| "Lax couldn't read the page's history.".to_string();
+        let Some(page) = store.page_of(id).map_err(failed)? else {
+            return Ok(Vec::new());
+        };
+        Ok(store
+            .page_history(&page.id, HISTORY)
+            .map_err(failed)?
+            .into_iter()
+            .map(|v| VersionItem {
+                facts: if v.by_lax {
+                    crate::store::facts_in(&v.block)
+                } else {
+                    Vec::new()
+                },
+                id: v.id,
+                written_at: v.written_at.timestamp_millis(),
+                by_lax: v.by_lax,
+                block: v.block,
+            })
+            .collect())
+    })
+}
+
+/// Puts back the facts of an earlier version of Lax's; the page is written
+/// at once, as a new version.
+#[tauri::command(async)]
+pub fn restore_page_version(app: AppHandle, version: i64) -> Result<(), String> {
+    command(&app, |store| {
+        store
+            .restore_facts(version, Utc::now())
+            .map_err(|_| "Lax couldn't restore it.".to_string())?
+            .map(|_| ())
+            .ok_or_else(|| "That version is no longer there.".to_string())
+    })?;
+    pages::sync_now(&app);
+    Ok(())
+}
 
 /// Writes `about-me.md` again after it went missing or the user removed
 /// Lax's part.

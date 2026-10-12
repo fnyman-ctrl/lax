@@ -60,6 +60,20 @@ pub enum ModelError {
     OutOfRoom,
 }
 
+impl ModelError {
+    /// The server is unreachable, slow or erroring, or not allowed: not the
+    /// fault of what was asked, so worth waiting a while before asking again.
+    pub fn unavailable(&self) -> bool {
+        matches!(
+            self,
+            ModelError::Unreachable
+                | ModelError::Timeout
+                | ModelError::Status(_)
+                | ModelError::RemoteNotAllowed
+        )
+    }
+}
+
 impl fmt::Display for ModelError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -87,6 +101,10 @@ pub struct ModelClient {
     endpoint: Endpoint,
     backoff: [Duration; 2],
     retries: bool,
+    /// Let models that reason before answering do so. Off for questions the
+    /// user waits on: reasoning makes a small local model about ten times
+    /// slower.
+    reasoning: bool,
 }
 
 impl ModelClient {
@@ -111,6 +129,7 @@ impl ModelClient {
             endpoint,
             backoff: BACKOFF,
             retries: true,
+            reasoning: true,
         })
     }
 
@@ -143,6 +162,8 @@ impl ModelClient {
             messages: &'a [ChatMessage],
             #[serde(skip_serializing_if = "Option::is_none")]
             max_tokens: Option<u32>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            reasoning_effort: Option<&'static str>,
             stream: bool,
         }
         #[derive(Deserialize)]
@@ -158,20 +179,36 @@ impl ModelClient {
         struct Message {
             content: Option<String>,
         }
-        let request = Request {
+        let mut request = Request {
             model,
             messages,
             max_tokens,
+            reasoning_effort: (!self.reasoning).then_some("none"),
             stream: false,
         };
-        let reply: Reply = self
+        let mut reply: Result<Reply, ModelError> = self
             .call(
                 "model.chat",
                 "chat/completions",
                 Some(&request),
                 CHAT_TIMEOUT,
             )
-            .await?;
+            .await;
+        // A server that doesn't take "none" refuses the request; ask again
+        // without it, and let the model reason.
+        if request.reasoning_effort.is_some() && matches!(reply, Err(ModelError::Status(400 | 422)))
+        {
+            request.reasoning_effort = None;
+            reply = self
+                .call(
+                    "model.chat",
+                    "chat/completions",
+                    Some(&request),
+                    CHAT_TIMEOUT,
+                )
+                .await;
+        }
+        let reply = reply?;
         let choice = reply
             .choices
             .into_iter()
@@ -276,6 +313,13 @@ impl ModelClient {
         );
         let bytes = result?;
         serde_json::from_slice(&bytes).map_err(|_| ModelError::InvalidResponse)
+    }
+
+    /// The same client, asking models not to reason before answering
+    /// (`reasoning_effort: "none"`, which servers without reasoning ignore).
+    pub fn without_reasoning(mut self) -> Self {
+        self.reasoning = false;
+        self
     }
 
     /// The same client without retries, for quick checks such as looking
@@ -411,6 +455,46 @@ mod tests {
         assert_eq!(sent["messages"][0]["content"], "Say hello");
         assert_eq!(sent["max_tokens"], 20);
         assert_eq!(sent["stream"], false);
+        // Models may reason unless told not to.
+        assert!(sent.get("reasoning_effort").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_server_that_refuses_no_reasoning_is_asked_again() {
+        let server = MockServer::start(vec![
+            (400, r#"{"error":"unknown reasoning_effort"}"#),
+            (
+                200,
+                r#"{"choices":[{"message":{"role":"assistant","content":"Hej"}}]}"#,
+            ),
+        ]);
+        let reply = server
+            .client()
+            .without_reasoning()
+            .chat("gemma", &[user("Say hello")], Some(20))
+            .await
+            .unwrap();
+        assert_eq!(reply, "Hej");
+        let requests = server.requests();
+        assert_eq!(requests.len(), 2);
+        let second: serde_json::Value = serde_json::from_str(&requests[1].1).unwrap();
+        assert!(second.get("reasoning_effort").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_client_without_reasoning_says_so() {
+        let server = MockServer::start(vec![(
+            200,
+            r#"{"choices":[{"message":{"role":"assistant","content":"Hej"}}]}"#,
+        )]);
+        server
+            .client()
+            .without_reasoning()
+            .chat("gemma", &[user("Say hello")], Some(20))
+            .await
+            .unwrap();
+        let sent: serde_json::Value = serde_json::from_str(&server.requests()[0].1).unwrap();
+        assert_eq!(sent["reasoning_effort"], "none");
     }
 
     #[tokio::test]
