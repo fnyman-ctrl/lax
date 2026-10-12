@@ -643,12 +643,14 @@ pub(crate) mod macos {
         }
         let caret = element.caret();
         // Some apps (Electron apps with several web views, such as Claude)
-        // name a field hidden behind another app's window. If another
-        // window is on top where the cursor is said to be, go by the mouse
-        // pointer instead, and don't take that field's text.
+        // name a field as focused that is hidden: behind another app's
+        // window, or behind another view of the same window. If something
+        // else shows where the cursor is said to be, go by the mouse pointer
+        // instead, and don't take that field's text.
         let hidden = caret.is_some_and(|caret| {
-            window_owner_at(caret.x + 1.0, caret.y + caret.height / 2.0)
-                .is_some_and(|owner| owner != found.front.pid)
+            let (x, y) = (caret.x + 1.0, caret.y + caret.height / 2.0);
+            window_owner_at(x, y).is_some_and(|owner| owner != found.front.pid)
+                || screen.shows_at(&found.front, &element, x, y) == Some(false)
         });
         if hidden {
             return Some(found);

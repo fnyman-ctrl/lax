@@ -79,6 +79,13 @@ unsafe extern "C" {
         value: &CFType,
     ) -> AXError;
     fn AXUIElementSetMessagingTimeout(element: &CFType, timeout_seconds: f32) -> AXError;
+    // On success, `element` holds a new reference the caller owns.
+    fn AXUIElementCopyElementAtPosition(
+        application: &CFType,
+        x: f32,
+        y: f32,
+        element: *mut *const CFType,
+    ) -> AXError;
 
     fn AXValueCreate(value_type: u32, value: *const c_void) -> *mut CFType;
     fn AXValueGetValue(value: &CFType, value_type: u32, out: *mut c_void) -> u8;
@@ -219,6 +226,7 @@ struct Names {
     string_for_range: CFRetained<CFString>,
     focused_element: CFRetained<CFString>,
     selected_text: CFRetained<CFString>,
+    parent: CFRetained<CFString>,
     selected_text_range: CFRetained<CFString>,
     bounds_for_range: CFRetained<CFString>,
     position: CFRetained<CFString>,
@@ -245,6 +253,7 @@ impl Names {
             string_for_range: name("AXStringForRange"),
             focused_element: name("AXFocusedUIElement"),
             selected_text: name("AXSelectedText"),
+            parent: name("AXParent"),
             selected_text_range: name("AXSelectedTextRange"),
             bounds_for_range: name("AXBoundsForRange"),
             position: name("AXPosition"),
@@ -307,6 +316,9 @@ impl Default for AxScreen {
     }
 }
 
+/// How far up from the element at a point to look for the focused field.
+const MAX_HIT_DEPTH: usize = 12;
+
 /// Stop remembering prepared processes beyond this many; preparing a process
 /// twice is harmless.
 const MAX_PREPARED: usize = 512;
@@ -321,6 +333,39 @@ impl AxScreen {
             names: self.names.clone(),
         };
         application.element(&self.names.focused_element)
+    }
+
+    /// Whether `element` is what `app` shows at `x`, `y` (in points): the
+    /// element there is it or inside it. Some apps (Electron apps with
+    /// several web views, such as Claude) name a field as focused that is
+    /// hidden behind another view of the same window. `None` if the app
+    /// can't say. Only elements and positions are compared, never text.
+    pub fn shows_at(&self, app: &App, element: &Element, x: f64, y: f64) -> Option<bool> {
+        // SAFETY: any pid is accepted; returns a new element or null.
+        let application = unsafe { owned(AXUIElementCreateApplication(app.pid)) }?;
+        let mut hit: *const CFType = ptr::null();
+        // SAFETY: valid element and out pointer; plain values.
+        let error =
+            unsafe { AXUIElementCopyElementAtPosition(&application, x as f32, y as f32, &mut hit) };
+        if error != AX_SUCCESS {
+            return None;
+        }
+        // SAFETY: on success the element is a new reference we own.
+        let mut current = Element {
+            element: unsafe { owned(hit) }?,
+            names: self.names.clone(),
+        };
+        // The element at the point may be a run of text inside the field.
+        for _ in 0..MAX_HIT_DEPTH {
+            if *current.element == *element.element {
+                return Some(true);
+            }
+            let Some(parent) = current.element(&self.names.parent) else {
+                break;
+            };
+            current = parent;
+        }
+        Some(false)
     }
 }
 
