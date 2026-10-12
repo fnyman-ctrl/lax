@@ -96,8 +96,14 @@ previous one, so they can be built, tested and improved independently.
   go down, never which, and only while the user has it on. Before it looks at
   the window, Lax makes the same checks as capture (app, window title, private
   browser window; `capture::admit`), and it never comes to a password field.
-  The salmon swims in to the text cursor, read as a position only; drafting
-  and inserting come next.
+  The salmon swims in to the text cursor. The instruction is the text
+  selected in the field, or what is in it; the window is read as capture
+  reads it, for the app Lax was called to (`src-tauri/src/summon.rs`). On
+  Enter, the chat model writes a draft from the instruction, `about-me.md`,
+  the pages of people and projects named in the instruction (not every name
+  in the window), and the window's text, all as `Captured` data
+  (`src-tauri/src/write.rs`). Secrets are redacted first, and nothing about
+  a draft is stored. Inserting it into the field comes next.
 
 ## Models
 

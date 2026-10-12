@@ -28,6 +28,7 @@ mod summon;
 mod tray;
 mod vectors;
 mod viewer;
+mod write;
 
 use std::sync::Mutex;
 
@@ -91,6 +92,9 @@ pub fn run() {
             summon::writing_status,
             summon::set_writing_enabled,
             summon::close_panel,
+            write::panel_call,
+            write::write_draft,
+            write::fit_panel,
         ])
         .setup(|app| {
             // Lax lives in the menu bar, without a Dock icon.
@@ -181,6 +185,7 @@ pub fn run() {
             // The panel goes away when the user clicks elsewhere.
             WindowEvent::Focused(false) if window.label() == summon::PANEL => {
                 let _ = window.hide();
+                window.app_handle().state::<summon::Summoned>().forget();
             }
             _ => {}
         })

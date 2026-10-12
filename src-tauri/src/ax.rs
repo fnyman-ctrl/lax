@@ -218,6 +218,7 @@ struct Names {
     visible_character_range: CFRetained<CFString>,
     string_for_range: CFRetained<CFString>,
     focused_element: CFRetained<CFString>,
+    selected_text: CFRetained<CFString>,
     selected_text_range: CFRetained<CFString>,
     bounds_for_range: CFRetained<CFString>,
     position: CFRetained<CFString>,
@@ -243,6 +244,7 @@ impl Names {
             visible_character_range: name("AXVisibleCharacterRange"),
             string_for_range: name("AXStringForRange"),
             focused_element: name("AXFocusedUIElement"),
+            selected_text: name("AXSelectedText"),
             selected_text_range: name("AXSelectedTextRange"),
             bounds_for_range: name("AXBoundsForRange"),
             position: name("AXPosition"),
@@ -445,6 +447,17 @@ impl Element {
         let rect: Rect = ax_value(&bounds, AX_VALUE_CG_RECT)?;
         // Some apps answer an empty selection with an empty rectangle at 0,0.
         (rect.height > 0.0 && (rect.x != 0.0 || rect.y != 0.0)).then_some(rect)
+    }
+
+    /// The text the user selected in a field, or else all of its text, at
+    /// most `max_chars` characters. Only called for the field the user
+    /// called Lax to, once it is known not to be a password field.
+    pub fn field_text(&self, max_chars: usize) -> Option<String> {
+        let selected = self
+            .string(&self.names.selected_text)
+            .filter(|text| !text.trim().is_empty());
+        let text = selected.or_else(|| self.string(&self.names.value))?;
+        Some(truncate_chars(&text, max_chars))
     }
 
     /// Where the element is on screen.

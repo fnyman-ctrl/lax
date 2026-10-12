@@ -133,9 +133,70 @@ fn may_come(enabled: bool, paused: bool, app: Decision) -> bool {
     enabled && !paused && app == Decision::Capture
 }
 
-/// The app that was in front when Lax was called, to give focus back to.
+/// What Lax was called to: the app to give focus back to, the user's
+/// instruction from the field, and the window's text as context. Held in
+/// memory only while the panel is open; never stored or logged.
 #[derive(Default)]
-pub struct Summoned(Mutex<Option<i32>>);
+pub struct Summoned(Mutex<Option<Call>>);
+
+#[derive(Clone, Debug, Default)]
+pub struct Call {
+    pub pid: i32,
+    pub app_name: String,
+    /// The text selected in the field, or what is in it. Secrets redacted.
+    pub instruction: String,
+    /// The window's title and text, read under capture's rules. Secrets
+    /// redacted. `None` until read, or if there was nothing to read.
+    pub context: Option<String>,
+    /// Whether the window is still being read.
+    pub reading: bool,
+}
+
+impl Summoned {
+    pub fn call(&self) -> Option<Call> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// Forgets the call, such as when the panel goes away.
+    pub fn forget(&self) -> Option<Call> {
+        self.0.lock().unwrap_or_else(PoisonError::into_inner).take()
+    }
+
+    fn set(&self, call: Option<Call>) {
+        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = call;
+    }
+
+    /// Adds the window's text, if any, to the call for `pid`, if it is
+    /// still open, and marks the reading done.
+    fn set_context(&self, pid: i32, context: Option<String>) {
+        let mut call = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(call) = call.as_mut().filter(|call| call.pid == pid) {
+            call.context = context;
+            call.reading = false;
+        }
+    }
+}
+
+/// The instruction in a field's text (selected, or all of it): the text,
+/// secrets redacted, unless it is longer than an instruction usually is, such
+/// as a whole document with nothing selected. Then the user types one.
+pub fn instruction_from(text: &str) -> String {
+    let text = text.trim();
+    if text.chars().count() > MAX_FIELD_INSTRUCTION_CHARS {
+        return String::new();
+    }
+    crate::redact::redact(text)
+}
+
+/// Longer field text than this isn't taken as the instruction.
+const MAX_FIELD_INSTRUCTION_CHARS: usize = 400;
+
+/// Characters of the field's text and of the window's taken along.
+pub const MAX_INSTRUCTION_CHARS: usize = 2000;
+pub const MAX_CONTEXT_CHARS: usize = 6000;
 
 /// The panel's window label. Its capability is `capabilities/panel.json`.
 pub const PANEL: &str = "panel";
@@ -190,12 +251,7 @@ pub fn close_panel(app: AppHandle) {
     if let Some(panel) = app.get_webview_window(PANEL) {
         let _ = panel.hide();
     }
-    let pid = app
-        .state::<Summoned>()
-        .0
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .take();
+    let pid = app.state::<Summoned>().forget().map(|call| call.pid);
     #[cfg(target_os = "macos")]
     if let Some(pid) = pid {
         let _ = app.run_on_main_thread(move || macos::activate(pid));
@@ -292,8 +348,22 @@ fn come(app: &AppHandle, app_decision: Decision) {
     let app = app.clone();
     std::thread::spawn(move || {
         #[cfg(target_os = "macos")]
-        if let Some((pid, caret, field)) = macos::locate(&app) {
-            show(&app, pid, caret, field);
+        if let Some(found) = macos::locate(&app) {
+            let (pid, front) = (found.call.pid, found.front.clone());
+            show(&app, found.call, found.caret, found.field);
+            // The window is read after the salmon is on its way: under the
+            // same rules as capture, for the app Lax was called to (Lax's
+            // own panel is in front by now). If it turns out to be a site
+            // the user excluded, Lax goes away again before anything is used.
+            match macos::read_window(&app, front) {
+                Ok(context) => app.state::<Summoned>().set_context(pid, context),
+                Err(()) => {
+                    if let Some(panel) = app.get_webview_window(PANEL) {
+                        let _ = panel.hide();
+                    }
+                    app.state::<Summoned>().forget();
+                }
+            }
         }
         #[cfg(not(target_os = "macos"))]
         let _ = app;
@@ -302,15 +372,12 @@ fn come(app: &AppHandle, app_decision: Decision) {
 
 /// Shows the panel at `caret` in `field`, or by the mouse pointer if the app
 /// didn't say where its text cursor is.
-fn show(app: &AppHandle, pid: i32, caret: Option<Rect>, field: Option<Rect>) {
+fn show(app: &AppHandle, call: Call, caret: Option<Rect>, field: Option<Rect>) {
     logging::info(
         "write.summoned",
         &[Field::Flag("at_cursor", caret.is_some())],
     );
-    *app.state::<Summoned>()
-        .0
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner) = Some(pid);
+    app.state::<Summoned>().set(Some(call));
     let panel = match app.get_webview_window(PANEL) {
         Some(panel) => panel,
         None => {
@@ -430,11 +497,15 @@ mod macos {
     };
     use tauri::{AppHandle, Manager};
 
-    use super::{Input, Listener, Rect, come, held};
+    use super::{
+        Call, Input, Listener, MAX_CONTEXT_CHARS, MAX_INSTRUCTION_CHARS, Rect, come, held,
+        instruction_from,
+    };
     use crate::ax::{AxScreen, window_owner_at};
-    use crate::capture::{Limits, Node, admit};
+    use crate::capture::{App, Capturer, Limits, Node, Outcome, Screen, admit, truncate_chars};
     use crate::exclusions::{Current, is_secure_text_field};
     use crate::pause::Pause;
+    use crate::redact::redact;
 
     thread_local! {
         /// The installed monitor. AppKit objects stay on the main thread.
@@ -494,12 +565,20 @@ mod macos {
         })
     }
 
-    /// Where the text cursor is in the app in front, after the same checks
-    /// capture makes before reading a window: the app, the window title and
-    /// whether a browser window is private. `None` if Lax may not come: one
-    /// of those says no, capture is paused, or the focus is in a password
-    /// field. Only positions are read, never text.
-    pub fn locate(app: &AppHandle) -> Option<(i32, Option<Rect>, Option<Rect>)> {
+    /// What [`locate`] found.
+    pub struct Found {
+        pub front: App,
+        pub call: Call,
+        pub caret: Option<Rect>,
+        pub field: Option<Rect>,
+    }
+
+    /// Where the text cursor is in the app in front, and the instruction in
+    /// the field, after the same checks capture makes before reading a
+    /// window: the app, the window title and whether a browser window is
+    /// private. `None` if Lax may not come: one of those says no, capture is
+    /// paused, or the focus is in a password field.
+    pub fn locate(app: &AppHandle) -> Option<Found> {
         // Before the user's exclusions are loaded, Lax comes nowhere.
         let (_, exclusions) = app.state::<Current>().newer_than(0)?;
         let pause = app.state::<Pause>();
@@ -508,8 +587,19 @@ mod macos {
             pause.is_paused()
         })
         .ok()?;
-        let Some(element) = screen.focused_element(&front) else {
-            return Some((front.pid, None, None));
+        let mut found = Found {
+            call: Call {
+                pid: front.pid,
+                app_name: front.name.clone(),
+                reading: true,
+                ..Call::default()
+            },
+            front,
+            caret: None,
+            field: None,
+        };
+        let Some(element) = screen.focused_element(&found.front) else {
+            return Some(found);
         };
         let (role, subrole) = element.role_and_subrole();
         if is_secure_text_field(role.as_deref().unwrap_or_default(), subrole.as_deref()) {
@@ -519,15 +609,61 @@ mod macos {
         // Some apps (Electron apps with several web views, such as Claude)
         // name a field hidden behind another app's window. If another
         // window is on top where the cursor is said to be, go by the mouse
-        // pointer instead.
+        // pointer instead, and don't take that field's text.
         let hidden = caret.is_some_and(|caret| {
             window_owner_at(caret.x + 1.0, caret.y + caret.height / 2.0)
-                .is_some_and(|owner| owner != front.pid)
+                .is_some_and(|owner| owner != found.front.pid)
         });
         if hidden {
-            return Some((front.pid, None, None));
+            return Some(found);
         }
-        Some((front.pid, caret, element.frame()))
+        found.call.instruction = element
+            .field_text(MAX_INSTRUCTION_CHARS)
+            .map(|text| instruction_from(&text))
+            .unwrap_or_default();
+        found.caret = caret;
+        found.field = element.frame();
+        Some(found)
+    }
+
+    /// The text of `front`'s focused window, read as capture reads it, with
+    /// secrets redacted. `Err` if Lax may not read it (an excluded site, a
+    /// pause meanwhile); `Ok(None)` if there's nothing to read.
+    pub fn read_window(app: &AppHandle, front: App) -> Result<Option<String>, ()> {
+        let (_, exclusions) = app.state::<Current>().newer_than(0).ok_or(())?;
+        let pause = app.state::<Pause>();
+        let mut screen = Pinned {
+            screen: AxScreen::default(),
+            app: front,
+        };
+        let mut capturer = Capturer::new(exclusions, Limits::default());
+        match capturer.tick(&mut screen, || pause.is_paused()) {
+            Outcome::Captured(snapshot) => {
+                let text = format!("{}\n{}", snapshot.window_title, snapshot.text);
+                Ok(Some(truncate_chars(&redact(&text), MAX_CONTEXT_CHARS)))
+            }
+            Outcome::Paused | Outcome::Skipped(_) => Err(()),
+            _ => Ok(None),
+        }
+    }
+
+    /// The screen, with the app Lax was called to held in front: by the time
+    /// its window is read, Lax's own panel is.
+    struct Pinned {
+        screen: AxScreen,
+        app: App,
+    }
+
+    impl Screen for Pinned {
+        type Node = <AxScreen as Screen>::Node;
+
+        fn frontmost_app(&mut self) -> Option<App> {
+            Some(self.app.clone())
+        }
+
+        fn focused_window(&mut self, app: &App) -> Option<Self::Node> {
+            self.screen.focused_window(app)
+        }
     }
 
     /// Brings the app with this process id back to the front.
@@ -726,6 +862,19 @@ mod tests {
             place(line(-1000.0, 100.0), None, left),
             (-1200.0, 98.0, 432.0)
         );
+    }
+
+    #[test]
+    fn short_field_text_is_the_instruction() {
+        assert_eq!(
+            instruction_from("  skriv ett svar i min ton  "),
+            "skriv ett svar i min ton"
+        );
+        // A whole document isn't an instruction.
+        assert_eq!(instruction_from(&"Lorem ipsum. ".repeat(40)), "");
+        // Secrets are redacted.
+        let key = format!("sk-{}", "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6");
+        assert!(!instruction_from(&format!("use {key}")).contains(&key));
     }
 
     #[test]

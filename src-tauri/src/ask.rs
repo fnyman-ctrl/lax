@@ -250,6 +250,36 @@ fn gather<Tz: TimeZone>(
     })
 }
 
+/// What the memory knows that bears on `text` (the writing assistant's
+/// instruction): `about-me.md`, and the pages of the entities named in it.
+/// Also the names of those pages, "you" for about-me, for the user to see.
+pub(crate) fn known_for(
+    store: &Store,
+    text: &str,
+) -> crate::store::Result<(Vec<String>, Vec<String>)> {
+    let named = named_entities(&words(text), &store.entity_names()?);
+    let known = known(store, &named)?;
+    let mut pages = Vec::new();
+    if store
+        .about_me_page()?
+        .and_then(|p| p.facts)
+        .is_some_and(|facts| !facts.is_empty())
+    {
+        pages.push("you".to_string());
+    }
+    let all = store.entities()?;
+    for id in named.iter().take(MAX_KNOWN_ENTITIES) {
+        let has_facts = store
+            .page_of(*id)?
+            .and_then(|p| p.facts)
+            .is_some_and(|facts| !facts.is_empty());
+        if let Some(entity) = all.iter().find(|e| e.id == *id).filter(|_| has_facts) {
+            pages.push(entity.name.clone());
+        }
+    }
+    Ok((known, pages))
+}
+
 /// The facts on the pages of the named entities, and on `about-me.md`.
 fn known(store: &Store, entities: &[i64]) -> crate::store::Result<Vec<String>> {
     let mut known = Vec::new();

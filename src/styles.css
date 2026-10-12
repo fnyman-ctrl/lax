@@ -959,6 +959,32 @@ mark {
   margin: 0 0 2px;
 }
 
+.panel-card .error {
+  margin: 4px 0 0;
+}
+
+.panel-input {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0 0 4px;
+  padding: 4px 6px;
+  border: 1px solid rgb(15 42 51 / 0.18);
+  border-radius: 6px;
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  resize: none;
+}
+
+.panel-draft {
+  max-height: 300px;
+  overflow-y: auto;
+  margin: 0 0 6px;
+  white-space: pre-wrap;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
 @keyframes swim-in {
   0% {
     transform: translate(-200px, 4px);

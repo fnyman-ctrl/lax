@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-fit-panel"
+description = "Enables the fit_panel command without any pre-configured scope."
+commands.allow = ["fit_panel"]
+
+[[permission]]
+identifier = "deny-fit-panel"
+description = "Denies the fit_panel command without any pre-configured scope."
+commands.deny = ["fit_panel"]
