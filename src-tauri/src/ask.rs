@@ -74,52 +74,50 @@ struct Reply {
 
 /// Entry numbers as the model writes them: a list of numbers as asked, but
 /// also, from small models answering without reasoning, numbers as text
-/// ("4"), ranges ("1-8") or a single text ("1, 3"). Anything else is
-/// refused. Whether the numbers were given is checked afterwards.
+/// ("4", "[4]"), ranges ("1-8"), comma-separated text ("1, 3") and lists
+/// in lists ([[5]]). Anything else, such as words, is refused. Whether the
+/// numbers were given is checked afterwards.
 fn sources<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<u32>, D::Error> {
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum One {
-        Number(u32),
-        Text(String),
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let mut out = Vec::new();
+    if collect(&value, 0, &mut out).is_none() || out.len() > MAX_ENTRIES * 2 {
+        return Err(serde::de::Error::custom("not entry numbers"));
     }
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum Many {
-        List(Vec<One>),
-        Text(String),
-    }
-    fn numbers(text: &str, out: &mut Vec<u32>) -> Option<()> {
-        for part in text.split(',').map(str::trim).filter(|p| !p.is_empty()) {
-            match part.split_once('-') {
-                Some((from, to)) => {
-                    let (from, to): (u32, u32) =
-                        (from.trim().parse().ok()?, to.trim().parse().ok()?);
-                    if to < from || to - from > MAX_ENTRIES as u32 {
-                        return None;
-                    }
-                    out.extend(from..=to);
-                }
-                None => out.push(part.parse().ok()?),
+    Ok(out)
+}
+
+fn collect(value: &serde_json::Value, depth: usize, out: &mut Vec<u32>) -> Option<()> {
+    use serde_json::Value;
+    match value {
+        Value::Number(n) => out.push(u32::try_from(n.as_u64()?).ok()?),
+        Value::String(text) => numbers(text, out)?,
+        Value::Array(items) if depth < 3 => {
+            for item in items {
+                collect(item, depth + 1, out)?;
             }
         }
-        Some(())
+        _ => return None,
     }
-    let mut out = Vec::new();
-    let parsed = match Many::deserialize(deserializer)? {
-        Many::List(list) => list.into_iter().try_for_each(|one| match one {
-            One::Number(n) => {
-                out.push(n);
-                Some(())
+    Some(())
+}
+
+/// "4", "[4]", "1-8", "1, 3" or "1–3" as numbers.
+fn numbers(text: &str, out: &mut Vec<u32>) -> Option<()> {
+    let text = text.trim().trim_start_matches('[').trim_end_matches(']');
+    for part in text.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        let part = part.trim_start_matches('[').trim_end_matches(']').trim();
+        match part.split_once(['-', '–']) {
+            Some((from, to)) => {
+                let (from, to): (u32, u32) = (from.trim().parse().ok()?, to.trim().parse().ok()?);
+                if to < from || to - from > MAX_ENTRIES as u32 {
+                    return None;
+                }
+                out.extend(from..=to);
             }
-            One::Text(text) => numbers(&text, &mut out),
-        }),
-        Many::Text(text) => numbers(&text, &mut out),
-    };
-    match parsed {
-        Some(()) => Ok(out),
-        None => Err(serde::de::Error::custom("not entry numbers")),
+            None => out.push(part.parse().ok()?),
+        }
     }
+    Some(())
 }
 
 impl Validate for Reply {
@@ -1283,6 +1281,22 @@ mod tests {
         assert!(parse(r#"{"answer":"ok","sources":"1-100000"}"#).is_err());
         assert!(parse(r#"{"answer":"ok","sources":"5-2"}"#).is_err());
         assert!(parse(r#"{"answer":"ok","sources":[true]}"#).is_err());
+        assert!(parse(r#"{"answer":"ok","sources":[[[[1]]]]}"#).is_err());
+        assert!(parse(r#"{"answer":"ok","sources":[-1]}"#).is_err());
+        // More shapes from the live probe.
+        assert_eq!(sources(r#"{"answer":"ok","sources":[[5]]}"#), Some(vec![5]));
+        assert_eq!(
+            sources(r#"{"answer":"ok","sources":["[1]", "[2]"]}"#),
+            Some(vec![1, 2])
+        );
+        assert_eq!(
+            sources(r#"{"answer":"ok","sources":"[3, 4]"}"#),
+            Some(vec![3, 4])
+        );
+        assert_eq!(
+            sources(r#"{"answer":"ok","sources":"2–3"}"#),
+            Some(vec![2, 3])
+        );
         assert!(
             parse(&format!(
                 r#"{{"answer":"{}","sources":[]}}"#,
