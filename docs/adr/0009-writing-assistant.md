@@ -1,6 +1,6 @@
 # 0009. A writing assistant called with the Option key
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-11
 
 ## Context
@@ -14,8 +14,8 @@ the same in Lax.
 The maintainer's requirements:
 
 - **Nothing in text fields until called.** Goldfish shows a fish in every text
-  field, which is distracting. Lax appears only when the user presses ⌥ Option,
-  and only in the field they are in.
+  field, which is distracting. Lax appears only when the user double-taps
+  ⌥ Option, and only in the field they are in.
 - Typical use: in a reply, type "write a reply in my tone", press the key, and
   get a proper mail in place of the instruction.
 
@@ -31,8 +31,9 @@ the key on its own can't simply be a shortcut.
 
 ### Calling Lax
 
-- **Tap Option on its own**: press and release ⌥ with no other key in between,
-  within half a second. ⌥2, ⌥-click and holding ⌥ do nothing.
+- **Double-tap Option on its own**: two taps, the second starting within
+  400 ms of the first ending. A tap is pressing and releasing ⌥ with no other
+  key in between, within half a second. A single tap, ⌥2, ⌥-click and holding ⌥ do nothing.
 - To tell a tap from ⌥2, Lax must notice that *some* key was pressed while ⌥
   was down. macOS delivers every key event with its key code, so Lax can't
   avoid receiving it; what it enforces is that the code goes no further. The
@@ -119,21 +120,19 @@ the key on its own can't simply be a shortcut.
 - **A fixed shortcut such as ⌃⌥Space.** Simpler and no need to detect taps,
   but not what the maintainer asked for. It could be offered as a setting
   later.
-- **Double-tap Option.** Fewer accidental calls than a single tap, but slower,
-  and a single tap that opens a panel which Escape closes is cheap to get
-  wrong.
+- **A single tap of Option**, as Goldfish does. Faster, but easier to set off
+  by accident while typing ⌥-characters; the maintainer chose the double tap.
 - **Insert directly, without a preview.** One key press fewer, but a draft
   steered by a hostile message would land in the field unread.
 - **An indicator in every text field**, as Goldfish does. Rejected by the
   maintainer.
 
-## Questions for the maintainer
+## Decided with the maintainer
 
-1. Tap Option alone (as Goldfish), or double-tap?
-2. Preview in the panel, then Enter to insert (recommended), or straight in
-   with ⌘Z to undo?
-3. In every app except the exclusions (recommended), or only apps the user
-   lists?
-4. Is it OK that nothing is stored, so Lax can't learn from the drafts the user
-   kept? (Recommended: yes for now; learning from sent mail can come later,
-   through capture.)
+The proposal asked four questions, answered on 2026-10-12 (#69):
+
+1. Lax is called by **double-tapping** Option, not a single tap.
+2. The draft is shown in the panel first, and Enter inserts it.
+3. It works in every app except the exclusions.
+4. Nothing about a draft is stored. Learning the user's tone from sent mail can
+   come later, through capture.
