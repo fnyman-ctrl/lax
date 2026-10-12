@@ -36,11 +36,15 @@ export function Write() {
         {status.enabled ? (
           <>
             <p>
-              <strong>Double-tap ⌥ Option</strong> in a text field, and Lax comes to it. Escape
-              sends it away.
+              <strong>Double-tap ⌥ Option</strong> in a text field, and Lax comes to it. Type
+              what to write, or write it in the field first ("reply in my tone and thank her"),
+              and press Enter for a draft. Read and edit it; Enter puts it in the field, and
+              Escape sends Lax away.
             </p>
             <p className="muted">
-              This first version only comes when called. Writing drafts comes next.
+              Drafts are written by the chat model on this Mac from your instruction, what
+              Lax knows about you and the people you name, and the window you're writing
+              in. Nothing about them is saved, and Lax never sends anything.
             </p>
             <p className="buttons">
               <button type="button" className="secondary" onClick={() => toggle(false)}>

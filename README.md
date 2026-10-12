@@ -18,9 +18,10 @@ you decide it should.
 > in, years later and thousands of kilometres away. That's the kind of memory we're after.
 
 > ⚠️ **Status: early development.** Lax captures the text of the active window, lets you
-> see, search and forget everything it captured, and can write a journal of your day with
-> an AI model on your Mac (off until you turn it on). Learning who you work with comes
-> next. See the [roadmap](docs/ROADMAP.md), follow along or help out!
+> see, search and forget everything it captured, writes a journal of your day, learns who
+> and what you work with, answers questions about your work, and drafts text in any text
+> field, all with AI models on your Mac and each off until you turn it on. See the
+> [roadmap](docs/ROADMAP.md), follow along or help out!
 
 ## Why
 
@@ -41,13 +42,24 @@ decide otherwise.**
    raw activity into short, readable episodes ("Read Anna's mail about the Q3 offer
    and updated the roadmap"). See [docs/MODELS.md](docs/MODELS.md) for the
    recommended local models.
-3. **Recognize** (next): extract projects, people and organisations from those episodes.
-4. **Learn** (next): maintain a page per project and person, plus an *About me* page,
-   kept as plain **Markdown files** you can read, search and edit. When you
-   correct a page, Lax learns from the correction.
+3. **Recognize** (works today, opt-in): picks out the projects, people and
+   organisations in those episodes. You can rename, merge, keep or forget them,
+   and tell Lax never to learn about someone.
+4. **Learn** (works today, opt-in): keeps a page per project and person, plus an
+   *About me* page, as plain **Markdown files** in `~/Lax` that you can read and
+   edit. What you write there is never overwritten, and facts you delete stay
+   deleted.
+5. **Ask** (works today): ask about your work ("Vad gjorde jag igår?", "What did I
+   work on with Anna last week?") and get an answer from your journal and memory,
+   with the entries it's based on.
+6. **Write** (works today, opt-in): double-tap ⌥ Option in any text field and a
+   small pixel salmon swims to your cursor. Tell it what to write ("reply in my
+   tone and thank her for the offer"), and it drafts the text from what Lax
+   knows and the window you're in. You read and edit it; Enter puts it in the
+   field. Lax never sends anything.
 
-Later: search and Q&A over your history, meeting transcription (Whisper),
-time tracking, and a local MCP server so other local tools can use your memory.
+Later: meeting transcription (Whisper), time tracking, and a local MCP server so
+other local tools can use your memory.
 
 ## Principles
 
