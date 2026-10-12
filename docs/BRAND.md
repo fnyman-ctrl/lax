@@ -28,6 +28,19 @@ A salmon as it looks at sea, on its way home:
 Lax is an alternative to apps like Goldfish, so it must never be mistaken for one:
 no round orange fish.
 
+### The pixel salmon
+
+![The pixel salmon](../src-tauri/icons/salmon.svg)
+
+When Lax comes to a text field (the writing assistant), it is a small pixel-art
+salmon, chosen by the maintainer on a designer's advice in October 2026. It is the
+same fish in pixels: blue-grey back with darker spots, a soft pink belly, a pink
+cheek, a white eye with a highlight and a small smile. It is drawn on a 38 × 22
+grid and always shown at one point per pixel (`image-rendering: pixelated`), so
+its edges stay crisp. Its palette: outline `#1F2C3C`, back `#8FB3BF`, `#698392`
+and `#466A7A`, belly `#F5B3B5` and `#F5DBDC`, cheek `#F38D9B`, eye white
+`#FEFEFE`.
+
 ## Colours
 
 | Name | Hex | Use |
@@ -66,7 +79,7 @@ Every icon is drawn from an SVG source in the repository:
 | Source | Becomes |
 |---|---|
 | `src-tauri/icons/app-icon.svg` | The app icon in every size (`icon.icns`, `icon.ico`, PNGs) |
-| `src-tauri/icons/salmon.svg` | The salmon alone, for the writing assistant's panel. The fish from `app-icon.svg` without background or bubbles; change both together |
+| `src-tauri/icons/salmon.svg` | The pixel salmon, for the writing assistant's panel: see "The pixel salmon" above |
 | `src-tauri/icons/tray/active.svg` | The menu bar icon while capturing: the salmon silhouette |
 | `src-tauri/icons/tray/paused.svg` | The menu bar icon while paused: a faded salmon with pause bars |
 

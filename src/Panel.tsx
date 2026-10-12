@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-// The salmon from the app icon, on its own (docs/BRAND.md).
+// The pixel salmon (docs/BRAND.md).
 import salmon from "../src-tauri/icons/salmon.svg";
 
 // Shapes returned by src-tauri/src/write.rs.
