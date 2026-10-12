@@ -195,14 +195,17 @@ mod macos {
                 return Err(Failed::Refused);
             }
         }
+        // Whether the instruction is selected now, ready to be replaced.
+        let mut selected = !matches!(call.replace, Replace::Paragraph { .. });
         if call.accessible
             && let Some(element) = &element
             && let Some(before) = element.value()
         {
-            let selected = match call.replace {
-                Replace::All => element.select(utf16_len(&before)),
-                Replace::Selection | Replace::Nothing => true,
-            };
+            if let Replace::Paragraph { start, len, .. } = call.replace
+                && start + len <= utf16_len(&before)
+            {
+                selected = element.select(start, len);
+            }
             if selected
                 && element.replace_selection(text)
                 && written(&before, element.value().as_deref())
@@ -210,8 +213,11 @@ mod macos {
                 return Ok(How::Accessibility);
             }
         }
-        // ⌘A only selects what was the whole field: the instruction.
-        paste(text, call.replace == Replace::All);
+        // ⌘A only when the instruction was the whole field and couldn't be
+        // selected otherwise. If a paragraph couldn't be selected, the draft
+        // goes in at the cursor and the instruction stays for the user.
+        let whole = matches!(call.replace, Replace::Paragraph { whole: true, .. });
+        paste(text, whole && !selected);
         Ok(How::Pasted)
     }
 

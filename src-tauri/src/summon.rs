@@ -18,6 +18,8 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
+#[cfg(target_os = "macos")]
+use crate::ax::FieldText;
 use crate::exclusions::{Current, Decision, Exclusions};
 use crate::logging::{self, Field};
 use crate::pause::Pause;
@@ -173,18 +175,63 @@ pub enum Replace {
     Nothing,
     /// The selected text, which was the instruction.
     Selection,
-    /// All of the field's text, which was the instruction.
-    All,
+    /// The paragraph the user wrote the instruction in: `len` UTF-16 units
+    /// from `start`. `whole` if that is all of the field's text.
+    Paragraph {
+        start: usize,
+        len: usize,
+        whole: bool,
+    },
 }
 
-/// What a draft replaces, given the instruction taken from the field (empty
-/// if none) and whether it was the selection.
-pub fn replace_for(instruction: &str, selected: bool) -> Replace {
-    match (instruction.is_empty(), selected) {
-        (true, _) => Replace::Nothing,
-        (false, true) => Replace::Selection,
-        (false, false) => Replace::All,
+/// The paragraph of `text` around the cursor at `caret` (in UTF-16 units):
+/// its text, and its start and length in UTF-16 units. In a document (Notes,
+/// Pages, a mail) that is what the user just wrote, not the whole document;
+/// in a one-line field it is all of it.
+pub fn paragraph_at(text: &str, caret: usize) -> (String, usize, usize) {
+    let is_break = |c: char| matches!(c, '\n' | '\r' | '\u{2028}' | '\u{2029}');
+    let (mut start, mut end) = (0, None);
+    let mut offset = 0;
+    for c in text.chars() {
+        if is_break(c) {
+            if offset < caret {
+                start = offset + c.len_utf16();
+            } else {
+                end = Some(offset);
+                break;
+            }
+        }
+        offset += c.len_utf16();
     }
+    let end = end.unwrap_or(offset);
+    let units: Vec<u16> = text.encode_utf16().collect();
+    let paragraph = String::from_utf16_lossy(&units[start.min(end)..end]);
+    (paragraph, start.min(end), end.saturating_sub(start))
+}
+
+/// The instruction in a field and what a draft replaces: the selection if
+/// there is one, else the paragraph at the cursor, else all of it.
+#[cfg(target_os = "macos")]
+pub fn instruction_in(text: &FieldText) -> (String, Replace) {
+    let (instruction, replace) = match text {
+        FieldText::Selected(selected) => (instruction_from(selected), Replace::Selection),
+        FieldText::All { value, caret } => {
+            let total = value.encode_utf16().count();
+            let (paragraph, start, len) = match caret {
+                Some(caret) if *caret <= total => paragraph_at(value, *caret),
+                _ => (value.clone(), 0, total),
+            };
+            let whole = start == 0 && len == total;
+            (
+                instruction_from(&paragraph),
+                Replace::Paragraph { start, len, whole },
+            )
+        }
+    };
+    if instruction.is_empty() {
+        return (instruction, Replace::Nothing);
+    }
+    (instruction, replace)
 }
 
 impl Summoned {
@@ -534,7 +581,7 @@ pub(crate) mod macos {
 
     use super::{
         Call, Input, Listener, MAX_CONTEXT_CHARS, MAX_INSTRUCTION_CHARS, Rect, come, held,
-        instruction_from, replace_for,
+        instruction_in,
     };
     use crate::ax::{AxScreen, window_owner_at};
     use crate::capture::{App, Capturer, Limits, Node, Outcome, Screen, admit, truncate_chars};
@@ -655,11 +702,9 @@ pub(crate) mod macos {
         if hidden {
             return Some(found);
         }
-        let (text, selected) = element
-            .field_text(MAX_INSTRUCTION_CHARS)
-            .unwrap_or_default();
-        found.call.instruction = instruction_from(&text);
-        found.call.replace = replace_for(&found.call.instruction, selected);
+        if let Some(text) = element.field_text(MAX_INSTRUCTION_CHARS) {
+            (found.call.instruction, found.call.replace) = instruction_in(&text);
+        }
         found.call.accessible = true;
         found.caret = caret;
         found.field = element.frame();
@@ -719,6 +764,8 @@ pub(crate) mod macos {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "macos")]
+    use crate::ax::FieldText;
 
     fn ms(n: u64) -> Duration {
         Duration::from_millis(n)
@@ -904,12 +951,67 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
-    fn a_draft_replaces_the_instruction_it_came_from() {
-        assert_eq!(replace_for("", false), Replace::Nothing);
-        assert_eq!(replace_for("", true), Replace::Nothing);
-        assert_eq!(replace_for("svara Anna", true), Replace::Selection);
-        assert_eq!(replace_for("svara Anna", false), Replace::All);
+    fn the_instruction_is_the_selection_or_the_paragraph_at_the_cursor() {
+        let all = |value: &str, caret| FieldText::All {
+            value: value.to_string(),
+            caret,
+        };
+        // A note: the title, then what the user wrote, cursor at its end.
+        let note = "Test från Anna\nsvara i min ton";
+        assert_eq!(
+            instruction_in(&all(note, Some(30))),
+            (
+                "svara i min ton".to_string(),
+                Replace::Paragraph {
+                    start: 15,
+                    len: 15,
+                    whole: false
+                }
+            )
+        );
+        // A one-line field is all of it.
+        assert_eq!(
+            instruction_in(&all("svara Anna", Some(10))),
+            (
+                "svara Anna".to_string(),
+                Replace::Paragraph {
+                    start: 0,
+                    len: 10,
+                    whole: true
+                }
+            )
+        );
+        // Without a cursor, all of it.
+        assert_eq!(
+            instruction_in(&all("svara Anna", None)).1,
+            Replace::Paragraph {
+                start: 0,
+                len: 10,
+                whole: true
+            }
+        );
+        // A selection wins.
+        assert_eq!(
+            instruction_in(&FieldText::Selected("gör den kortare".to_string())),
+            ("gör den kortare".to_string(), Replace::Selection)
+        );
+        // On an empty line, nothing: the user types in the panel.
+        assert_eq!(
+            instruction_in(&all("Rubrik\n", Some(7))),
+            (String::new(), Replace::Nothing)
+        );
+    }
+
+    #[test]
+    fn paragraphs_are_counted_in_utf16_units() {
+        // "🐟" is two units; "å" one.
+        let text = "Lax 🐟\nåtta\u{2029}nio";
+        assert_eq!(paragraph_at(text, 0), ("Lax 🐟".to_string(), 0, 6));
+        assert_eq!(paragraph_at(text, 8), ("åtta".to_string(), 7, 4));
+        assert_eq!(paragraph_at(text, 13), ("nio".to_string(), 12, 3));
+        assert_eq!(paragraph_at(text, 15), ("nio".to_string(), 12, 3));
     }
 
     #[test]
