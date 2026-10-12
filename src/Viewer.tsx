@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Ask } from "./Ask";
 import { Exclusions } from "./Exclusions";
@@ -60,121 +60,169 @@ const MATCH_END = "\u0003";
  * can see everything that was captured). Captured text is untrusted: it is
  * only ever rendered as text, never as HTML.
  */
+type Tab = "ask" | "write" | "journal" | "memory" | "captures" | "exclusions" | "models" | "outbox";
+
+/** The window's sections, grouped by what the user is doing. */
+const SECTIONS: { group: string; items: { tab: Tab; label: string; about: string }[] }[] = [
+  {
+    group: "Use",
+    items: [
+      { tab: "ask", label: "Ask", about: "Ask about your days, people and projects." },
+      {
+        tab: "write",
+        label: "Write",
+        about: "Call Lax to any text field, and it drafts the text with you.",
+      },
+    ],
+  },
+  {
+    group: "Your memory",
+    items: [
+      {
+        tab: "journal",
+        label: "Journal",
+        about: "What you did, written every few minutes by the model on this Mac.",
+      },
+      {
+        tab: "memory",
+        label: "Memory",
+        about: "The people, projects and organisations Lax has learned about.",
+      },
+      {
+        tab: "captures",
+        label: "Captures",
+        about: "Everything Lax has read from your screen. Search it, or forget it.",
+      },
+    ],
+  },
+  {
+    group: "Privacy",
+    items: [
+      {
+        tab: "exclusions",
+        label: "Exclusions",
+        about: "The apps, websites and windows Lax never reads.",
+      },
+      {
+        tab: "outbox",
+        label: "Sent",
+        about: "Everything that left this Mac. Nothing does unless you choose a remote model.",
+      },
+    ],
+  },
+  {
+    group: "Setup",
+    items: [
+      {
+        tab: "models",
+        label: "Models",
+        about: "The AI models Lax uses: on this Mac by default.",
+      },
+    ],
+  },
+];
+
 export function Viewer() {
-  const [tab, setTab] = useState<
-    "ask" | "write" | "journal" | "memory" | "captures" | "exclusions" | "models" | "outbox"
-  >("ask");
+  const [tab, setTab] = useState<Tab>("ask");
   const [query, setQuery] = useState("");
   // Bumped after a deletion, so the lists start over from the database.
   const [version, setVersion] = useState(0);
   const searching = query.trim() !== "";
   const forgotten = () => setVersion((v) => v + 1);
+  const current = SECTIONS.flatMap((s) => s.items).find((item) => item.tab === tab);
+
+  // The salmon swims to the chosen section in the sidebar.
+  const nav = useRef<HTMLElement>(null);
+  const [fishAt, setFishAt] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const button = nav.current?.querySelector<HTMLElement>('[aria-current="page"]');
+    if (button) {
+      setFishAt(button.offsetTop + button.offsetHeight / 2);
+    }
+  }, [tab]);
 
   return (
-    <main className="container viewer">
-      <header className="viewer-header">
+    <div className="viewer">
+      <aside className="sidebar">
         <div className="brand">
-          <img src={laxIcon} alt="" />
           <h1>Lax</h1>
         </div>
-        <Status />
-      </header>
-      <nav className="tabs" aria-label="Sections">
-        <button
-          type="button"
-          aria-current={tab === "ask" ? "page" : undefined}
-          onClick={() => setTab("ask")}
-        >
-          Ask
-        </button>
-        <button
-          type="button"
-          aria-current={tab === "write" ? "page" : undefined}
-          onClick={() => setTab("write")}
-        >
-          Write
-        </button>
-        <button
-          type="button"
-          aria-current={tab === "journal" ? "page" : undefined}
-          onClick={() => setTab("journal")}
-        >
-          Journal
-        </button>
-        <button
-          type="button"
-          aria-current={tab === "memory" ? "page" : undefined}
-          onClick={() => setTab("memory")}
-        >
-          Memory
-        </button>
-        <button
-          type="button"
-          aria-current={tab === "captures" ? "page" : undefined}
-          onClick={() => setTab("captures")}
-        >
-          Captures
-        </button>
-        <button
-          type="button"
-          aria-current={tab === "exclusions" ? "page" : undefined}
-          onClick={() => setTab("exclusions")}
-        >
-          Exclusions
-        </button>
-        <button
-          type="button"
-          aria-current={tab === "models" ? "page" : undefined}
-          onClick={() => setTab("models")}
-        >
-          Models
-        </button>
-        <button
-          type="button"
-          aria-current={tab === "outbox" ? "page" : undefined}
-          onClick={() => setTab("outbox")}
-        >
-          Sent
-        </button>
-      </nav>
-      {/* Kept mounted, so a question being answered and this session's
-          answers survive switching tabs. */}
-      <div hidden={tab !== "ask"}>
-        <Ask onShowJournal={() => setTab("journal")} />
-      </div>
-      {tab === "ask" ? null : tab === "write" ? (
-        <Write />
-      ) : tab === "journal" ? (
-        <Journal onShowModels={() => setTab("models")} />
-      ) : tab === "memory" ? (
-        <Memory onShowModels={() => setTab("models")} />
-      ) : tab === "outbox" ? (
-        <Outbox />
-      ) : tab === "models" ? (
-        <Models />
-      ) : tab === "exclusions" ? (
-        <Exclusions onForgotten={forgotten} />
-      ) : (
-        <>
-          <label className="search">
-            <span className="visually-hidden">Search what Lax has captured</span>
-            <input
-              type="search"
-              placeholder="Search what Lax has captured"
-              value={query}
-              maxLength={200}
-              onChange={(event) => setQuery(event.target.value)}
+        <nav ref={nav} aria-label="Sections">
+          {fishAt !== null && (
+            <img
+              src={laxIcon}
+              alt=""
+              className="sidebar-salmon"
+              style={{ transform: `translateY(${fishAt - 11}px)` }}
             />
-          </label>
-          <Forget onForgotten={forgotten} />
-          {searching ? (
-            <SearchResults key={version} query={query} />
-          ) : (
-            <Timeline key={version} />
           )}
-        </>
-      )}
-    </main>
+          {SECTIONS.map((section) => (
+            <div key={section.group} className="nav-group">
+              <p className="nav-label">{section.group}</p>
+              {section.items.map((item) => (
+                <button
+                  key={item.tab}
+                  type="button"
+                  aria-current={tab === item.tab ? "page" : undefined}
+                  onClick={() => setTab(item.tab)}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          ))}
+        </nav>
+        <div className="sidebar-foot">
+          <Status />
+        </div>
+      </aside>
+
+      <main className="content">
+        {current && (
+          <header className="page-head">
+            <h2>{current.label}</h2>
+            <p>{current.about}</p>
+          </header>
+        )}
+        {/* Kept mounted, so a question being answered and this session's
+            answers survive switching sections. */}
+        <div hidden={tab !== "ask"}>
+          <Ask onShowJournal={() => setTab("journal")} />
+        </div>
+        {tab === "ask" ? null : tab === "write" ? (
+          <Write />
+        ) : tab === "journal" ? (
+          <Journal onShowModels={() => setTab("models")} />
+        ) : tab === "memory" ? (
+          <Memory onShowModels={() => setTab("models")} />
+        ) : tab === "outbox" ? (
+          <Outbox />
+        ) : tab === "models" ? (
+          <Models />
+        ) : tab === "exclusions" ? (
+          <Exclusions onForgotten={forgotten} />
+        ) : (
+          <>
+            <label className="search">
+              <span className="visually-hidden">Search what Lax has captured</span>
+              <input
+                type="search"
+                placeholder="Search what Lax has captured"
+                value={query}
+                maxLength={200}
+                onChange={(event) => setQuery(event.target.value)}
+              />
+            </label>
+            <Forget onForgotten={forgotten} />
+            {searching ? (
+              <SearchResults key={version} query={query} />
+            ) : (
+              <Timeline key={version} />
+            )}
+          </>
+        )}
+      </main>
+    </div>
   );
 }
 

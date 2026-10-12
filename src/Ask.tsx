@@ -84,8 +84,7 @@ export function Ask({ onShowJournal }: { onShowJournal: () => void }) {
           <div className="chat-empty">
             <img src={salmon} alt="" className="chat-salmon" />
             <p>
-              <strong>Ask Lax about your days, people and projects.</strong> Then ask on: "and
-              the day before?", "what did she say?"
+              Start with one of these, then ask on: "and the day before?", "what did she say?"
             </p>
             <p className="buttons examples">
               {EXAMPLES.map((example) => (
