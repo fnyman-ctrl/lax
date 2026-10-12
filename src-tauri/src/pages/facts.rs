@@ -159,6 +159,10 @@ pub async fn round(app: &AppHandle, schedule: &mut Schedule) -> Result<(), ()> {
     schedule.last = Some(Instant::now());
     let mut changed = false;
     for work in work {
+        // The user is back: the rest waits for the next round.
+        if !may_use_model(When::Later) {
+            break;
+        }
         let started = Instant::now();
         let Some(reply) = app
             .state::<ModelTurn>()
