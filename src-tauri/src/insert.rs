@@ -103,6 +103,16 @@ fn written(before: &str, after: Option<&str>) -> bool {
     after.is_some_and(|after| after != before)
 }
 
+/// Whether `len` UTF-16 units of `value` from `start` are still the paragraph
+/// the instruction was taken from.
+fn still_there(value: &str, start: usize, len: usize, instruction: &str) -> bool {
+    let units: Vec<u16> = value.encode_utf16().collect();
+    let Some(paragraph) = units.get(start..start.saturating_add(len)) else {
+        return false;
+    };
+    crate::summon::instruction_from(&String::from_utf16_lossy(paragraph)) == instruction
+}
+
 /// The length of `text` in UTF-16 units, as Accessibility counts.
 fn utf16_len(text: &str) -> usize {
     text.encode_utf16().count()
@@ -122,7 +132,7 @@ mod macos {
     use objc2_foundation::{NSArray, NSData, NSString};
     use tauri::{AppHandle, Manager};
 
-    use super::{BACK_IN_FRONT, Failed, How, utf16_len, written};
+    use super::{BACK_IN_FRONT, Failed, How, still_there, written};
     use crate::ax::AxScreen;
     use crate::capture::{App, Node};
     use crate::exclusions::{Current, Decision, is_secure_text_field};
@@ -201,8 +211,10 @@ mod macos {
             && let Some(element) = &element
             && let Some(before) = element.value()
         {
+            // Only if the paragraph still holds the instruction: the field
+            // may have changed while the panel was open.
             if let Replace::Paragraph { start, len, .. } = call.replace
-                && start + len <= utf16_len(&before)
+                && still_there(&before, start, len, &call.instruction)
             {
                 selected = element.select(start, len);
             }
@@ -330,6 +342,21 @@ mod tests {
         assert!(written("skriv ett svar", Some("Hej Anna!")));
         assert!(!written("skriv ett svar", Some("skriv ett svar")));
         assert!(!written("skriv ett svar", None));
+    }
+
+    #[test]
+    fn a_paragraph_is_replaced_only_if_it_still_holds_the_instruction() {
+        let note = "Test från Anna\nsvara i min ton";
+        assert!(still_there(note, 15, 15, "svara i min ton"));
+        // Text arrived above it meanwhile.
+        assert!(!still_there(
+            &format!("Ny rad\n{note}"),
+            15,
+            15,
+            "svara i min ton"
+        ));
+        // Past the end.
+        assert!(!still_there(note, 15, 40, "svara i min ton"));
     }
 
     #[test]
