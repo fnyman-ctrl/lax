@@ -131,57 +131,57 @@ export function Viewer() {
   const forgotten = () => setVersion((v) => v + 1);
   const current = SECTIONS.flatMap((s) => s.items).find((item) => item.tab === tab);
 
-  // The salmon swims to the chosen section in the sidebar.
+  // The salmon swims along the river to the chosen section.
   const nav = useRef<HTMLElement>(null);
   const [fishAt, setFishAt] = useState<number | null>(null);
   useLayoutEffect(() => {
     const place = () => {
       const button = nav.current?.querySelector<HTMLElement>('[aria-current="page"]');
       if (button) {
-        setFishAt(button.offsetTop + button.offsetHeight / 2);
+        setFishAt(button.offsetLeft + button.offsetWidth / 2);
       }
     };
     place();
-    // The sidebar's layout changes with the window's width.
+    // The labels move with the window's width.
     window.addEventListener("resize", place);
     return () => window.removeEventListener("resize", place);
   }, [tab]);
 
   return (
     <div className="viewer">
-      <aside className="sidebar">
+      <header className="viewer-header">
         <div className="brand">
           <h1>Lax</h1>
         </div>
-        <nav ref={nav} aria-label="Sections">
-          {fishAt !== null && (
-            <img
-              src={laxIcon}
-              alt=""
-              className="sidebar-salmon"
-              style={{ transform: `translateY(${fishAt - 11}px)` }}
-            />
-          )}
-          {SECTIONS.map((section) => (
-            <div key={section.group} className="nav-group">
-              <p className="nav-label">{section.group}</p>
-              {section.items.map((item) => (
-                <button
-                  key={item.tab}
-                  type="button"
-                  aria-current={tab === item.tab ? "page" : undefined}
-                  onClick={() => setTab(item.tab)}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>
-          ))}
-        </nav>
-        <div className="sidebar-foot">
-          <Status />
-        </div>
-      </aside>
+        <Status />
+      </header>
+      <nav ref={nav} className="river" aria-label="Sections">
+        {SECTIONS.map((section) => (
+          <div key={section.group} className="stretch" aria-label={section.group} role="group">
+            {section.items.map((item) => (
+              <button
+                key={item.tab}
+                type="button"
+                aria-current={tab === item.tab ? "page" : undefined}
+                onClick={() => setTab(item.tab)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        ))}
+        <svg className="river-line" viewBox="0 0 400 8" preserveAspectRatio="none" aria-hidden>
+          <path d="M0 4 Q 25 0 50 4 T 100 4 T 150 4 T 200 4 T 250 4 T 300 4 T 350 4 T 400 4" />
+        </svg>
+        {fishAt !== null && (
+          <img
+            src={laxIcon}
+            alt=""
+            className="river-salmon"
+            style={{ transform: `translateX(${fishAt - 19}px)` }}
+          />
+        )}
+      </nav>
 
       <main className="content">
         {current && (
