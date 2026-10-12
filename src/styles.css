@@ -1081,6 +1081,31 @@ button.link {
   margin: 0 0 2px;
 }
 
+/* On macOS 26 and later a native Liquid Glass view sits behind the card
+   (src-tauri/src/glass.rs): the card itself is only a light tint over it. */
+.panel.glass .panel-card {
+  background: rgb(255 255 255 / 0.16);
+  border-color: rgb(255 255 255 / 0.35);
+  box-shadow: none;
+}
+
+.panel.glass .panel-input,
+.panel.glass .panel-draft:focus {
+  background: rgb(255 255 255 / 0.4);
+}
+
+@media (prefers-color-scheme: dark) {
+  .panel.glass .panel-card {
+    background: rgb(15 42 51 / 0.2);
+    border-color: rgb(255 255 255 / 0.12);
+  }
+
+  .panel.glass .panel-input,
+  .panel.glass .panel-draft:focus {
+    background: rgb(0 0 0 / 0.25);
+  }
+}
+
 .panel-card .error {
   margin: 4px 0 0;
 }

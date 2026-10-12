@@ -475,14 +475,27 @@ pub fn stop(app: &AppHandle) {
     let _ = app;
 }
 
-/// A rectangle on screen, in points, from the top left of the main display.
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+/// A rectangle on screen, in points, from the top left of the main display
+/// (or of a window, where said).
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Deserialize)]
 #[repr(C)] // Read from an AXValue as a CGRect.
 pub struct Rect {
     pub x: f64,
     pub y: f64,
     pub width: f64,
     pub height: f64,
+}
+
+impl Rect {
+    /// Finite, not negative in size, and not absurdly large: what a card in
+    /// the panel can be.
+    pub fn is_sane(&self) -> bool {
+        [self.x, self.y, self.width, self.height]
+            .iter()
+            .all(|v| v.is_finite() && v.abs() < 10_000.0)
+            && self.width >= 0.0
+            && self.height >= 0.0
+    }
 }
 
 /// The panel window: room for the salmon to swim in from the left, and the
@@ -591,6 +604,8 @@ fn show(app: &AppHandle, call: Call, caret: Option<Rect>, field: Option<Rect>) {
         width: 4.0 * NOSE_X + CARD_MAX,
         height: 3.0 * PANEL_HEIGHT,
     });
+    // The glass from last time stays hidden until the card opens again.
+    crate::glass::set(&panel, None);
     let (x, y, width) = place(caret, field.map(|field| field.width), screen);
     let _ = panel.set_size(tauri::LogicalSize::new(width, PANEL_HEIGHT));
     let _ = panel.set_position(tauri::LogicalPosition::new(x, y));
@@ -1152,6 +1167,20 @@ mod tests {
         // Secrets are redacted.
         let key = format!("sk-{}", "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6");
         assert!(!instruction_from(&format!("use {key}")).contains(&key));
+    }
+
+    #[test]
+    fn only_a_sane_card_gets_glass() {
+        let card = |x, y, width, height| Rect {
+            x,
+            y,
+            width,
+            height,
+        };
+        assert!(card(160.0, 26.0, 260.0, 80.0).is_sane());
+        assert!(!card(f64::NAN, 26.0, 260.0, 80.0).is_sane());
+        assert!(!card(160.0, 26.0, -1.0, 80.0).is_sane());
+        assert!(!card(160.0, 26.0, 260.0, 1.0e9).is_sane());
     }
 
     #[test]

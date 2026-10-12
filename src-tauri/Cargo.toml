@@ -52,11 +52,11 @@ tokio = { version = "1", features = ["macros", "rt"] }
 # are turned on.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "block2", "NSEvent", "NSPasteboard", "NSPasteboardItem", "NSRunningApplication", "NSWorkspace"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "block2", "NSEvent", "NSGlassEffectView", "NSGraphics", "NSPasteboard", "NSPasteboardItem", "NSResponder", "NSRunningApplication", "NSView", "NSWindow", "NSWorkspace"] }
 # Blocks for AppKit's event monitor (the writing assistant, ADR 0009).
 block2 = "0.6"
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFArray", "CFDictionary", "CFNumber", "CFString", "CFURL"] }
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSString", "NSPathUtilities"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSGeometry", "NSString", "NSPathUtilities"] }
 
 [lints.rust]
 unsafe_code = "warn"

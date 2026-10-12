@@ -9,6 +9,7 @@ mod exclusions;
 mod expiry;
 mod filevault;
 mod forget;
+mod glass;
 mod insert;
 mod journal;
 #[allow(dead_code)] // Some levels and fields have no user yet.

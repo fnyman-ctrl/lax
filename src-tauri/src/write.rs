@@ -15,7 +15,7 @@ use crate::models::structured::{self, Captured, StructuredError, Validate, is_in
 use crate::models::{Endpoint, ModelClient, ModelTurn};
 use crate::pause::Pause;
 use crate::store::{ModelTask, Store};
-use crate::summon::{MAX_INSTRUCTION_CHARS, PANEL, Summoned};
+use crate::summon::{MAX_INSTRUCTION_CHARS, PANEL, Rect, Summoned};
 
 const TASK: &str = "You write text for the user, to go into the text field they are writing in, \
 in their own voice. The user's request says what to write. The blocks are context: what the \
@@ -221,18 +221,21 @@ async fn draft(
 }
 
 /// Makes the panel `height` points tall for its content, keeping it on
-/// screen: if it would reach below the screen, it moves up.
+/// screen: if it would reach below the screen, it moves up. Puts the glass
+/// behind `card` (in points from the window's top left), or hides it for
+/// `None`. Returns whether this Mac has the glass.
 #[tauri::command]
-pub fn fit_panel(app: AppHandle, height: f64) {
+pub fn fit_panel(app: AppHandle, height: f64, card: Option<Rect>) -> bool {
     let Some(panel) = app.get_webview_window(PANEL) else {
-        return;
+        return false;
     };
+    let glass = crate::glass::set(&panel, card.filter(Rect::is_sane));
     let height = height.clamp(60.0, 480.0);
     let Ok(scale) = panel.scale_factor() else {
-        return;
+        return glass;
     };
     let (Ok(size), Ok(position)) = (panel.inner_size(), panel.outer_position()) else {
-        return;
+        return glass;
     };
     let width = size.to_logical::<f64>(scale).width;
     let mut position = position.to_logical::<f64>(scale);
@@ -244,6 +247,7 @@ pub fn fit_panel(app: AppHandle, height: f64) {
     }
     let _ = panel.set_size(tauri::LogicalSize::new(width, height));
     let _ = panel.set_position(position);
+    glass
 }
 
 #[cfg(test)]

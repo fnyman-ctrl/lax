@@ -7,6 +7,9 @@ import salmon from "../src-tauri/icons/salmon.svg";
 type PanelCall = { id: number; app: string; instruction: string };
 type Draft = { draft: string; pages: string[]; readWindow: boolean };
 
+/** When the card has finished opening: `.panel-card`'s unfold in styles.css. */
+const CARD_OPENS_MS = 600;
+
 type Stage =
   | { kind: "ask" }
   | { kind: "writing" }
@@ -66,11 +69,32 @@ export function Panel() {
     };
   }, [open]);
 
-  // The window is as tall as the card needs.
-  useLayoutEffect(() => {
-    const height = (card.current?.offsetTop ?? 0) + (card.current?.offsetHeight ?? 0) + 14;
-    invoke("fit_panel", { height }).catch(() => {});
-  }, [stage, call, instruction, visit]);
+  // Whether this Mac draws Liquid Glass behind the card (macOS 26 and later).
+  const [glass, setGlass] = useState(false);
+  // The glass shows once the card has opened, not while the salmon swims in.
+  const opened = useRef(false);
+
+  // The window is as tall as the card needs, with the glass behind the card.
+  const fit = useCallback(() => {
+    const c = card.current;
+    const height = (c?.offsetTop ?? 0) + (c?.offsetHeight ?? 0) + 14;
+    const rect =
+      opened.current && c
+        ? { x: c.offsetLeft, y: c.offsetTop, width: c.offsetWidth, height: c.offsetHeight }
+        : null;
+    invoke<boolean>("fit_panel", { height, card: rect }).then(setGlass, () => {});
+  }, []);
+
+  useLayoutEffect(fit, [fit, stage, call, instruction, visit]);
+
+  useEffect(() => {
+    opened.current = false;
+    const timer = window.setTimeout(() => {
+      opened.current = true;
+      fit();
+    }, CARD_OPENS_MS);
+    return () => window.clearTimeout(timer);
+  }, [fit, visit]);
 
   // The text cursor at the end, ready to go on typing or press Enter.
   useEffect(() => {
@@ -102,7 +126,7 @@ export function Panel() {
   };
 
   return (
-    <main className="panel" key={visit}>
+    <main className={glass ? "panel glass" : "panel"} key={visit}>
       <div className={stage.kind === "writing" ? "swim working" : "swim"}>
         <img className="salmon" src={salmon} alt="" />
         <span className="bubble one" />
