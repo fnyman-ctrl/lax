@@ -135,10 +135,16 @@ export function Viewer() {
   const nav = useRef<HTMLElement>(null);
   const [fishAt, setFishAt] = useState<number | null>(null);
   useLayoutEffect(() => {
-    const button = nav.current?.querySelector<HTMLElement>('[aria-current="page"]');
-    if (button) {
-      setFishAt(button.offsetTop + button.offsetHeight / 2);
-    }
+    const place = () => {
+      const button = nav.current?.querySelector<HTMLElement>('[aria-current="page"]');
+      if (button) {
+        setFishAt(button.offsetTop + button.offsetHeight / 2);
+      }
+    };
+    place();
+    // The sidebar's layout changes with the window's width.
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
   }, [tab]);
 
   return (
