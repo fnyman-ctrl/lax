@@ -41,6 +41,10 @@ its edges stay crisp. Its palette: outline `#1F2C3C`, back `#8FB3BF`, `#698392`
 and `#466A7A`, belly `#F5B3B5` and `#F5DBDC`, cheek `#F38D9B`, eye white
 `#FEFEFE`.
 
+While the model writes a draft, the pixel salmon shimmers through its colours and
+bobs gently, so the user sees that it's working. With "Reduce motion" on, it
+stays still.
+
 ## Colours
 
 | Name | Hex | Use |

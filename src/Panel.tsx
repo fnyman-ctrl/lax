@@ -103,7 +103,7 @@ export function Panel() {
 
   return (
     <main className="panel" key={visit}>
-      <div className="swim">
+      <div className={stage.kind === "writing" ? "swim working" : "swim"}>
         <img className="salmon" src={salmon} alt="" />
         <span className="bubble one" />
         <span className="bubble two" />

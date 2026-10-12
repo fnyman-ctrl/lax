@@ -998,6 +998,43 @@ mark {
   background: var(--bg);
 }
 
+/* While the model writes, the salmon shimmers through its colours and bobs,
+   so the user sees it working (a designer's idea, docs/BRAND.md). */
+.panel .swim.working .salmon {
+  animation:
+    shimmer 1.6s linear infinite,
+    bob 0.8s ease-in-out infinite alternate;
+}
+
+.panel .swim.working .bubble {
+  animation: rise 900ms ease-out infinite;
+}
+
+.panel .swim.working .bubble.two {
+  animation-delay: 450ms;
+}
+
+@keyframes shimmer {
+  0% {
+    filter: drop-shadow(0 1px 2px rgb(15 42 51 / 0.25)) hue-rotate(0deg) saturate(1);
+  }
+  50% {
+    filter: drop-shadow(0 1px 2px rgb(15 42 51 / 0.25)) hue-rotate(180deg) saturate(1.6);
+  }
+  100% {
+    filter: drop-shadow(0 1px 2px rgb(15 42 51 / 0.25)) hue-rotate(360deg) saturate(1);
+  }
+}
+
+@keyframes bob {
+  from {
+    transform: translateY(-1px) rotate(-3deg);
+  }
+  to {
+    transform: translateY(1px) rotate(3deg);
+  }
+}
+
 @keyframes swim-in {
   0% {
     transform: translate(-200px, 4px);
