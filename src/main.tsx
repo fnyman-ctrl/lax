@@ -7,6 +7,10 @@ import "./styles.css";
 
 // The writing assistant's panel is a window of its own (src-tauri/src/summon.rs).
 const panel = getCurrentWindow().label === "panel";
+if (panel) {
+  // The panel's window is transparent, so only the salmon and the card show.
+  document.documentElement.classList.add("panel-window");
+}
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>{panel ? <Panel /> : <App />}</React.StrictMode>,

@@ -162,6 +162,68 @@ pub enum Outcome {
     Captured(Snapshot),
 }
 
+/// Why [`admit`] refused to let anything be read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refused {
+    Paused,
+    NoApp,
+    NoWindow,
+    Skipped(SkipReason),
+}
+
+impl From<Refused> for Outcome {
+    fn from(refused: Refused) -> Self {
+        match refused {
+            Refused::Paused => Outcome::Paused,
+            Refused::NoApp => Outcome::NoApp,
+            Refused::NoWindow => Outcome::NoWindow,
+            Refused::Skipped(reason) => Outcome::Skipped(reason),
+        }
+    }
+}
+
+/// The frontmost app, its focused window and the window's title, if Lax may
+/// read them: the app, the title and, in browsers that show it, whether the
+/// window is private are checked, in that order. These are the checks before
+/// any content is read; the writing assistant makes the same ones before it
+/// looks at a window (ADR 0009). Sites are checked later, while reading.
+pub fn admit<S: Screen>(
+    screen: &mut S,
+    exclusions: &Exclusions,
+    limits: &Limits,
+    paused: &impl Fn() -> bool,
+) -> Result<(App, S::Node, String), Refused> {
+    if paused() {
+        return Err(Refused::Paused);
+    }
+    let app = screen.frontmost_app().ok_or(Refused::NoApp)?;
+    if let Decision::Skip(reason) = exclusions.check_app(&app.bundle_id) {
+        return Err(Refused::Skipped(reason));
+    }
+
+    if paused() {
+        return Err(Refused::Paused);
+    }
+    let window = screen.focused_window(&app).ok_or(Refused::NoWindow)?;
+    let raw_title = window.title().unwrap_or_default();
+    if let Decision::Skip(reason) = exclusions.check_window(&app.bundle_id, &raw_title) {
+        return Err(Refused::Skipped(reason));
+    }
+    if let Some(identifier) = address_field_identifier(&app.bundle_id) {
+        if paused() {
+            return Err(Refused::Paused);
+        }
+        let description =
+            find_by_identifier(&window, identifier, limits).and_then(|field| field.description());
+        if let Decision::Skip(reason) =
+            exclusions.check_address_field(&app.bundle_id, description.as_deref())
+        {
+            return Err(Refused::Skipped(reason));
+        }
+    }
+    Ok((app, window, raw_title))
+}
+
 pub struct Capturer {
     exclusions: Exclusions,
     limits: Limits,
@@ -183,39 +245,11 @@ impl Capturer {
     /// Reads the active window once. `paused` must return the current pause
     /// state; it is asked before every read.
     pub fn tick<S: Screen>(&mut self, screen: &mut S, paused: impl Fn() -> bool) -> Outcome {
-        if paused() {
-            return Outcome::Paused;
-        }
-        let Some(app) = screen.frontmost_app() else {
-            return Outcome::NoApp;
+        let (app, window, raw_title) = match admit(screen, &self.exclusions, &self.limits, &paused)
+        {
+            Ok(admitted) => admitted,
+            Err(refused) => return refused.into(),
         };
-        if let Decision::Skip(reason) = self.exclusions.check_app(&app.bundle_id) {
-            return Outcome::Skipped(reason);
-        }
-
-        if paused() {
-            return Outcome::Paused;
-        }
-        let Some(window) = screen.focused_window(&app) else {
-            return Outcome::NoWindow;
-        };
-        let raw_title = window.title().unwrap_or_default();
-        if let Decision::Skip(reason) = self.exclusions.check_window(&app.bundle_id, &raw_title) {
-            return Outcome::Skipped(reason);
-        }
-        if let Some(identifier) = address_field_identifier(&app.bundle_id) {
-            if paused() {
-                return Outcome::Paused;
-            }
-            let description = find_by_identifier(&window, identifier, &self.limits)
-                .and_then(|field| field.description());
-            if let Decision::Skip(reason) = self
-                .exclusions
-                .check_address_field(&app.bundle_id, description.as_deref())
-            {
-                return Outcome::Skipped(reason);
-            }
-        }
 
         let browser = is_browser(&app.bundle_id);
         let content = match walk(window, browser, &self.exclusions, &self.limits, &paused) {

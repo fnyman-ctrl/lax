@@ -17,7 +17,9 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+# macos-private-api: a transparent window for the writing assistant's panel,
+# so the salmon can swim in (ADR 0009). Lax isn't sold through the App Store.
+tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
 # Local time for pause deadlines ("until tomorrow") and the menu label.
 # Already in the dependency tree through Tauri.
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

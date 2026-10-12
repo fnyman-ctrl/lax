@@ -66,6 +66,7 @@ Every icon is drawn from an SVG source in the repository:
 | Source | Becomes |
 |---|---|
 | `src-tauri/icons/app-icon.svg` | The app icon in every size (`icon.icns`, `icon.ico`, PNGs) |
+| `src-tauri/icons/salmon.svg` | The salmon alone, for the writing assistant's panel. The fish from `app-icon.svg` without background or bubbles; change both together |
 | `src-tauri/icons/tray/active.svg` | The menu bar icon while capturing: the salmon silhouette |
 | `src-tauri/icons/tray/paused.svg` | The menu bar icon while paused: a faded salmon with pause bars |
 

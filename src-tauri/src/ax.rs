@@ -23,11 +23,19 @@ use objc2_core_foundation::{
 };
 
 use crate::capture::{App, Node, Screen, truncate_chars};
+use crate::summon::Rect;
 
 type AXError = i32;
 const AX_SUCCESS: AXError = 0;
+/// `kAXValueCGPointType`, `kAXValueCGSizeType`, `kAXValueCGRectType` and
 /// `kAXValueCFRangeType`.
+const AX_VALUE_CG_POINT: u32 = 1;
+const AX_VALUE_CG_SIZE: u32 = 2;
+const AX_VALUE_CG_RECT: u32 = 3;
 const AX_VALUE_CF_RANGE: u32 = 4;
+
+/// The height of a text field's first line, roughly, in points.
+const FIRST_LINE: f64 = 24.0;
 
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
@@ -137,6 +145,11 @@ struct Names {
     manual_accessibility: CFRetained<CFString>,
     visible_character_range: CFRetained<CFString>,
     string_for_range: CFRetained<CFString>,
+    focused_element: CFRetained<CFString>,
+    selected_text_range: CFRetained<CFString>,
+    bounds_for_range: CFRetained<CFString>,
+    position: CFRetained<CFString>,
+    size: CFRetained<CFString>,
     /// AXRole and AXSubrole, for reading both in one request.
     role_and_subrole: CFRetained<CFArray<CFString>>,
 }
@@ -157,9 +170,28 @@ impl Names {
             manual_accessibility: name("AXManualAccessibility"),
             visible_character_range: name("AXVisibleCharacterRange"),
             string_for_range: name("AXStringForRange"),
+            focused_element: name("AXFocusedUIElement"),
+            selected_text_range: name("AXSelectedTextRange"),
+            bounds_for_range: name("AXBoundsForRange"),
+            position: name("AXPosition"),
+            size: name("AXSize"),
             role_and_subrole: CFArray::from_retained_objects(&[name("AXRole"), name("AXSubrole")]),
         }
     }
+}
+
+/// The value inside an AXValue of `value_type`. `T` must be the matching
+/// plain C type: `Rect` for a rectangle, `[f64; 2]` for a point or a size.
+fn ax_value<T: Default>(value: &CFType, value_type: u32) -> Option<T> {
+    if CFGetTypeID(Some(value)) != AXValueGetTypeID() {
+        return None;
+    }
+    let mut out = T::default();
+    // SAFETY: `value` is an AXValue; the callers pass the C type matching
+    // `value_type`, so the framework writes a value of the right size, and
+    // only if the value is of that type.
+    let ok = unsafe { AXValueGetValue(value, value_type, (&raw mut out).cast::<c_void>()) };
+    (ok != 0).then_some(out)
 }
 
 /// Takes ownership of a reference returned by a "Create" or "Copy" function.
@@ -204,6 +236,19 @@ impl Default for AxScreen {
 /// Stop remembering prepared processes beyond this many; preparing a process
 /// twice is harmless.
 const MAX_PREPARED: usize = 512;
+
+impl AxScreen {
+    /// The element of `app` that has keyboard focus, such as the text field
+    /// being written in. Only called once the app and window were checked.
+    pub fn focused_element(&self, app: &App) -> Option<Element> {
+        // SAFETY: any pid is accepted; returns a new element or null.
+        let application = Element {
+            element: unsafe { owned(AXUIElementCreateApplication(app.pid)) }?,
+            names: self.names.clone(),
+        };
+        application.element(&self.names.focused_element)
+    }
+}
 
 impl Screen for AxScreen {
     type Node = Element;
@@ -290,6 +335,57 @@ impl Element {
         // SAFETY: valid element, attribute and value. A failure (the app
         // doesn't support it) is ignored.
         unsafe { AXUIElementSetAttributeValue(&self.element, attribute, yes.as_ref()) };
+    }
+
+    /// Where the text cursor is, or the element's first line where the app
+    /// can't say, so the salmon doesn't end up below a whole document.
+    /// Reads positions only, never text.
+    pub fn caret(&self) -> Option<Rect> {
+        self.caret_bounds().or_else(|| {
+            self.frame().map(|frame| Rect {
+                height: frame.height.min(FIRST_LINE),
+                ..frame
+            })
+        })
+    }
+
+    fn caret_bounds(&self) -> Option<Rect> {
+        let range = self.copy(&self.names.selected_text_range)?;
+        if CFGetTypeID(Some(&range)) != AXValueGetTypeID() {
+            return None;
+        }
+        let mut value: *const CFType = ptr::null();
+        // SAFETY: valid element, attribute, parameter (the AXValue range the
+        // app gave) and out pointer.
+        let error = unsafe {
+            AXUIElementCopyParameterizedAttributeValue(
+                &self.element,
+                &self.names.bounds_for_range,
+                &range,
+                &mut value,
+            )
+        };
+        if error != AX_SUCCESS {
+            return None;
+        }
+        // SAFETY: on success the value is a new reference we own.
+        let bounds = unsafe { owned(value) }?;
+        let rect: Rect = ax_value(&bounds, AX_VALUE_CG_RECT)?;
+        // Some apps answer an empty selection with an empty rectangle at 0,0.
+        (rect.height > 0.0 && (rect.x != 0.0 || rect.y != 0.0)).then_some(rect)
+    }
+
+    fn frame(&self) -> Option<Rect> {
+        let position = self.copy(&self.names.position)?;
+        let size = self.copy(&self.names.size)?;
+        let position: [f64; 2] = ax_value(&position, AX_VALUE_CG_POINT)?;
+        let size: [f64; 2] = ax_value(&size, AX_VALUE_CG_SIZE)?;
+        Some(Rect {
+            x: position[0],
+            y: position[1],
+            width: size[0],
+            height: size[1],
+        })
     }
 
     /// The text currently visible in a text area, which can be far shorter

@@ -19,7 +19,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
 use crate::exclusions::{Current, Decision, Exclusions};
-use crate::logging;
+use crate::logging::{self, Field};
 use crate::pause::Pause;
 use crate::store::Store;
 
@@ -239,14 +239,64 @@ pub fn stop(app: &AppHandle) {
     let _ = app;
 }
 
-/// Shows the panel by the mouse pointer, if Lax may come. Called on the main
-/// thread.
-fn come(app: &AppHandle, pid: i32, app_decision: Decision) {
+/// A rectangle on screen, in points, from the top left of the main display.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[repr(C)] // Read from an AXValue as a CGRect.
+pub struct Rect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// The panel window: room for the salmon to swim in from the left, and the
+/// card. Matches `.panel` in `src/styles.css`.
+const PANEL_WIDTH: f64 = 500.0;
+const PANEL_HEIGHT: f64 = 190.0;
+/// How far right of the window's left edge the salmon stops, which is put
+/// at the text cursor.
+const SALMON_STOPS: f64 = 150.0;
+
+/// Where the panel's top left goes for the text cursor at `caret`: just
+/// below the line, the salmon stopping at the cursor, all of it on `screen`.
+/// Above the line if there's no room below.
+fn place(caret: Rect, screen: Rect) -> (f64, f64) {
+    let mut y = caret.y + caret.height + 2.0;
+    if y + PANEL_HEIGHT > screen.y + screen.height {
+        y = caret.y - PANEL_HEIGHT - 2.0;
+    }
+    let x = caret.x - SALMON_STOPS;
+    let right = (screen.x + screen.width - PANEL_WIDTH).max(screen.x);
+    let bottom = (screen.y + screen.height - PANEL_HEIGHT).max(screen.y);
+    (x.clamp(screen.x, right), y.clamp(screen.y, bottom))
+}
+
+/// Comes to the text field, if Lax may. Called on the main thread when the
+/// user double-taps ⌥ Option; the window is looked at on a thread of its
+/// own, since another app can take a while to answer.
+fn come(app: &AppHandle, app_decision: Decision) {
     let paused = app.state::<Pause>().is_paused();
     if !may_come(enabled(app), paused, app_decision) {
         return;
     }
-    logging::info("write.summoned", &[]);
+    let app = app.clone();
+    std::thread::spawn(move || {
+        #[cfg(target_os = "macos")]
+        if let Some((pid, caret)) = macos::locate(&app) {
+            show(&app, pid, caret);
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = app;
+    });
+}
+
+/// Shows the panel at `caret`, or by the mouse pointer if the app didn't say
+/// where its text cursor is.
+fn show(app: &AppHandle, pid: i32, caret: Option<Rect>) {
+    logging::info(
+        "write.summoned",
+        &[Field::Flag("at_cursor", caret.is_some())],
+    );
     *app.state::<Summoned>()
         .0
         .lock()
@@ -260,8 +310,10 @@ fn come(app: &AppHandle, pid: i32, app_decision: Decision) {
                 tauri::WebviewUrl::App("index.html".into()),
             )
             .title("Lax")
-            .inner_size(380.0, 140.0)
+            .inner_size(PANEL_WIDTH, PANEL_HEIGHT)
             .decorations(false)
+            .transparent(true)
+            .shadow(false)
             .resizable(false)
             .always_on_top(true)
             .skip_taskbar(true)
@@ -273,14 +325,58 @@ fn come(app: &AppHandle, pid: i32, app_decision: Decision) {
             }
         }
     };
-    if let Ok(cursor) = app.cursor_position() {
-        let _ = panel.set_position(tauri::PhysicalPosition::new(
-            cursor.x + 12.0,
-            cursor.y + 18.0,
-        ));
-    }
+    let Some(caret) = caret.or_else(|| pointer(app)) else {
+        return;
+    };
+    let screen = screen_of(app, caret).unwrap_or(Rect {
+        x: caret.x - PANEL_WIDTH,
+        y: caret.y - PANEL_HEIGHT,
+        width: PANEL_WIDTH * 3.0,
+        height: PANEL_HEIGHT * 3.0,
+    });
+    let (x, y) = place(caret, screen);
+    let _ = panel.set_position(tauri::LogicalPosition::new(x, y));
     let _ = panel.show();
     let _ = panel.set_focus();
+}
+
+/// The mouse pointer as a one-line "cursor", in points.
+fn pointer(app: &AppHandle) -> Option<Rect> {
+    let cursor = app.cursor_position().ok()?;
+    let scale = app
+        .monitor_from_point(cursor.x, cursor.y)
+        .ok()
+        .flatten()
+        .map_or(1.0, |monitor| monitor.scale_factor());
+    Some(Rect {
+        x: cursor.x / scale,
+        y: cursor.y / scale,
+        width: 0.0,
+        height: 16.0,
+    })
+}
+
+/// The display `caret` is on, in points.
+fn screen_of(app: &AppHandle, caret: Rect) -> Option<Rect> {
+    app.available_monitors()
+        .ok()?
+        .into_iter()
+        .find_map(|monitor| {
+            let scale = monitor.scale_factor();
+            let position = monitor.position().to_logical::<f64>(scale);
+            let size = monitor.size().to_logical::<f64>(scale);
+            let screen = Rect {
+                x: position.x,
+                y: position.y,
+                width: size.width,
+                height: size.height,
+            };
+            let inside = caret.x >= screen.x
+                && caret.x < screen.x + screen.width
+                && caret.y >= screen.y
+                && caret.y < screen.y + screen.height;
+            inside.then_some(screen)
+        })
 }
 
 /// What the event handler keeps between events, on the main thread.
@@ -323,8 +419,11 @@ mod macos {
     };
     use tauri::{AppHandle, Manager};
 
-    use super::{Input, Listener, come, held};
-    use crate::exclusions::Current;
+    use super::{Input, Listener, Rect, come, held};
+    use crate::ax::AxScreen;
+    use crate::capture::{Limits, Node, admit};
+    use crate::exclusions::{Current, is_secure_text_field};
+    use crate::pause::Pause;
 
     thread_local! {
         /// The installed monitor. AppKit objects stay on the main thread.
@@ -347,7 +446,7 @@ mod macos {
         let block = RcBlock::new(move |event: NonNull<NSEvent>| {
             // SAFETY: AppKit passes a valid event for the duration of the call.
             let input = reduce(unsafe { event.as_ref() });
-            let Some((pid, bundle_id)) = frontmost() else {
+            let Some(bundle_id) = frontmost() else {
                 listener.borrow_mut().tap.reset();
                 return;
             };
@@ -355,7 +454,7 @@ mod macos {
                 .borrow_mut()
                 .input(&app.state::<Current>(), &bundle_id, input);
             if let Some(decision) = called {
-                come(&app, pid, decision);
+                come(&app, decision);
             }
         });
         let mask = NSEventMask::KeyDown
@@ -376,13 +475,36 @@ mod macos {
         });
     }
 
-    /// The app in front: its process id and bundle identifier.
-    fn frontmost() -> Option<(i32, String)> {
+    /// The bundle identifier of the app in front.
+    fn frontmost() -> Option<String> {
         autoreleasepool(|_| {
             let app = NSWorkspace::sharedWorkspace().frontmostApplication()?;
-            let bundle_id = app.bundleIdentifier()?.to_string();
-            Some((app.processIdentifier(), bundle_id))
+            Some(app.bundleIdentifier()?.to_string())
         })
+    }
+
+    /// Where the text cursor is in the app in front, after the same checks
+    /// capture makes before reading a window: the app, the window title and
+    /// whether a browser window is private. `None` if Lax may not come: one
+    /// of those says no, capture is paused, or the focus is in a password
+    /// field. Only positions are read, never text.
+    pub fn locate(app: &AppHandle) -> Option<(i32, Option<Rect>)> {
+        // Before the user's exclusions are loaded, Lax comes nowhere.
+        let (_, exclusions) = app.state::<Current>().newer_than(0)?;
+        let pause = app.state::<Pause>();
+        let mut screen = AxScreen::default();
+        let (front, _window, _title) = admit(&mut screen, &exclusions, &Limits::default(), &|| {
+            pause.is_paused()
+        })
+        .ok()?;
+        let Some(element) = screen.focused_element(&front) else {
+            return Some((front.pid, None));
+        };
+        let (role, subrole) = element.role_and_subrole();
+        if is_secure_text_field(role.as_deref().unwrap_or_default(), subrole.as_deref()) {
+            return None;
+        }
+        Some((front.pid, element.caret()))
     }
 
     /// Brings the app with this process id back to the front.
@@ -539,6 +661,38 @@ mod tests {
         assert!(may_come(true, false, Decision::Capture));
         assert!(!may_come(false, false, Decision::Capture));
         assert!(!may_come(true, true, Decision::Capture));
+    }
+
+    #[test]
+    fn the_panel_goes_by_the_cursor_and_stays_on_screen() {
+        let screen = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1440.0,
+            height: 900.0,
+        };
+        let line = |x, y| Rect {
+            x,
+            y,
+            width: 1.0,
+            height: 18.0,
+        };
+        // Below the line, the salmon stopping at the cursor.
+        assert_eq!(place(line(600.0, 300.0), screen), (450.0, 320.0));
+        // Near the left edge, the window stays on screen.
+        assert_eq!(place(line(20.0, 300.0), screen), (0.0, 320.0));
+        // Near the right edge too.
+        assert_eq!(place(line(1430.0, 300.0), screen), (940.0, 320.0));
+        // No room below: above the line.
+        assert_eq!(place(line(600.0, 850.0), screen), (450.0, 658.0));
+        // A second display to the left of the main one.
+        let left = Rect {
+            x: -1920.0,
+            y: 0.0,
+            width: 1920.0,
+            height: 1080.0,
+        };
+        assert_eq!(place(line(-1000.0, 100.0), left), (-1150.0, 120.0));
     }
 
     #[test]

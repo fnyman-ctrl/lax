@@ -93,8 +93,11 @@ previous one, so they can be built, tested and improved independently.
 - With the writing assistant on, a double tap of ⌥ Option in a text field
   calls Lax there ([ADR 0009](adr/0009-writing-assistant.md),
   `src-tauri/src/summon.rs`). To tell the tap from ⌥2, Lax notices that keys
-  go down, never which, and only while the user has it on. The first version
-  shows a panel by the pointer; drafting and inserting come next.
+  go down, never which, and only while the user has it on. Before it looks at
+  the window, Lax makes the same checks as capture (app, window title, private
+  browser window; `capture::admit`), and it never comes to a password field.
+  The salmon swims in to the text cursor, read as a position only; drafting
+  and inserting come next.
 
 ## Models
 
