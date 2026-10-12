@@ -92,6 +92,7 @@ pub fn run() {
             memory::allow_learning,
             summon::writing_status,
             summon::set_writing_enabled,
+            summon::set_writing_key,
             summon::close_panel,
             write::panel_call,
             write::write_draft,

@@ -90,8 +90,8 @@ previous one, so they can be built, tested and improved independently.
 
 ## Write
 
-- With the writing assistant on, a double tap of ⌥ Option in a text field
-  calls Lax there ([ADR 0009](adr/0009-writing-assistant.md),
+- With the writing assistant on, a double tap of ⌥ Option (or the modifier
+  the user picks: right ⌥ only, ⌃, ⌘ or ⇧) in a text field calls Lax there ([ADR 0009](adr/0009-writing-assistant.md),
   `src-tauri/src/summon.rs`). To tell the tap from ⌥2, Lax notices that keys
   go down, never which, and only while the user has it on. Before it looks at
   the window, Lax makes the same checks as capture (app, window title, private

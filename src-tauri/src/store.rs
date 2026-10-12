@@ -66,6 +66,7 @@ const CAPTURE_INTERVAL_KEY: &str = "capture_interval_seconds";
 const OUTBOX_RETENTION_KEY: &str = "outbox_retention_days";
 const JOURNAL_KEY: &str = "journal_enabled";
 const WRITING_KEY: &str = "writing_enabled";
+const WRITING_CALL_KEY: &str = "writing_key";
 /// How long the outbox log is kept unless the user chooses otherwise.
 pub const DEFAULT_OUTBOX_RETENTION_DAYS: u32 = 90;
 const PAUSE_KEY: &str = "paused_until";
@@ -392,6 +393,16 @@ impl Store {
 
     pub fn set_writing_enabled(&self, enabled: bool) -> Result<()> {
         self.set_setting(WRITING_KEY, if enabled { "on" } else { "off" })
+    }
+
+    /// The name of the key the user double-taps to call the writing
+    /// assistant, if they picked one.
+    pub fn writing_key(&self) -> Result<Option<String>> {
+        self.setting(WRITING_CALL_KEY)
+    }
+
+    pub fn set_writing_key(&self, key: &str) -> Result<()> {
+        self.set_setting(WRITING_CALL_KEY, key)
     }
 
     /// How many captures wait to be summarized.

@@ -136,3 +136,9 @@ The proposal asked four questions, answered on 2026-10-12 (#69):
 3. It works in every app except the exclusions.
 4. Nothing about a draft is stored. Learning the user's tone from sent mail can
    come later, through capture.
+
+Later (2026-10-12) the maintainer asked to be able to pick the key, so Lax
+doesn't clash with other apps such as dictation apps: ⌥ Option (the default),
+only the right ⌥ Option, ⌃ Control, ⌘ Command or ⇧ Shift, double-tapped the same
+way. Telling the right ⌥ from the left uses the modifier flags' device bits,
+still never which other key was pressed.

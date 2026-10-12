@@ -45,6 +45,7 @@ fn main() {
             "allow_learning",
             "writing_status",
             "set_writing_enabled",
+            "set_writing_key",
             "close_panel",
             "panel_call",
             "write_draft",

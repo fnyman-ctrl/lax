@@ -39,25 +39,90 @@ pub enum Held {
     /// No modifier key (Caps Lock doesn't count).
     #[default]
     Nothing,
-    /// ⌥ Option and nothing else.
-    OptionOnly,
-    /// Anything else, such as ⌘ or ⇧, alone or with ⌥.
+    /// The key that calls Lax and nothing else.
+    KeyOnly,
+    /// Anything else, such as ⌘ or ⇧, alone or with that key.
     Other,
 }
 
-/// macOS modifier flags (`NSEventModifierFlags`).
+/// The modifier key the user double-taps to call Lax: ⌥ Option unless
+/// they pick another, for instance because another app (such as a
+/// dictation app) already uses it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CallKey {
+    #[default]
+    Option,
+    /// Only the right ⌥ Option, so the left one stays free.
+    RightOption,
+    Control,
+    Command,
+    Shift,
+}
+
+impl CallKey {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CallKey::Option => "option",
+            CallKey::RightOption => "rightOption",
+            CallKey::Control => "control",
+            CallKey::Command => "command",
+            CallKey::Shift => "shift",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<CallKey> {
+        [
+            CallKey::Option,
+            CallKey::RightOption,
+            CallKey::Control,
+            CallKey::Command,
+            CallKey::Shift,
+        ]
+        .into_iter()
+        .find(|key| key.as_str() == text)
+    }
+
+    fn flag(self) -> usize {
+        match self {
+            CallKey::Option | CallKey::RightOption => OPTION,
+            CallKey::Control => CONTROL,
+            CallKey::Command => COMMAND,
+            CallKey::Shift => SHIFT,
+        }
+    }
+
+    /// Whether the right one of the pair is held, where that matters.
+    fn side(self, flags: usize) -> bool {
+        match self {
+            CallKey::RightOption => flags & RIGHT_OPTION != 0 && flags & LEFT_OPTION == 0,
+            _ => true,
+        }
+    }
+}
+
+/// macOS modifier flags (`NSEventModifierFlags`), and the device-dependent
+/// bits that tell the left ⌥ from the right one (`NX_DEVICELALTKEYMASK`,
+/// `NX_DEVICERALTKEYMASK`). They say which modifier keys are held, never
+/// which other key.
 const CAPS_LOCK: usize = 1 << 16;
+const SHIFT: usize = 1 << 17;
+const CONTROL: usize = 1 << 18;
 const OPTION: usize = 1 << 19;
+const COMMAND: usize = 1 << 20;
 const NUMERIC_PAD: usize = 1 << 21;
 const DEVICE_INDEPENDENT: usize = 0xffff_0000;
+const LEFT_OPTION: usize = 0x20;
+const RIGHT_OPTION: usize = 0x40;
 
-/// Which modifiers `flags` (an event's modifier flags) say are held.
-pub fn held(flags: usize) -> Held {
+/// Which modifiers `flags` (an event's modifier flags) say are held, for
+/// the key that calls Lax.
+pub fn held(flags: usize, key: CallKey) -> Held {
     // Caps Lock is a state, not a key held; the numeric pad flag comes with
-    // arrow keys. Neither keeps ⌥ from being alone.
+    // arrow keys. Neither keeps the key from being alone.
     match flags & DEVICE_INDEPENDENT & !(CAPS_LOCK | NUMERIC_PAD) {
         0 => Held::Nothing,
-        OPTION => Held::OptionOnly,
+        held if held == key.flag() && key.side(flags) => Held::KeyOnly,
         _ => Held::Other,
     }
 }
@@ -90,7 +155,7 @@ impl DoubleTap {
         };
         let before = std::mem::replace(&mut self.held, held);
         match (before, held) {
-            (Held::Nothing, Held::OptionOnly) => {
+            (Held::Nothing, Held::KeyOnly) => {
                 if self
                     .tapped
                     .is_some_and(|end| now.saturating_duration_since(end) > GAP)
@@ -100,7 +165,7 @@ impl DoubleTap {
                 self.down = Some(now);
                 false
             }
-            (Held::OptionOnly, Held::Nothing) => {
+            (Held::KeyOnly, Held::Nothing) => {
                 let Some(down) = self.down.take() else {
                     return false;
                 };
@@ -287,6 +352,18 @@ pub const PANEL: &str = "panel";
 #[serde(rename_all = "camelCase")]
 pub struct WritingStatus {
     enabled: bool,
+    key: CallKey,
+}
+
+/// The key the user picked to call Lax.
+fn call_key(app: &AppHandle) -> CallKey {
+    app.try_state::<Mutex<Store>>()
+        .and_then(|store| {
+            let store = store.lock().unwrap_or_else(PoisonError::into_inner);
+            store.writing_key().ok().flatten()
+        })
+        .and_then(|key| CallKey::parse(&key))
+        .unwrap_or_default()
 }
 
 fn enabled(app: &AppHandle) -> bool {
@@ -305,7 +382,28 @@ pub fn writing_status(app: AppHandle) -> Result<WritingStatus, String> {
     let enabled = store
         .writing_enabled()
         .map_err(|_| "Lax couldn't read the setting.")?;
-    Ok(WritingStatus { enabled })
+    let key = store
+        .writing_key()
+        .map_err(|_| "Lax couldn't read the setting.")?
+        .and_then(|key| CallKey::parse(&key))
+        .unwrap_or_default();
+    Ok(WritingStatus { enabled, key })
+}
+
+/// Picks the key that calls Lax, and listens for it from now on.
+#[tauri::command(async)]
+pub fn set_writing_key(app: AppHandle, key: CallKey) -> Result<WritingStatus, String> {
+    {
+        let store = app
+            .try_state::<Mutex<Store>>()
+            .ok_or("The database isn't available.")?;
+        let store = store.lock().unwrap_or_else(PoisonError::into_inner);
+        store
+            .set_writing_key(key.as_str())
+            .map_err(|_| "Lax couldn't save the setting.")?;
+    }
+    start(&app);
+    writing_status(app)
 }
 
 #[tauri::command(async)]
@@ -324,7 +422,7 @@ pub fn set_writing_enabled(app: AppHandle, enabled: bool) -> Result<WritingStatu
     } else {
         stop(&app);
     }
-    Ok(WritingStatus { enabled })
+    writing_status(app)
 }
 
 /// Closes the panel and gives focus back to the app Lax was called to.
@@ -580,7 +678,7 @@ pub(crate) mod macos {
     use tauri::{AppHandle, Manager};
 
     use super::{
-        Call, Input, Listener, MAX_CONTEXT_CHARS, MAX_INSTRUCTION_CHARS, Rect, come, held,
+        Call, CallKey, Input, Listener, MAX_CONTEXT_CHARS, MAX_INSTRUCTION_CHARS, Rect, come, held,
         instruction_in,
     };
     use crate::ax::{AxScreen, window_owner_at};
@@ -596,9 +694,9 @@ pub(crate) mod macos {
 
     /// The only place that sees an event. It keeps whether it was a press
     /// or a change of modifiers, and which modifiers; never the key.
-    fn reduce(event: &NSEvent) -> Input {
+    fn reduce(event: &NSEvent, key: CallKey) -> Input {
         if event.r#type() == NSEventType::FlagsChanged {
-            Input::Modifiers(held(event.modifierFlags().0))
+            Input::Modifiers(held(event.modifierFlags().0, key))
         } else {
             Input::Pressed
         }
@@ -606,10 +704,11 @@ pub(crate) mod macos {
 
     pub fn install(app: AppHandle) {
         remove();
+        let key = super::call_key(&app);
         let listener = RefCell::new(Listener::default());
         let block = RcBlock::new(move |event: NonNull<NSEvent>| {
             // SAFETY: AppKit passes a valid event for the duration of the call.
-            let input = reduce(unsafe { event.as_ref() });
+            let input = reduce(unsafe { event.as_ref() }, key);
             let Some(bundle_id) = frontmost() else {
                 listener.borrow_mut().tap.reset();
                 return;
@@ -782,7 +881,7 @@ mod tests {
         })
     }
 
-    const DOWN: Input = Input::Modifiers(Held::OptionOnly);
+    const DOWN: Input = Input::Modifiers(Held::KeyOnly);
     const UP: Input = Input::Modifiers(Held::Nothing);
     const OTHER: Input = Input::Modifiers(Held::Other);
 
@@ -875,14 +974,42 @@ mod tests {
 
     #[test]
     fn modifiers_are_read_from_the_flags() {
+        let held = |flags| held(flags, CallKey::Option);
         assert_eq!(held(0), Held::Nothing);
         assert_eq!(held(0x100), Held::Nothing); // Device-dependent bits only.
-        assert_eq!(held(OPTION), Held::OptionOnly);
-        assert_eq!(held(OPTION | CAPS_LOCK), Held::OptionOnly);
-        assert_eq!(held(OPTION | NUMERIC_PAD | 0x20), Held::OptionOnly);
+        assert_eq!(held(OPTION), Held::KeyOnly);
+        assert_eq!(held(OPTION | CAPS_LOCK), Held::KeyOnly);
+        assert_eq!(held(OPTION | NUMERIC_PAD | 0x20), Held::KeyOnly);
         assert_eq!(held(OPTION | 1 << 17), Held::Other); // ⇧
         assert_eq!(held(1 << 20), Held::Other); // ⌘
         assert_eq!(held(CAPS_LOCK), Held::Nothing);
+    }
+
+    #[test]
+    fn another_key_can_call_lax() {
+        // Only the right ⌥: the left one is left to other apps.
+        let right = |flags| held(flags, CallKey::RightOption);
+        assert_eq!(right(OPTION | RIGHT_OPTION), Held::KeyOnly);
+        assert_eq!(right(OPTION | LEFT_OPTION), Held::Other);
+        assert_eq!(right(OPTION | LEFT_OPTION | RIGHT_OPTION), Held::Other);
+        assert_eq!(right(0), Held::Nothing);
+        // Control, Command and Shift on their own; ⌥ is then just another key.
+        assert_eq!(held(CONTROL, CallKey::Control), Held::KeyOnly);
+        assert_eq!(held(COMMAND, CallKey::Command), Held::KeyOnly);
+        assert_eq!(held(SHIFT, CallKey::Shift), Held::KeyOnly);
+        assert_eq!(held(OPTION, CallKey::Control), Held::Other);
+        assert_eq!(held(CONTROL | SHIFT, CallKey::Control), Held::Other);
+        // Stored by name, and an unknown name isn't a key.
+        for key in [
+            CallKey::Option,
+            CallKey::RightOption,
+            CallKey::Control,
+            CallKey::Command,
+            CallKey::Shift,
+        ] {
+            assert_eq!(CallKey::parse(key.as_str()), Some(key));
+        }
+        assert_eq!(CallKey::parse("capsLock"), None);
     }
 
     #[test]
