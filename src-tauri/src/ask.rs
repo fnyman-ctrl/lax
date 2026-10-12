@@ -182,9 +182,10 @@ fn gather<Tz: TimeZone>(
 }
 
 /// Like [`gather`], for a question that may follow up on `earlier` ones
-/// (latest last): with no time of its own, it takes the latest earlier one;
-/// it adds the names in the question before it; and with no words to search
-/// for, it takes that question's.
+/// (latest last). A question with no names or words of its own ("och vad
+/// mer?", "vad sa hon?") follows up: it takes the latest earlier time, and
+/// the names and words of the question before it. One with its own (a new
+/// subject) keeps only its own time, but still adds the names before it.
 fn gather_after<Tz: TimeZone>(
     store: &Store,
     question: &str,
@@ -192,21 +193,25 @@ fn gather_after<Tz: TimeZone>(
     meaning: Option<&Meaning>,
     now: &DateTime<Tz>,
 ) -> crate::store::Result<Found> {
+    let asked = words(question);
+    let before = earlier.last().map(|q| words(q)).unwrap_or_default();
+    let names = store.entity_names()?;
+    let mut entities = named_entities(&asked, &names);
+    let mut search = search_words(&asked);
+    let follows_up = entities.is_empty() && search.is_empty();
     let range = time_range(question, now).or_else(|| {
+        if !follows_up {
+            return None;
+        }
         earlier
             .iter()
             .rev()
             .find_map(|earlier| time_range(earlier, now))
     });
-    let asked = words(question);
-    let before = earlier.last().map(|q| words(q)).unwrap_or_default();
-    let names = store.entity_names()?;
-    let mut entities = named_entities(&asked, &names);
     entities.extend(named_entities(&before, &names));
     entities.sort_unstable();
     entities.dedup();
-    let mut search = search_words(&asked);
-    if search.is_empty() {
+    if follows_up {
         search = search_words(&before);
     }
 
@@ -457,6 +462,22 @@ const STOP_WORDS: &[&str] = &[
     "berätta",
     "sammanfatta",
     "lax",
+    // Follow-up words: "och vad mer?", "vad sa hon?"
+    "mer",
+    "annat",
+    "mera",
+    "sen",
+    "sedan",
+    "innan",
+    "efter",
+    "hon",
+    "han",
+    "hen",
+    "dem",
+    "dom",
+    "sa",
+    "sade",
+    "också",
     // English
     "what",
     "who",
@@ -501,6 +522,20 @@ const STOP_WORDS: &[&str] = &[
     "summarise",
     "can",
     "you",
+    // Follow-up words: "and what else?", "what did she say?"
+    "else",
+    "more",
+    "then",
+    "before",
+    "after",
+    "she",
+    "her",
+    "him",
+    "they",
+    "them",
+    "say",
+    "said",
+    "also",
 ];
 
 /// Month names are left in: "Jan" and "Maj" are names too, and a month
@@ -1517,6 +1552,16 @@ mod tests {
         )
         .unwrap();
         assert_eq!(summaries(&own), ["Planerade lanseringen med Bo."]);
+        // A new subject doesn't take the earlier time.
+        let new = gather_after(
+            &store,
+            "Vad vet du om Bo?",
+            &["Vad gjorde jag i tisdags?"],
+            None,
+            &now(),
+        )
+        .unwrap();
+        assert!(!new.timed);
         // The names of the question before come along: "she" is Anna.
         let her = gather_after(&store, "Vad sa hon?", &["Vad gör Anna?"], None, &now()).unwrap();
         assert!(!her.recent_only);
