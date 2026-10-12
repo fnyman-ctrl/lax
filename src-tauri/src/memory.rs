@@ -18,6 +18,7 @@ use chrono::Utc;
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
+use crate::journal::{When, may_use_model};
 use crate::logging::{self, ErrorKind, Field};
 use crate::models::structured::{self, Captured, Entities, StructuredError};
 use crate::models::{Endpoint, ModelClient, ModelTurn};
@@ -76,7 +77,7 @@ struct Work {
 /// model server is unavailable and the loop should wait a while.
 pub async fn round(app: &AppHandle, setbacks: &mut Setbacks) -> Result<(), ()> {
     for _ in 0..EPISODES_PER_ROUND {
-        if app.state::<Pause>().is_paused() {
+        if app.state::<Pause>().is_paused() || !may_use_model(When::Later) {
             return Ok(());
         }
         let Some(work) = next_work(app) else {

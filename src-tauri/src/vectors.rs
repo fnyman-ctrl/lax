@@ -11,6 +11,7 @@ use std::sync::{Mutex, PoisonError};
 
 use tauri::{AppHandle, Manager};
 
+use crate::journal::{When, may_use_model};
 use crate::logging::{self, ErrorKind, Field};
 use crate::models::{Endpoint, ModelClient, ModelError, ModelTurn};
 use crate::pause::Pause;
@@ -21,7 +22,7 @@ const BATCH: usize = 16;
 
 /// One round. `Err` means the model server is unavailable.
 pub async fn round(app: &AppHandle) -> Result<(), ()> {
-    if app.state::<Pause>().is_paused() {
+    if app.state::<Pause>().is_paused() || !may_use_model(When::Later) {
         return Ok(());
     }
     let work = with_store(app, |store| -> crate::store::Result<_> {

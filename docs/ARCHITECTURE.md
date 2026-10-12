@@ -42,6 +42,9 @@ previous one, so they can be built, tested and improved independently.
   The journal is off until the user turns it on and has chosen a chat model
   (`src-tauri/src/journal.rs`). It skips captures younger than two minutes, sends
   each window once with its latest content, and stops while capture is paused.
+  No background work uses the model while the Mac runs on battery; it catches
+  up on mains power (`journal::may_use_model`). Questions are not background
+  work.
 - Episodes are what the rest of the system reads. A raw capture expires only after
   it has been summarized, or at the maximum age (default 90 days, configurable).
 
@@ -49,8 +52,10 @@ previous one, so they can be built, tested and improved independently.
 
 - Extract **entities** (people, organisations, projects) from new episodes
   using structured LLM output (JSON). The memory is off until the user turns
-  it on, and runs in the journal's loop right after it
-  (`src-tauri/src/memory.rs`, [ADR 0008](adr/0008-learning-memory.md)).
+  it on, and runs in the journal's loop right after it, but only after two
+  minutes without keyboard or mouse input, so the Mac stays quiet while it's
+  used (`src-tauri/src/memory.rs`, [ADR 0008](adr/0008-learning-memory.md)).
+  Episodes are given their vectors for Ask the same way.
 - Resolve them against known entities to avoid duplicates. For now only an
   exact match of the normalized name (case and spacing ignored, diacritics
   kept) joins a known entity; embeddings can suggest merges later, such as

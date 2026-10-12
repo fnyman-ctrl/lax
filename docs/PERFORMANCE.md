@@ -32,6 +32,11 @@ they change.
   the input itself (`pace`, `ax::idle_time`).
 - **Reading slows down on battery.** On battery, every wait is twice as long
   (`ax::on_battery`).
+- **The model works in the background only when it doesn't disturb.** On
+  battery, nothing in the background uses the model. The journal writes as
+  captures settle; the memory's reading, page facts and Ask's vectors wait
+  until two minutes without keyboard or mouse input
+  (`journal::may_use_model`). A question in Ask always goes first.
 - **Expensive setup happens once.** Chromium and Electron apps are asked to
   build their accessibility tree once per process, not on every read.
 

@@ -21,6 +21,7 @@ use serde::Deserialize;
 use tauri::{AppHandle, Manager};
 
 use super::{block, folder_of, inside, sync_now};
+use crate::journal::{When, may_use_model};
 use crate::logging::{self, ErrorKind, Field};
 use crate::models::structured::{self, Captured, StructuredError, Validate};
 use crate::models::{Endpoint, ModelClient, ModelTurn};
@@ -29,8 +30,6 @@ use crate::store::{EntityKind, Episode, ModelTask, Store, fact_key};
 
 /// How often pages are brought up to date.
 const EVERY: Duration = Duration::from_secs(60 * 60);
-/// How long the user must have been away from the keyboard.
-const IDLE: Duration = Duration::from_secs(2 * 60);
 /// Pages per run.
 const PAGES_PER_RUN: usize = 3;
 /// New entries given per page; facts that are rebuilt get the latest ones.
@@ -147,10 +146,9 @@ struct Work {
 /// Brings up to `PAGES_PER_RUN` pages' facts up to date, if it's time.
 /// `Err` means the model server is unavailable.
 pub async fn round(app: &AppHandle, schedule: &mut Schedule) -> Result<(), ()> {
-    // If idle time can't be read, the hourly schedule alone decides.
     if schedule.last.is_some_and(|last| last.elapsed() < EVERY)
         || app.state::<Pause>().is_paused()
-        || crate::journal::idle_time().is_some_and(|idle| idle < IDLE)
+        || !may_use_model(When::Later)
     {
         return Ok(());
     }

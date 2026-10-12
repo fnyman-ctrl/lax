@@ -143,7 +143,7 @@ impl Setbacks {
 /// One round: summarize up to `BLOCKS_PER_ROUND` complete blocks.
 async fn round(app: &AppHandle, setbacks: &mut Setbacks) -> Result<(), ()> {
     for _ in 0..BLOCKS_PER_ROUND {
-        if app.state::<Pause>().is_paused() {
+        if app.state::<Pause>().is_paused() || !may_use_model(When::Soon) {
             return Ok(());
         }
         let Some(work) = next_work(app, &setbacks.set_aside) else {
@@ -330,6 +330,46 @@ async fn summarize(work: &Work) -> Result<String, StructuredError> {
     let answer: EpisodeSummary =
         structured::ask(&client, &work.model, TASK, SHAPE, &captured, MAX_TOKENS).await?;
     Ok(answer.summary)
+}
+
+/// Without keyboard or mouse input for this long, work that can wait may use
+/// the model.
+const AWAY: Duration = Duration::from_secs(2 * 60);
+
+/// Whether background work may use the model now. Never on battery, and
+/// work that can wait (`Later`) only while the user is away from the
+/// keyboard, so the Mac stays quiet and cool while it is used. Questions
+/// the user asks are not background work and always may.
+pub(crate) fn may_use_model(when: When) -> bool {
+    allowed(when, on_battery(), idle_time())
+}
+
+/// When background work wants the model.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum When {
+    /// The journal: soon after the captures it summarizes.
+    Soon,
+    /// The memory's reading, facts and vectors.
+    Later,
+}
+
+fn allowed(when: When, on_battery: bool, idle: Option<Duration>) -> bool {
+    if on_battery {
+        return false;
+    }
+    // If idle time can't be read, the user counts as away.
+    when == When::Soon || !idle.is_some_and(|idle| idle < AWAY)
+}
+
+fn on_battery() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        crate::ax::on_battery().unwrap_or(false)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
 }
 
 pub(crate) fn idle_time() -> Option<Duration> {
@@ -531,6 +571,21 @@ mod tests {
         assert!(setbacks.set_aside.is_empty());
         setbacks.bad_answer(&[7, 8]);
         assert!(setbacks.set_aside.contains(&7) && setbacks.set_aside.contains(&8));
+    }
+
+    #[test]
+    fn background_work_waits_for_mains_power_and_the_user_to_be_away() {
+        let s = Duration::from_secs;
+        // On mains power the journal always may; the rest once the user is away.
+        assert!(allowed(When::Soon, false, Some(s(0))));
+        assert!(!allowed(When::Later, false, Some(s(0))));
+        assert!(!allowed(When::Later, false, Some(s(119))));
+        assert!(allowed(When::Later, false, Some(s(120))));
+        assert!(allowed(When::Later, false, None));
+        // On battery nothing does.
+        assert!(!allowed(When::Soon, true, Some(s(3600))));
+        assert!(!allowed(When::Later, true, Some(s(3600))));
+        assert!(!allowed(When::Later, true, None));
     }
 
     #[test]
