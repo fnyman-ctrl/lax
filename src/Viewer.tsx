@@ -9,8 +9,8 @@ import { Models } from "./Models";
 import { Outbox } from "./Outbox";
 import { usePaged } from "./usePaged";
 import { Write } from "./Write";
-// The app icon is the one source of the mascot (docs/BRAND.md).
-import laxIcon from "../src-tauri/icons/app-icon.svg";
+// The pixel salmon (docs/BRAND.md).
+import laxIcon from "../src-tauri/icons/salmon.svg";
 
 // Shapes returned by src-tauri/src/viewer.rs.
 type CaptureStatus = {

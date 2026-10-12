@@ -2,8 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Viewer } from "./Viewer";
-// The app icon is the one source of the mascot (docs/BRAND.md).
-import laxIcon from "../src-tauri/icons/app-icon.svg";
+// The pixel salmon (docs/BRAND.md).
+import laxIcon from "../src-tauri/icons/salmon.svg";
 
 // Must match CHANGED_EVENT in src-tauri/src/accessibility.rs.
 const ACCESSIBILITY_CHANGED = "accessibility-changed";
