@@ -80,16 +80,30 @@ struct Reply {
 fn sources<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<u32>, D::Error> {
     let value = serde_json::Value::deserialize(deserializer)?;
     let mut out = Vec::new();
-    if collect(&value, 0, &mut out).is_none() || out.len() > MAX_ENTRIES * 2 {
+    if collect(&value, 0, &mut out).is_none() {
         return Err(serde::de::Error::custom("not entry numbers"));
     }
+    // The same entry twice is one source.
+    out.sort_unstable();
+    out.dedup();
     Ok(out)
 }
 
 fn collect(value: &serde_json::Value, depth: usize, out: &mut Vec<u32>) -> Option<()> {
     use serde_json::Value;
     match value {
-        Value::Number(n) => out.push(u32::try_from(n.as_u64()?).ok()?),
+        Value::Number(n) => {
+            // Whole numbers, also written as 1.0.
+            let whole = match n.as_u64() {
+                Some(n) => n,
+                None => {
+                    let f = n.as_f64()?;
+                    (f >= 0.0 && f.fract() == 0.0 && f <= f64::from(u32::MAX))
+                        .then_some(f as u64)?
+                }
+            };
+            out.push(u32::try_from(whole).ok()?);
+        }
         Value::String(text) => numbers(text, out)?,
         Value::Array(items) if depth < 3 => {
             for item in items {
@@ -1296,6 +1310,16 @@ mod tests {
         assert_eq!(
             sources(r#"{"answer":"ok","sources":"2–3"}"#),
             Some(vec![2, 3])
+        );
+        assert_eq!(
+            sources(r#"{"answer":"ok","sources":[1.0, 3.0]}"#),
+            Some(vec![1, 3])
+        );
+        assert!(parse(r#"{"answer":"ok","sources":[1.5]}"#).is_err());
+        // Repeats count once.
+        assert_eq!(
+            sources(r#"{"answer":"ok","sources":["1-30", 1, 2, 3, 30]}"#),
+            Some((1..=30).collect())
         );
         assert!(
             parse(&format!(
