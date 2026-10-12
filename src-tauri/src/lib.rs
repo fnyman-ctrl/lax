@@ -9,6 +9,7 @@ mod exclusions;
 mod expiry;
 mod filevault;
 mod forget;
+mod insert;
 mod journal;
 #[allow(dead_code)] // Some levels and fields have no user yet.
 mod logging;
@@ -95,6 +96,7 @@ pub fn run() {
             write::panel_call,
             write::write_draft,
             write::fit_panel,
+            insert::insert_draft,
         ])
         .setup(|app| {
             // Lax lives in the menu bar, without a Dock icon.

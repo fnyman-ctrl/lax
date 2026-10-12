@@ -978,12 +978,24 @@ mark {
 }
 
 .panel-draft {
+  width: 100%;
+  box-sizing: border-box;
   max-height: 300px;
   overflow-y: auto;
   margin: 0 0 6px;
-  white-space: pre-wrap;
-  user-select: text;
-  -webkit-user-select: text;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font: inherit;
+  color: var(--fg);
+  background: transparent;
+  resize: none;
+}
+
+.panel-draft:focus {
+  outline: none;
+  border-color: rgb(15 42 51 / 0.18);
+  background: var(--bg);
 }
 
 @keyframes swim-in {

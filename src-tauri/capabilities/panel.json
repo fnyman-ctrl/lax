@@ -1,12 +1,13 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "panel",
-  "description": "The writing assistant's panel (ADR 0009): its call, drafts, its size, closing itself.",
+  "description": "The writing assistant's panel (ADR 0009): its call, drafts, inserting a draft, its size, closing itself.",
   "windows": ["panel"],
   "permissions": [
     "allow-close-panel",
     "allow-panel-call",
     "allow-write-draft",
-    "allow-fit-panel"
+    "allow-fit-panel",
+    "allow-insert-draft"
   ]
 }

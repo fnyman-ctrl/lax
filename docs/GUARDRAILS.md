@@ -136,6 +136,10 @@ written to manipulate an AI ("ignore previous instructions and…"). Therefore:
 
 - **The model has no tools that act.** Models in Lax can only return text or JSON.
   They cannot browse, run commands, send messages or call other services.
+- **Model text goes only where the user puts it.** The writing assistant
+  ([ADR 0009](adr/0009-writing-assistant.md)) inserts a draft only after the user
+  has read it and pressed Enter, only into the field they called Lax to, and only
+  as text. Lax never presses Return or Send in another app.
 - **Structured output is validated.** Model output is parsed against a strict schema;
   anything that doesn't match is discarded.
 - **Untrusted content is delimited** in prompts and the model is told it is data,

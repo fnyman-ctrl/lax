@@ -49,6 +49,7 @@ fn main() {
             "panel_call",
             "write_draft",
             "fit_panel",
+            "insert_draft",
             "recreate_page",
             "recreate_about_me",
             "open_memory_folder",

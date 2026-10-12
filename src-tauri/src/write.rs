@@ -40,27 +40,35 @@ struct Reply {
 
 impl Validate for Reply {
     fn validate(&self) -> Result<(), &'static str> {
-        let draft = self.draft.trim();
-        if draft.is_empty() {
-            return Err("an empty draft");
-        }
-        if draft.chars().count() > MAX_DRAFT_CHARS {
-            return Err("a draft that is too long");
-        }
-        if draft
-            .chars()
-            .any(|c| (c.is_control() && c != '\n' && c != '\t') || is_invisible(c))
-        {
-            return Err("a draft with control or invisible characters");
-        }
-        Ok(())
+        check_draft(&self.draft)
     }
+}
+
+/// What any draft must be, from the model or as the user edited it: not
+/// empty, not too long, no control or invisible characters but line breaks
+/// and tabs.
+pub(crate) fn check_draft(draft: &str) -> Result<(), &'static str> {
+    let draft = draft.trim();
+    if draft.is_empty() {
+        return Err("an empty draft");
+    }
+    if draft.chars().count() > MAX_DRAFT_CHARS {
+        return Err("a draft that is too long");
+    }
+    if draft
+        .chars()
+        .any(|c| (c.is_control() && c != '\n' && c != '\t') || is_invisible(c))
+    {
+        return Err("a draft with control or invisible characters");
+    }
+    Ok(())
 }
 
 /// What the panel shows when it opens.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PanelCall {
+    id: u64,
     app: String,
     instruction: String,
 }
@@ -69,6 +77,7 @@ pub struct PanelCall {
 #[tauri::command]
 pub fn panel_call(app: AppHandle) -> Option<PanelCall> {
     app.state::<Summoned>().call().map(|call| PanelCall {
+        id: call.id,
         app: call.app_name,
         instruction: call.instruction,
     })

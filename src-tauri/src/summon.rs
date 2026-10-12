@@ -141,6 +141,9 @@ pub struct Summoned(Mutex<Option<Call>>);
 
 #[derive(Clone, Debug, Default)]
 pub struct Call {
+    /// Different for every time Lax is called, so the panel can tell a new
+    /// call from coming back to the same one.
+    pub id: u64,
     pub pid: i32,
     pub app_name: String,
     /// The text selected in the field, or what is in it. Secrets redacted.
@@ -150,6 +153,38 @@ pub struct Call {
     pub context: Option<String>,
     /// Whether the window is still being read.
     pub reading: bool,
+    /// What a draft replaces in the field.
+    pub replace: Replace,
+    /// Whether the field can be written through Accessibility. Not when the
+    /// app named a field hidden behind another window: then the draft is
+    /// pasted where the keyboard focus really is.
+    pub accessible: bool,
+}
+
+/// The id of the next call.
+pub(crate) static NEXT_CALL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// What a draft replaces in the field Lax was called to.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Replace {
+    /// Nothing: it goes in at the cursor (the instruction was typed in the
+    /// panel).
+    #[default]
+    Nothing,
+    /// The selected text, which was the instruction.
+    Selection,
+    /// All of the field's text, which was the instruction.
+    All,
+}
+
+/// What a draft replaces, given the instruction taken from the field (empty
+/// if none) and whether it was the selection.
+pub fn replace_for(instruction: &str, selected: bool) -> Replace {
+    match (instruction.is_empty(), selected) {
+        (true, _) => Replace::Nothing,
+        (false, true) => Replace::Selection,
+        (false, false) => Replace::All,
+    }
 }
 
 impl Summoned {
@@ -165,7 +200,7 @@ impl Summoned {
         self.0.lock().unwrap_or_else(PoisonError::into_inner).take()
     }
 
-    fn set(&self, call: Option<Call>) {
+    pub(crate) fn set(&self, call: Option<Call>) {
         *self.0.lock().unwrap_or_else(PoisonError::into_inner) = call;
     }
 
@@ -484,7 +519,7 @@ impl Listener {
 
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)] // Two AppKit calls; see SAFETY below.
-mod macos {
+pub(crate) mod macos {
     use std::cell::RefCell;
     use std::ptr::NonNull;
 
@@ -499,7 +534,7 @@ mod macos {
 
     use super::{
         Call, Input, Listener, MAX_CONTEXT_CHARS, MAX_INSTRUCTION_CHARS, Rect, come, held,
-        instruction_from,
+        instruction_from, replace_for,
     };
     use crate::ax::{AxScreen, window_owner_at};
     use crate::capture::{App, Capturer, Limits, Node, Outcome, Screen, admit, truncate_chars};
@@ -589,6 +624,7 @@ mod macos {
         .ok()?;
         let mut found = Found {
             call: Call {
+                id: super::NEXT_CALL.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
                 pid: front.pid,
                 app_name: front.name.clone(),
                 reading: true,
@@ -617,10 +653,12 @@ mod macos {
         if hidden {
             return Some(found);
         }
-        found.call.instruction = element
+        let (text, selected) = element
             .field_text(MAX_INSTRUCTION_CHARS)
-            .map(|text| instruction_from(&text))
             .unwrap_or_default();
+        found.call.instruction = instruction_from(&text);
+        found.call.replace = replace_for(&found.call.instruction, selected);
+        found.call.accessible = true;
         found.caret = caret;
         found.field = element.frame();
         Some(found)
@@ -667,7 +705,7 @@ mod macos {
     }
 
     /// Brings the app with this process id back to the front.
-    pub fn activate(pid: i32) {
+    pub(crate) fn activate(pid: i32) {
         if let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
             #[allow(deprecated)] // The replacement needs macOS 14.
             let _ =
@@ -862,6 +900,14 @@ mod tests {
             place(line(-1000.0, 100.0), None, left),
             (-1200.0, 98.0, 432.0)
         );
+    }
+
+    #[test]
+    fn a_draft_replaces_the_instruction_it_came_from() {
+        assert_eq!(replace_for("", false), Replace::Nothing);
+        assert_eq!(replace_for("", true), Replace::Nothing);
+        assert_eq!(replace_for("svara Anna", true), Replace::Selection);
+        assert_eq!(replace_for("svara Anna", false), Replace::All);
     }
 
     #[test]

@@ -450,14 +450,57 @@ impl Element {
     }
 
     /// The text the user selected in a field, or else all of its text, at
-    /// most `max_chars` characters. Only called for the field the user
-    /// called Lax to, once it is known not to be a password field.
-    pub fn field_text(&self, max_chars: usize) -> Option<String> {
-        let selected = self
+    /// most `max_chars` characters, and whether it was the selection. Only
+    /// called for the field the user called Lax to, once it is known not to
+    /// be a password field.
+    pub fn field_text(&self, max_chars: usize) -> Option<(String, bool)> {
+        if let Some(selected) = self
             .string(&self.names.selected_text)
-            .filter(|text| !text.trim().is_empty());
-        let text = selected.or_else(|| self.string(&self.names.value))?;
-        Some(truncate_chars(&text, max_chars))
+            .filter(|text| !text.trim().is_empty())
+        {
+            return Some((truncate_chars(&selected, max_chars), true));
+        }
+        let text = self.string(&self.names.value)?;
+        Some((truncate_chars(&text, max_chars), false))
+    }
+
+    /// All of a field's text, to tell whether writing into it worked. Only
+    /// called for the field the user asked Lax to write into.
+    pub fn value(&self) -> Option<String> {
+        self.string(&self.names.value)
+    }
+
+    /// Selects the first `units` UTF-16 units of a field's text: all of it,
+    /// when the instruction was all of it. `false` if the app refused.
+    pub fn select(&self, units: usize) -> bool {
+        let range = CFRange::new(0, CFIndex::try_from(units).unwrap_or(CFIndex::MAX));
+        // SAFETY: `range` is a CFRange, matching the type passed; returns a
+        // new value or null.
+        let Some(value) = (unsafe {
+            owned(AXValueCreate(
+                AX_VALUE_CF_RANGE,
+                (&raw const range).cast::<c_void>(),
+            ))
+        }) else {
+            return false;
+        };
+        // SAFETY: valid element, attribute and value.
+        let error = unsafe {
+            AXUIElementSetAttributeValue(&self.element, &self.names.selected_text_range, &value)
+        };
+        error == AX_SUCCESS
+    }
+
+    /// Replaces the selection (or inserts at the cursor) with `text`.
+    /// `false` if the app refused; some apps say yes and do nothing, so the
+    /// caller checks the field's text afterwards.
+    pub fn replace_selection(&self, text: &str) -> bool {
+        let text = CFString::from_str(text);
+        // SAFETY: valid element, attribute and value.
+        let error = unsafe {
+            AXUIElementSetAttributeValue(&self.element, &self.names.selected_text, text.as_ref())
+        };
+        error == AX_SUCCESS
     }
 
     /// Where the element is on screen.

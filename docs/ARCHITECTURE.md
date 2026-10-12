@@ -103,7 +103,11 @@ previous one, so they can be built, tested and improved independently.
   the pages of people and projects named in the instruction (not every name
   in the window), and the window's text, all as `Captured` data
   (`src-tauri/src/write.rs`). Secrets are redacted first, and nothing about
-  a draft is stored. Inserting it into the field comes next.
+  a draft is stored. The user can edit the draft; Enter puts it into the field
+  in place of the instruction, through Accessibility where the app takes it,
+  or else pasted with the clipboard marked concealed and transient and put
+  back afterwards (`src-tauri/src/insert.rs`). Lax never presses Return or
+  Send.
 
 ## Models
 

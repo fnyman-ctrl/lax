@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-insert-draft"
+description = "Enables the insert_draft command without any pre-configured scope."
+commands.allow = ["insert_draft"]
+
+[[permission]]
+identifier = "deny-insert-draft"
+description = "Denies the insert_draft command without any pre-configured scope."
+commands.deny = ["insert_draft"]
