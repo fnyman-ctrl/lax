@@ -113,11 +113,6 @@ fn still_there(value: &str, start: usize, len: usize, instruction: &str) -> bool
     crate::summon::instruction_from(&String::from_utf16_lossy(paragraph)) == instruction
 }
 
-/// The length of `text` in UTF-16 units, as Accessibility counts.
-fn utf16_len(text: &str) -> usize {
-    text.encode_utf16().count()
-}
-
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)] // CoreGraphics key events; see SAFETY below.
 mod macos {
@@ -357,14 +352,6 @@ mod tests {
         ));
         // Past the end.
         assert!(!still_there(note, 15, 40, "svara i min ton"));
-    }
-
-    #[test]
-    fn lengths_are_counted_as_accessibility_counts() {
-        assert_eq!(utf16_len("hej"), 3);
-        assert_eq!(utf16_len("åäö"), 3);
-        // An emoji is two UTF-16 units.
-        assert_eq!(utf16_len("hej 🐟"), 6);
     }
 
     #[test]
