@@ -250,22 +250,21 @@ pub struct Rect {
 }
 
 /// The panel window: room for the salmon to swim in from the left, and the
-/// card. Matches `.panel` in `src/styles.css`.
-const PANEL_WIDTH: f64 = 500.0;
-const PANEL_HEIGHT: f64 = 190.0;
-/// How far right of the window's left edge the salmon stops, which is put
-/// at the text cursor.
-const SALMON_STOPS: f64 = 150.0;
+/// card below the line. Matches `.panel` in `src/styles.css`.
+const PANEL_WIDTH: f64 = 520.0;
+const PANEL_HEIGHT: f64 = 200.0;
+/// Where in the window the salmon's nose ends up, which is put on the text
+/// cursor: this far from the left edge, at this height (the middle of the
+/// salmon, so it swims along the line of text).
+const NOSE_X: f64 = 260.0;
+const NOSE_Y: f64 = 23.0;
 
-/// Where the panel's top left goes for the text cursor at `caret`: just
-/// below the line, the salmon stopping at the cursor, all of it on `screen`.
-/// Above the line if there's no room below.
+/// Where the panel's top left goes for the text cursor at `caret`, so the
+/// salmon's nose ends up on the cursor, in the middle of the line. Kept on
+/// `screen`, even if the salmon then stops a little off the cursor.
 fn place(caret: Rect, screen: Rect) -> (f64, f64) {
-    let mut y = caret.y + caret.height + 2.0;
-    if y + PANEL_HEIGHT > screen.y + screen.height {
-        y = caret.y - PANEL_HEIGHT - 2.0;
-    }
-    let x = caret.x - SALMON_STOPS;
+    let x = caret.x - NOSE_X;
+    let y = caret.y + caret.height / 2.0 - NOSE_Y;
     let right = (screen.x + screen.width - PANEL_WIDTH).max(screen.x);
     let bottom = (screen.y + screen.height - PANEL_HEIGHT).max(screen.y);
     (x.clamp(screen.x, right), y.clamp(screen.y, bottom))
@@ -664,7 +663,7 @@ mod tests {
     }
 
     #[test]
-    fn the_panel_goes_by_the_cursor_and_stays_on_screen() {
+    fn the_salmon_stops_at_the_cursor_and_the_panel_stays_on_screen() {
         let screen = Rect {
             x: 0.0,
             y: 0.0,
@@ -677,14 +676,13 @@ mod tests {
             width: 1.0,
             height: 18.0,
         };
-        // Below the line, the salmon stopping at the cursor.
-        assert_eq!(place(line(600.0, 300.0), screen), (450.0, 320.0));
-        // Near the left edge, the window stays on screen.
-        assert_eq!(place(line(20.0, 300.0), screen), (0.0, 320.0));
-        // Near the right edge too.
-        assert_eq!(place(line(1430.0, 300.0), screen), (940.0, 320.0));
-        // No room below: above the line.
-        assert_eq!(place(line(600.0, 850.0), screen), (450.0, 658.0));
+        // The nose (260, 23 into the window) on the cursor, mid-line.
+        assert_eq!(place(line(600.0, 300.0), screen), (340.0, 286.0));
+        // Near the edges the window stays on screen.
+        assert_eq!(place(line(100.0, 300.0), screen), (0.0, 286.0));
+        assert_eq!(place(line(1430.0, 300.0), screen), (920.0, 286.0));
+        assert_eq!(place(line(600.0, 880.0), screen), (340.0, 700.0));
+        assert_eq!(place(line(600.0, 5.0), screen), (340.0, 0.0));
         // A second display to the left of the main one.
         let left = Rect {
             x: -1920.0,
@@ -692,7 +690,7 @@ mod tests {
             width: 1920.0,
             height: 1080.0,
         };
-        assert_eq!(place(line(-1000.0, 100.0), left), (-1150.0, 120.0));
+        assert_eq!(place(line(-1000.0, 100.0), left), (-1260.0, 86.0));
     }
 
     #[test]

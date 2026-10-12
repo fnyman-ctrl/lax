@@ -881,9 +881,10 @@ mark {
   overflow: auto;
 }
 
-/* The writing assistant's panel: a transparent window by the text cursor
-   (src-tauri/src/summon.rs, 500 × 190 points). The salmon swims in from the
-   left and stops at the cursor, 150 points in; then the card opens. */
+/* The writing assistant's panel: a transparent window over the text field
+   (src-tauri/src/summon.rs, 520 × 200 points). The salmon swims in fast from
+   the left and stops with its nose on the text cursor, 260 points in and 23
+   down, in the middle of the line; then the card opens below it. */
 .panel-window,
 .panel-window body {
   background: transparent;
@@ -891,25 +892,25 @@ mark {
 
 .panel {
   position: relative;
-  width: 500px;
-  height: 190px;
+  width: 520px;
+  height: 200px;
   overflow: hidden;
 }
 
 .panel .swim {
   position: absolute;
-  left: 62px;
+  left: 172px;
   top: 0;
   width: 88px;
   height: 46px;
-  animation: swim-in 750ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
+  animation: swim-in 480ms cubic-bezier(0.15, 0.8, 0.25, 1) both;
 }
 
 .panel .salmon {
   width: 88px;
   height: 46px;
   filter: drop-shadow(0 2px 3px rgb(15 42 51 / 0.25));
-  animation: wiggle 250ms ease-in-out 3 alternate both;
+  animation: wiggle 120ms ease-in-out 4 alternate both;
   transform-origin: 70% 50%;
 }
 
@@ -918,37 +919,37 @@ mark {
   border: 2px solid #2e6f73;
   border-radius: 50%;
   opacity: 0;
-  animation: rise 900ms ease-out 450ms both;
+  animation: rise 800ms ease-out 380ms both;
 }
 
 .panel .bubble.one {
   width: 9px;
   height: 9px;
-  left: 82px;
-  top: 4px;
+  left: 84px;
+  top: 2px;
 }
 
 .panel .bubble.two {
   width: 5px;
   height: 5px;
-  left: 92px;
-  top: 0;
-  animation-delay: 600ms;
+  left: 94px;
+  top: -2px;
+  animation-delay: 500ms;
 }
 
 .panel-card {
   position: absolute;
-  left: 100px;
-  top: 48px;
-  width: 360px;
+  left: 200px;
+  top: 54px;
+  width: 300px;
   box-sizing: border-box;
   padding: 14px 18px;
   border-radius: 14px;
   background: var(--surface);
   border: 1px solid rgb(15 42 51 / 0.12);
   box-shadow: 0 10px 30px rgb(15 42 51 / 0.22);
-  transform-origin: 40px 0;
-  animation: unfold 260ms ease-out 650ms both;
+  transform-origin: 60px 0;
+  animation: unfold 220ms ease-out 420ms both;
 }
 
 .panel-card p {
@@ -957,17 +958,14 @@ mark {
 
 @keyframes swim-in {
   0% {
-    transform: translate(-170px, 10px);
+    transform: translate(-260px, 6px);
     opacity: 0;
   }
-  15% {
+  10% {
     opacity: 1;
   }
-  45% {
-    transform: translate(-90px, -4px);
-  }
-  75% {
-    transform: translate(-25px, 4px);
+  50% {
+    transform: translate(-90px, -3px);
   }
   100% {
     transform: none;
