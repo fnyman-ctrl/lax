@@ -26,10 +26,11 @@ they change.
   it was last stored is skipped. A window whose text keeps changing (a chat,
   a document being typed) is stored at most every 30 seconds, with its latest
   content (`Throttle`).
-- **Reading slows down when you're away.** After a minute without keyboard
-  or mouse input, Lax reads every 15 seconds instead of every 5; after ten
-  minutes, every minute. Only the time since the last input is read, never
-  the input itself (`pace`, `ax::idle_time`).
+- **Reading slows down when you're away, and stops when you've left.** After
+  a minute without keyboard or mouse input, Lax reads every 15 seconds instead
+  of every 5. After ten minutes nothing is read until you're back, and the
+  first input wakes it up. Only the time since the last input is read, never
+  the input itself (`pace`, `reads`, `ax::idle_time`).
 - **Reading slows down on battery.** On battery, every wait is twice as long
   (`ax::on_battery`).
 - **Expensive setup happens once.** Chromium and Electron apps are asked to
@@ -46,7 +47,7 @@ they change.
    (`~/Library/Application Support/io.github.fnyman-ctrl.lax/logs/lax.log`)
    has a `capture.summary` line with counts and timings only: rounds,
    captures stored, unchanged, paused, the largest window walked, rounds while
-   away and on battery, and the slowest round. A `slowest` near one second or
+   away, gone (nothing read) and on battery, and the slowest round. A `slowest` near one second or
    a `largest_window_elements` at 3,000 point to a window that hits the limits.
 
 ## Not yet measured

@@ -24,7 +24,8 @@ previous one, so they can be built, tested and improved independently.
   full address. The page's navigation, header and footer, which repeat on every
   page, are skipped.
 - Reading slows down while the user is away from the keyboard or on battery,
-  and a window whose text keeps changing is stored at most every 30 seconds.
+  and stops after ten minutes without input until they are back. A window
+  whose text keeps changing is stored at most every 30 seconds.
   See [PERFORMANCE.md](PERFORMANCE.md).
 - If an app exposes no accessible text, fall back to a screenshot of the window
   (ScreenCaptureKit) and on-device OCR (Apple Vision). The screenshot is discarded

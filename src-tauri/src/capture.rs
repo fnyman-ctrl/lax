@@ -597,7 +597,16 @@ fn title_without_address(title: &str) -> String {
 
 /// Without keyboard or mouse input for this long, the user counts as away.
 pub const AWAY: Duration = Duration::from_secs(60);
+/// Without input for this long, the user has left the computer: nothing is
+/// read until they are back.
 const LONG_AWAY: Duration = Duration::from_secs(10 * 60);
+
+/// Whether the screen is read at all. What appears while the user is gone
+/// (a chat that keeps arriving, a page that refreshes) is not something they
+/// did or saw, so it isn't captured. If idle time can't be read, it is.
+pub fn reads(idle: Option<Duration>) -> bool {
+    !idle.is_some_and(|idle| idle >= LONG_AWAY)
+}
 
 /// How long to wait before the next read: the interval the user chose,
 /// longer while they are away from the keyboard or on battery (#11).
@@ -605,6 +614,8 @@ const LONG_AWAY: Duration = Duration::from_secs(10 * 60);
 /// While nobody types or moves the mouse, the screen rarely changes, and
 /// what doesn't change isn't stored anyway, so reading less often loses
 /// little. Video and slides changing on their own are read less often.
+/// Once the user has left (`reads`), this is only how often Lax checks
+/// whether they are back; it also wakes up as soon as they are.
 pub fn pace(interval: Duration, idle: Option<Duration>, on_battery: bool) -> Duration {
     const MAX: Duration = Duration::from_secs(300);
     let mut wait = match idle {
@@ -721,7 +732,12 @@ mod run {
                 let started = Instant::now();
                 let interval = interval(&app);
                 app.state::<Heartbeat>().beat(interval);
-                if accessibility::is_granted() {
+                let idle = crate::ax::idle_time();
+                let reads = super::reads(idle);
+                if !reads {
+                    stats.gone += 1;
+                }
+                if reads && accessibility::is_granted() {
                     let pause = app.state::<Pause>();
                     if let Some((version, exclusions)) =
                         app.state::<Current>().newer_than(exclusions_seen)
@@ -751,7 +767,6 @@ mod run {
                     };
                     last_summary = Instant::now();
                 }
-                let idle = crate::ax::idle_time();
                 let on_battery = crate::ax::on_battery().unwrap_or(false);
                 stats.record_pace(idle, on_battery);
                 let wait = super::pace(interval, idle, on_battery);
@@ -820,8 +835,9 @@ mod run {
         store_errors: u64,
         largest_window: u64,
         /// Rounds while the user was away from the keyboard (a minute or
-        /// more), and while on battery.
+        /// more), while they had left (nothing read), and on battery.
         away: u64,
+        gone: u64,
         battery: u64,
         slowest: Duration,
         skips: SkipCounter,
@@ -883,6 +899,7 @@ mod run {
                     Field::Count("skipped_today_user", u64::from(skips.excluded_by_user)),
                     Field::Count("largest_window_elements", self.largest_window),
                     Field::Count("away", self.away),
+                    Field::Count("gone", self.gone),
                     Field::Count("battery", self.battery),
                     Field::Duration("slowest", self.slowest),
                 ],
@@ -1979,6 +1996,16 @@ mod tests {
         assert_eq!(pace(five, Some(s(600)), false), s(60));
         // A longer chosen interval is never shortened.
         assert_eq!(pace(s(120), Some(s(60)), false), s(120));
+    }
+
+    #[test]
+    fn nothing_is_read_once_the_user_has_left() {
+        let s = Duration::from_secs;
+        assert!(reads(None));
+        assert!(reads(Some(s(0))));
+        assert!(reads(Some(s(9 * 60 + 59))));
+        assert!(!reads(Some(s(10 * 60))));
+        assert!(!reads(Some(s(3 * 3600))));
     }
 
     #[test]
