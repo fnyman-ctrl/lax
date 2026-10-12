@@ -20,8 +20,9 @@ you decide it should.
 > ⚠️ **Status: early development.** Lax captures the text of the active window, lets you
 > see, search and forget everything it captured, writes a journal of your day, learns who
 > and what you work with, answers questions about your work, and drafts text in any text
-> field, all with AI models on your Mac and each off until you turn it on. See the
-> [roadmap](docs/ROADMAP.md), follow along or help out!
+> field, all with AI models on your Mac. The journal, the memory and the writing
+> assistant are off until you turn them on. See the [roadmap](docs/ROADMAP.md), follow
+> along or help out!
 
 ## Why
 
