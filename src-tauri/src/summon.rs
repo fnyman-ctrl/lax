@@ -250,24 +250,35 @@ pub struct Rect {
 }
 
 /// The panel window: room for the salmon to swim in from the left, and the
-/// card below the line. Matches `.panel` in `src/styles.css`.
-const PANEL_WIDTH: f64 = 520.0;
-const PANEL_HEIGHT: f64 = 200.0;
+/// card below the line, no wider than the text field (within limits).
+/// Matches `.panel` in `src/styles.css`.
+const PANEL_HEIGHT: f64 = 100.0;
 /// Where in the window the salmon's nose ends up, which is put on the text
 /// cursor: this far from the left edge, at this height (the middle of the
 /// salmon, so it swims along the line of text).
-const NOSE_X: f64 = 260.0;
-const NOSE_Y: f64 = 23.0;
+const NOSE_X: f64 = 200.0;
+const NOSE_Y: f64 = 11.0;
+/// Where the card starts, and the room right of it for its shadow.
+const CARD_LEFT: f64 = 160.0;
+const CARD_MARGIN: f64 = 12.0;
+/// The card's width: the text field's, within these limits.
+const CARD_MIN: f64 = 180.0;
+const CARD_MAX: f64 = 320.0;
+/// For a field of unknown width.
+const CARD_DEFAULT: f64 = 260.0;
 
-/// Where the panel's top left goes for the text cursor at `caret`, so the
-/// salmon's nose ends up on the cursor, in the middle of the line. Kept on
+/// Where the panel goes and how wide it is, for the text cursor at `caret`
+/// in a field `field_width` wide: the salmon's nose on the cursor, in the
+/// middle of the line, and the card no wider than the field. Kept on
 /// `screen`, even if the salmon then stops a little off the cursor.
-fn place(caret: Rect, screen: Rect) -> (f64, f64) {
+fn place(caret: Rect, field_width: Option<f64>, screen: Rect) -> (f64, f64, f64) {
+    let card = field_width.map_or(CARD_DEFAULT, |w| w.clamp(CARD_MIN, CARD_MAX));
+    let width = CARD_LEFT + card + CARD_MARGIN;
     let x = caret.x - NOSE_X;
     let y = caret.y + caret.height / 2.0 - NOSE_Y;
-    let right = (screen.x + screen.width - PANEL_WIDTH).max(screen.x);
+    let right = (screen.x + screen.width - width).max(screen.x);
     let bottom = (screen.y + screen.height - PANEL_HEIGHT).max(screen.y);
-    (x.clamp(screen.x, right), y.clamp(screen.y, bottom))
+    (x.clamp(screen.x, right), y.clamp(screen.y, bottom), width)
 }
 
 /// Comes to the text field, if Lax may. Called on the main thread when the
@@ -281,17 +292,17 @@ fn come(app: &AppHandle, app_decision: Decision) {
     let app = app.clone();
     std::thread::spawn(move || {
         #[cfg(target_os = "macos")]
-        if let Some((pid, caret)) = macos::locate(&app) {
-            show(&app, pid, caret);
+        if let Some((pid, caret, field)) = macos::locate(&app) {
+            show(&app, pid, caret, field);
         }
         #[cfg(not(target_os = "macos"))]
         let _ = app;
     });
 }
 
-/// Shows the panel at `caret`, or by the mouse pointer if the app didn't say
-/// where its text cursor is.
-fn show(app: &AppHandle, pid: i32, caret: Option<Rect>) {
+/// Shows the panel at `caret` in `field`, or by the mouse pointer if the app
+/// didn't say where its text cursor is.
+fn show(app: &AppHandle, pid: i32, caret: Option<Rect>, field: Option<Rect>) {
     logging::info(
         "write.summoned",
         &[Field::Flag("at_cursor", caret.is_some())],
@@ -309,7 +320,7 @@ fn show(app: &AppHandle, pid: i32, caret: Option<Rect>) {
                 tauri::WebviewUrl::App("index.html".into()),
             )
             .title("Lax")
-            .inner_size(PANEL_WIDTH, PANEL_HEIGHT)
+            .inner_size(CARD_LEFT + CARD_DEFAULT + CARD_MARGIN, PANEL_HEIGHT)
             .decorations(false)
             .transparent(true)
             .shadow(false)
@@ -328,12 +339,13 @@ fn show(app: &AppHandle, pid: i32, caret: Option<Rect>) {
         return;
     };
     let screen = screen_of(app, caret).unwrap_or(Rect {
-        x: caret.x - PANEL_WIDTH,
+        x: caret.x - 2.0 * NOSE_X,
         y: caret.y - PANEL_HEIGHT,
-        width: PANEL_WIDTH * 3.0,
-        height: PANEL_HEIGHT * 3.0,
+        width: 4.0 * NOSE_X + CARD_MAX,
+        height: 3.0 * PANEL_HEIGHT,
     });
-    let (x, y) = place(caret, screen);
+    let (x, y, width) = place(caret, field.map(|field| field.width), screen);
+    let _ = panel.set_size(tauri::LogicalSize::new(width, PANEL_HEIGHT));
     let _ = panel.set_position(tauri::LogicalPosition::new(x, y));
     let _ = panel.show();
     let _ = panel.set_focus();
@@ -419,7 +431,7 @@ mod macos {
     use tauri::{AppHandle, Manager};
 
     use super::{Input, Listener, Rect, come, held};
-    use crate::ax::AxScreen;
+    use crate::ax::{AxScreen, window_owner_at};
     use crate::capture::{Limits, Node, admit};
     use crate::exclusions::{Current, is_secure_text_field};
     use crate::pause::Pause;
@@ -487,7 +499,7 @@ mod macos {
     /// whether a browser window is private. `None` if Lax may not come: one
     /// of those says no, capture is paused, or the focus is in a password
     /// field. Only positions are read, never text.
-    pub fn locate(app: &AppHandle) -> Option<(i32, Option<Rect>)> {
+    pub fn locate(app: &AppHandle) -> Option<(i32, Option<Rect>, Option<Rect>)> {
         // Before the user's exclusions are loaded, Lax comes nowhere.
         let (_, exclusions) = app.state::<Current>().newer_than(0)?;
         let pause = app.state::<Pause>();
@@ -497,13 +509,25 @@ mod macos {
         })
         .ok()?;
         let Some(element) = screen.focused_element(&front) else {
-            return Some((front.pid, None));
+            return Some((front.pid, None, None));
         };
         let (role, subrole) = element.role_and_subrole();
         if is_secure_text_field(role.as_deref().unwrap_or_default(), subrole.as_deref()) {
             return None;
         }
-        Some((front.pid, element.caret()))
+        let caret = element.caret();
+        // Some apps (Electron apps with several web views, such as Claude)
+        // name a field hidden behind another app's window. If another
+        // window is on top where the cursor is said to be, go by the mouse
+        // pointer instead.
+        let hidden = caret.is_some_and(|caret| {
+            window_owner_at(caret.x + 1.0, caret.y + caret.height / 2.0)
+                .is_some_and(|owner| owner != front.pid)
+        });
+        if hidden {
+            return Some((front.pid, None, None));
+        }
+        Some((front.pid, caret, element.frame()))
     }
 
     /// Brings the app with this process id back to the front.
@@ -676,13 +700,21 @@ mod tests {
             width: 1.0,
             height: 18.0,
         };
-        // The nose (260, 23 into the window) on the cursor, mid-line.
-        assert_eq!(place(line(600.0, 300.0), screen), (340.0, 286.0));
+        // The nose (200, 11 into the window) on the cursor, mid-line; the
+        // card as wide as the field.
+        assert_eq!(
+            place(line(600.0, 300.0), Some(250.0), screen),
+            (400.0, 298.0, 422.0)
+        );
+        // Within limits: never narrower than 180 or wider than 320.
+        assert_eq!(place(line(600.0, 300.0), Some(90.0), screen).2, 352.0);
+        assert_eq!(place(line(600.0, 300.0), Some(1200.0), screen).2, 492.0);
+        assert_eq!(place(line(600.0, 300.0), None, screen).2, 432.0);
         // Near the edges the window stays on screen.
-        assert_eq!(place(line(100.0, 300.0), screen), (0.0, 286.0));
-        assert_eq!(place(line(1430.0, 300.0), screen), (920.0, 286.0));
-        assert_eq!(place(line(600.0, 880.0), screen), (340.0, 700.0));
-        assert_eq!(place(line(600.0, 5.0), screen), (340.0, 0.0));
+        assert_eq!(place(line(100.0, 300.0), None, screen).0, 0.0);
+        assert_eq!(place(line(1430.0, 300.0), None, screen).0, 1008.0);
+        assert_eq!(place(line(600.0, 880.0), None, screen).1, 800.0);
+        assert_eq!(place(line(600.0, 0.0), None, screen).1, 0.0);
         // A second display to the left of the main one.
         let left = Rect {
             x: -1920.0,
@@ -690,7 +722,10 @@ mod tests {
             width: 1920.0,
             height: 1080.0,
         };
-        assert_eq!(place(line(-1000.0, 100.0), left), (-1260.0, 86.0));
+        assert_eq!(
+            place(line(-1000.0, 100.0), None, left),
+            (-1200.0, 98.0, 432.0)
+        );
     }
 
     #[test]

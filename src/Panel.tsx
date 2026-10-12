@@ -38,7 +38,7 @@ export function Panel() {
         <p>
           <strong>Lax is here.</strong>
         </p>
-        <p className="muted">Writing drafts comes in the next version. Escape closes.</p>
+        <p className="muted">Drafts come in the next version. Esc closes.</p>
       </div>
     </main>
   );

@@ -18,8 +18,8 @@ use std::time::Duration;
 use objc2::rc::autoreleasepool;
 use objc2_app_kit::NSWorkspace;
 use objc2_core_foundation::{
-    CFArray, CFBoolean, CFGetTypeID, CFIndex, CFRange, CFRetained, CFString, CFType, CFTypeID,
-    CFURL, kCFBooleanTrue,
+    CFArray, CFBoolean, CFDictionary, CFGetTypeID, CFIndex, CFNumber, CFRange, CFRetained,
+    CFString, CFType, CFTypeID, CFURL, kCFBooleanTrue,
 };
 
 use crate::capture::{App, Node, Screen, truncate_chars};
@@ -90,6 +90,78 @@ unsafe extern "C" {
     // SAFETY: plain values in and out; reads only how long ago the last
     // input event of any kind happened, never which event it was.
     safe fn CGEventSourceSecondsSinceLastEventType(source_state: i32, event_type: u32) -> f64;
+}
+
+// CoreGraphics' window list: where windows are and which process owns them.
+#[link(name = "ApplicationServices", kind = "framework")]
+unsafe extern "C" {
+    // Returns a new array the caller owns ("Copy" rule), or null.
+    fn CGWindowListCopyWindowInfo(option: u32, relative_to_window: u32) -> *const CFArray;
+    // Fills `rect` from a window's bounds dictionary; false if it isn't one.
+    fn CGRectMakeWithDictionaryRepresentation(dict: &CFDictionary, rect: *mut Rect) -> bool;
+}
+
+/// `kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements`.
+const ON_SCREEN_WINDOWS: u32 = (1 << 0) | (1 << 4);
+
+/// The process whose ordinary window is on top at `x`, `y` (in points).
+/// Reads only where windows are, their level and which process owns them,
+/// never their titles or what they show (that would need Screen Recording).
+pub fn window_owner_at(x: f64, y: f64) -> Option<i32> {
+    // SAFETY: plain values in; returns a new array or null.
+    let windows = unsafe { CGWindowListCopyWindowInfo(ON_SCREEN_WINDOWS, 0) };
+    // SAFETY: the array is a new reference we own; its items are
+    // dictionaries, checked below before use.
+    let windows = unsafe { owned(windows.cast()) }?
+        .downcast::<CFArray>()
+        .ok()?;
+    let (bounds, owner, layer) = (
+        CFString::from_static_str("kCGWindowBounds"),
+        CFString::from_static_str("kCGWindowOwnerPID"),
+        CFString::from_static_str("kCGWindowLayer"),
+    );
+    // Front to back.
+    for index in 0..windows.count() {
+        // SAFETY: `index` is within the array.
+        let item = unsafe { windows.value_at_index(index) };
+        let Some(item) = NonNull::new(item.cast_mut()) else {
+            continue;
+        };
+        // SAFETY: a valid CF object, borrowed from the array.
+        let item: &CFType = unsafe { item.cast().as_ref() };
+        let Some(window) = item.downcast_ref::<CFDictionary>() else {
+            continue;
+        };
+        let number = |key: &CFString| {
+            // SAFETY: valid dictionary and key; the value is borrowed.
+            let value = unsafe { window.value((key as *const CFString).cast()) };
+            let value: &CFType = unsafe { NonNull::new(value.cast_mut())?.cast().as_ref() };
+            value.downcast_ref::<CFNumber>()?.as_i64()
+        };
+        // Menu bar, Dock, floating panels: not the app's windows.
+        if number(&layer) != Some(0) {
+            continue;
+        }
+        // SAFETY: valid dictionary and key; the value is borrowed.
+        let frame = unsafe { window.value((&*bounds as *const CFString).cast()) };
+        let Some(frame) = NonNull::new(frame.cast_mut()) else {
+            continue;
+        };
+        // SAFETY: a valid CF object, borrowed from the dictionary.
+        let frame: &CFType = unsafe { frame.cast().as_ref() };
+        let Some(frame) = frame.downcast_ref::<CFDictionary>() else {
+            continue;
+        };
+        let mut rect = Rect::default();
+        // SAFETY: valid dictionary; `rect` is a CGRect-shaped out value.
+        if !unsafe { CGRectMakeWithDictionaryRepresentation(frame, &mut rect) } {
+            continue;
+        }
+        if x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height {
+            return number(&owner).and_then(|pid| i32::try_from(pid).ok());
+        }
+    }
+    None
 }
 
 /// `kCGEventSourceStateCombinedSessionState`.
@@ -375,7 +447,8 @@ impl Element {
         (rect.height > 0.0 && (rect.x != 0.0 || rect.y != 0.0)).then_some(rect)
     }
 
-    fn frame(&self) -> Option<Rect> {
+    /// Where the element is on screen.
+    pub fn frame(&self) -> Option<Rect> {
         let position = self.copy(&self.names.position)?;
         let size = self.copy(&self.names.size)?;
         let position: [f64; 2] = ax_value(&position, AX_VALUE_CG_POINT)?;
@@ -554,5 +627,15 @@ mod tests {
             assert!(idle < Duration::from_secs(10 * 365 * 24 * 3600));
         }
         let _ = on_battery();
+    }
+
+    #[test]
+    fn the_window_on_top_can_be_found() {
+        // Needs no permission either. Far off any screen there's no window;
+        // on the main screen there may be one, owned by a real process.
+        assert_eq!(window_owner_at(-1.0e7, -1.0e7), None);
+        if let Some(pid) = window_owner_at(400.0, 400.0) {
+            assert!(pid > 0);
+        }
     }
 }
