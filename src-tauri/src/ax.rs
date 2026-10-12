@@ -477,6 +477,12 @@ impl Element {
         })
     }
 
+    /// Whether the app says where its text cursor is (rather than Lax
+    /// falling back to the field's first line).
+    pub fn has_caret_bounds(&self) -> bool {
+        self.caret_bounds().is_some()
+    }
+
     fn caret_bounds(&self) -> Option<Rect> {
         let range = self.copy(&self.names.selected_text_range)?;
         if CFGetTypeID(Some(&range)) != AXValueGetTypeID() {

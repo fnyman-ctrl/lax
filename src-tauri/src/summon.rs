@@ -228,6 +228,36 @@ pub struct Call {
     pub accessible: bool,
 }
 
+/// An accessibility role as a number for the log, which takes no text:
+/// 1 text area, 2 text field, 3 web area, 4 group, 5 scroll area, 6 static
+/// text, 7 layout area, 8 combo box, 9 text view (Pages), 0 anything else
+/// or none.
+pub fn role_code(role: Option<&str>) -> i64 {
+    match role {
+        Some("AXTextArea") => 1,
+        Some("AXTextField") => 2,
+        Some("AXWebArea") => 3,
+        Some("AXGroup") => 4,
+        Some("AXScrollArea") => 5,
+        Some("AXStaticText") => 6,
+        Some("AXLayoutArea") => 7,
+        Some("AXComboBox") => 8,
+        Some("AXTextView") => 9,
+        _ => 0,
+    }
+}
+
+/// What a draft replaces, as a number for the log: 0 nothing, 1 the
+/// selection, 2 a paragraph, 3 the whole field.
+pub fn replace_code(replace: Replace) -> i64 {
+    match replace {
+        Replace::Nothing => 0,
+        Replace::Selection => 1,
+        Replace::Paragraph { whole: false, .. } => 2,
+        Replace::Paragraph { whole: true, .. } => 3,
+    }
+}
+
 /// The id of the next call.
 pub(crate) static NEXT_CALL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
@@ -696,9 +726,10 @@ pub(crate) mod macos {
         Call, CallKey, Input, Listener, MAX_CONTEXT_CHARS, MAX_INSTRUCTION_CHARS, Rect, come, held,
         instruction_in,
     };
-    use crate::ax::{AxScreen, window_owner_at};
+    use crate::ax::{AxScreen, FieldText, window_owner_at};
     use crate::capture::{App, Capturer, Limits, Node, Outcome, Screen, admit, truncate_chars};
     use crate::exclusions::{Current, is_secure_text_field};
+    use crate::logging::{self, Field};
     use crate::pause::Pause;
     use crate::redact::redact;
 
@@ -814,15 +845,65 @@ pub(crate) mod macos {
                 || screen.shows_at(&found.front, &element, x, y) == Some(false)
         });
         if hidden {
+            log_field(
+                role.as_deref(),
+                element.has_caret_bounds(),
+                true,
+                None,
+                &found.call,
+            );
             return Some(found);
         }
-        if let Some(text) = element.field_text(MAX_INSTRUCTION_CHARS) {
-            (found.call.instruction, found.call.replace) = instruction_in(&text);
+        let text = element.field_text(MAX_INSTRUCTION_CHARS);
+        if let Some(text) = &text {
+            (found.call.instruction, found.call.replace) = instruction_in(text);
         }
+        log_field(
+            role.as_deref(),
+            element.has_caret_bounds(),
+            false,
+            text.as_ref(),
+            &found.call,
+        );
         found.call.accessible = true;
         found.caret = caret;
         found.field = element.frame();
         Some(found)
+    }
+
+    /// What kind of field Lax was called to and what it offered, as codes
+    /// and counts only, never text: so a field that behaves oddly (Pages)
+    /// can be understood from the log.
+    fn log_field(
+        role: Option<&str>,
+        caret_bounds: bool,
+        hidden: bool,
+        text: Option<&FieldText>,
+        call: &Call,
+    ) {
+        let (selected, value_chars, caret_at) = match text {
+            Some(FieldText::Selected(_)) => (true, 0, -1),
+            Some(FieldText::All { value, caret }) => (
+                false,
+                value.chars().count() as u64,
+                caret.map_or(-1, |c| c as i64),
+            ),
+            None => (false, 0, -1),
+        };
+        logging::info(
+            "write.field",
+            &[
+                Field::Id("role", super::role_code(role)),
+                Field::Flag("caret_bounds", caret_bounds),
+                Field::Flag("hidden", hidden),
+                Field::Flag("has_text", text.is_some()),
+                Field::Flag("selected", selected),
+                Field::Count("value_chars", value_chars),
+                Field::Id("caret_at", caret_at),
+                Field::Flag("instruction", !call.instruction.is_empty()),
+                Field::Id("replace", super::replace_code(call.replace)),
+            ],
+        );
     }
 
     /// The text of `front`'s focused window, read as capture reads it, with
@@ -1167,6 +1248,23 @@ mod tests {
         // Secrets are redacted.
         let key = format!("sk-{}", "a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6");
         assert!(!instruction_from(&format!("use {key}")).contains(&key));
+    }
+
+    #[test]
+    fn the_field_is_logged_as_codes() {
+        assert_eq!(role_code(Some("AXTextArea")), 1);
+        assert_eq!(role_code(Some("AXTextView")), 9);
+        assert_eq!(role_code(Some("AXSomethingNew")), 0);
+        assert_eq!(role_code(None), 0);
+        assert_eq!(replace_code(Replace::Nothing), 0);
+        assert_eq!(
+            replace_code(Replace::Paragraph {
+                start: 0,
+                len: 3,
+                whole: true
+            }),
+            3
+        );
     }
 
     #[test]
