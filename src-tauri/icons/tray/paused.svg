@@ -1,21 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100" fill="#000000">
-  <!-- Menu bar template image. Paused: a faded salmon with pause bars.
+<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 36 36" shape-rendering="crispEdges">
+  <!-- Menu bar template image. Paused: a faded pixel salmon with pause bars.
        macOS recolours it to match the menu bar, so only the shape matters.
        Regenerate with: npm run icons -->
-  <defs>
-    <mask id="eye"><rect width="100" height="100" fill="white"/><circle cx="78" cy="47" r="6.4" fill="black" transform="rotate(-12 54 52)"/></mask>
-  </defs>
-  <!-- A smaller salmon, so it fits whole to the left of the pause bars -->
-  <g opacity="0.35" transform="translate(-1 18) scale(0.62)">
-    <g mask="url(#eye)">
-      <g transform="rotate(-12 54 52)">
-        <path d="M20 52 C 14 46, 9 40, 4 34 C 7 42, 8 47, 10 52 C 8 57, 7 62, 4 70 C 9 64, 14 58, 20 52 Z"/>
-        <path d="M46 35 C 48 28, 54 26, 58 34 Z"/>
-        <path d="M27 43.5 C 27 39.5, 30.5 39, 31.5 42.5 Z"/>
-        <path d="M18 52 C 26 38, 52 33, 70 36 C 84 38.5, 93 45, 94 52 C 93 59, 84 65, 70 67 C 52 70, 26 66, 18 52 Z"/>
-      </g>
-    </g>
-  </g>
-  <rect x="66" y="28" width="10" height="44" rx="2.5"/>
-  <rect x="84" y="28" width="10" height="44" rx="2.5"/>
+  <path fill="#000000" opacity="0.35" transform="translate(0 10) scale(2)" d="M6 0h1v1h-1zM0 1h1v1h-1zM5 1h6v1h-6zM0 2h2v1h-2zM3 2h6v1h-6zM10 2h3v1h-3zM0 3h13v1h-13zM0 4h12v1h-12zM0 5h1v1h-1zM3 5h8v1h-8zM4 6h1v1h-1zM6 6h2v1h-2zM7 7h1v1h-1z"/>
+  <rect x="27" y="10" width="3" height="16" fill="#000000"/>
+  <rect x="32" y="10" width="3" height="16" fill="#000000"/>
 </svg>
