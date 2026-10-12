@@ -10,11 +10,12 @@ closer to them.
 | Stage | Goal | Status |
 |---|---|---|
 | 0 | Foundation | ✅ Done |
-| [1](https://github.com/fnyman-ctrl/lax/milestone/1) | Capture | 🚧 Almost done: a workday measurement is left (#11) |
-| [2](https://github.com/fnyman-ctrl/lax/milestone/2) | Model layer | 🚧 Local models done; remote providers next |
-| [3](https://github.com/fnyman-ctrl/lax/milestone/3) | Journal | 🚧 First version, opt-in |
-| [4](https://github.com/fnyman-ctrl/lax/milestone/4) | Learning memory ⭐ | 🚧 First version done: entities, pages in ~/Lax with facts, about-me.md, history; a week of use to judge |
-| [5](https://github.com/fnyman-ctrl/lax/milestone/5) | Ask your memory | 🚧 Questions answered from the journal and the memory, found by time, name, words and meaning |
+| [1](https://github.com/fnyman-ctrl/lax/milestone/1) | Capture | 🚧 Almost done: a workday measurement is left (#11). Reads nothing while you're away |
+| [2](https://github.com/fnyman-ctrl/lax/milestone/2) | Model layer | 🚧 Local models done, quiet in the background and on battery; remote providers next |
+| [3](https://github.com/fnyman-ctrl/lax/milestone/3) | Journal | 🚧 Works, opt-in; when raw captures expire is left (#39) |
+| [4](https://github.com/fnyman-ctrl/lax/milestone/4) | Learning memory ⭐ | ✅ First version: entities, pages in ~/Lax with facts, about-me.md, history; a week of use to judge |
+| [5](https://github.com/fnyman-ctrl/lax/milestone/5) | Ask your memory | ✅ First version: a conversation, answered from the journal and the memory, found by time, name, words and meaning |
+| — | Writing assistant | ✅ First version, pulled forward ([ADR 0009](adr/0009-writing-assistant.md)): call Lax to any text field for a draft |
 | [6](https://github.com/fnyman-ctrl/lax/milestone/6) | Release 0.1 | Planned |
 
 ---
@@ -91,6 +92,25 @@ enough that you'd trust them, and corrections stick.
 - Semantic search over episodes and pages (local embeddings)
 - Questions like "What did I do on Tuesday?" or "What's the status of project X?",
   with links to the sources
+- A conversation: follow-up questions ("and the day before?") with the turns before
+
+## Writing assistant (pulled forward)
+
+**Goal:** Lax's context where you write ([ADR 0009](adr/0009-writing-assistant.md)).
+The maintainer chose to build it before the release, since it is what makes Lax
+useful every day.
+
+- Double-tap ⌥ Option (or a key the user picks) in a text field; nothing shows
+  in text fields until then
+- A small pixel salmon swims to the text cursor; the card sits on Liquid Glass
+  on macOS 26 and later
+- The instruction is the selection or the paragraph at the cursor; the draft is
+  written from it, `about-me.md`, the pages of people named in it and the window
+- The user reads and edits the draft; Enter puts it in place of the instruction,
+  and Lax never sends
+
+Next: the pages of the people in a mail thread, and pasting through the app's
+Edit menu so it works with every keyboard layout.
 
 ## Stage 6: Release 0.1
 
@@ -105,7 +125,6 @@ enough that you'd trust them, and corrections stick.
 
 Ideas for after 0.1, roughly in order of interest. None of them are committed.
 
-- **Writing assistant:** press a key in any text field to draft replies with context from your memory
 - **Meetings:** local transcription with Whisper (e.g. KB-Whisper for Swedish)
 - **Time tracking:** time per project, derived from the journal
 - **MCP server:** read-only access to your memory for other local tools

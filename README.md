@@ -50,14 +50,21 @@ decide otherwise.**
    *About me* page, as plain **Markdown files** in `~/Lax` that you can read and
    edit. What you write there is never overwritten, and facts you delete stay
    deleted.
-5. **Ask** (works today): ask about your work ("Vad gjorde jag igår?", "What did I
-   work on with Anna last week?") and get an answer from your journal and memory,
-   with the entries it's based on.
-6. **Write** (works today, opt-in): double-tap ⌥ Option in any text field and a
-   small pixel salmon swims to your cursor. Tell it what to write ("reply in my
-   tone and thank her for the offer"), and it drafts the text from what Lax
-   knows and the window you're in. You read and edit it; Enter puts it in the
-   field. Lax never sends anything.
+5. **Ask** (works today): a conversation about your work. Ask "Vad gjorde jag
+   igår?" or "What did I work on with Anna last week?", then ask on ("and the day
+   before?"). Answers come from your journal and memory, with the entries they're
+   based on.
+6. **Write** (works today, opt-in): double-tap ⌥ Option (or a key you pick, so it
+   doesn't clash with other apps) in any text field, and a small pixel salmon
+   swims to your cursor. Tell it what to write ("reply in my tone and thank her
+   for the offer"), or select a paragraph and ask it to make it shorter. It
+   drafts the text from what Lax knows and the window you're in, on Liquid Glass
+   on macOS 26 and later. You read and edit it; Enter puts it in the field.
+   Lax never sends anything.
+
+Lax keeps your Mac quiet while you use it: it reads nothing once you've left the
+computer for ten minutes, the memory's model work waits until you're away from
+the keyboard, and nothing runs in the background on battery.
 
 Later: meeting transcription (Whisper), time tracking, and a local MCP server so
 other local tools can use your memory.

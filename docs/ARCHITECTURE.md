@@ -81,7 +81,9 @@ previous one, so they can be built, tested and improved independently.
 ## Ask
 
 - A question typed into Lax is answered from the journal by the chat model
-  (`src-tauri/src/ask.rs`). The entries are found without a model call: a
+  (`src-tauri/src/ask.rs`), as a conversation: the latest turns go along as
+  one captured block, and a follow-up with no names or words of its own takes
+  the time, names and words of the question before it. The entries are found without a model call: a
   time in the question ("i tisdags", "last week"), names the memory knows,
   and a full-text search, within a size budget. The answer names the entries
   it is based on. With an embedding model chosen, episodes get vectors in the
@@ -96,18 +98,22 @@ previous one, so they can be built, tested and improved independently.
   go down, never which, and only while the user has it on. Before it looks at
   the window, Lax makes the same checks as capture (app, window title, private
   browser window; `capture::admit`), and it never comes to a password field.
-  The salmon swims in to the text cursor. The instruction is the text
-  selected in the field, or what is in it; the window is read as capture
+  The salmon swims in to the text cursor; if the app names a field that is
+  hidden (behind another window or view), it goes by the mouse pointer. The
+  instruction is the text selected in the field, or else the paragraph at the
+  cursor; the window is read as capture
   reads it, for the app Lax was called to (`src-tauri/src/summon.rs`). On
   Enter, the chat model writes a draft from the instruction, `about-me.md`,
   the pages of people and projects named in the instruction (not every name
   in the window), and the window's text, all as `Captured` data
   (`src-tauri/src/write.rs`). Secrets are redacted first, and nothing about
   a draft is stored. The user can edit the draft; Enter puts it into the field
-  in place of the instruction, through Accessibility where the app takes it,
+  in place of the instruction (after checking it is still there), through
+  Accessibility where the app takes it,
   or else pasted with the clipboard marked concealed and transient and put
   back afterwards (`src-tauri/src/insert.rs`). Lax never presses Return or
-  Send.
+  Send. On macOS 26 and later the card sits on a native Liquid Glass view
+  (`src-tauri/src/glass.rs`).
 
 ## Models
 
