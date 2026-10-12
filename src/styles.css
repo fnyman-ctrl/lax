@@ -773,19 +773,149 @@ mark {
   font-size: 0.85em;
 }
 
-/* Ask (src/Ask.tsx) */
+/* Ask (src/Ask.tsx): a conversation, latest at the bottom, the question
+   box below it. */
 
-.ask-form {
+.chat {
   display: flex;
-  gap: 0.5rem;
-  margin-top: 1.25rem;
+  flex-direction: column;
+  min-height: calc(100vh - 190px);
 }
 
-.ask-form input {
+.chat-log {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 1rem 0 0.5rem;
+}
+
+.chat-empty {
+  margin: auto 0;
+  text-align: center;
+}
+
+.chat-empty p {
+  margin: 0.5rem auto;
+  max-width: 34rem;
+}
+
+.chat-salmon {
+  width: 76px;
+  height: 44px;
+  image-rendering: pixelated;
+}
+
+.bubble {
+  margin: 0;
+  padding: 0.6rem 0.9rem;
+  border-radius: 16px;
+  max-width: 85%;
+  line-height: 1.5;
+}
+
+.bubble.from-you {
+  align-self: flex-end;
+  background: var(--accent, #2e6f73);
+  color: #fff;
+  border-bottom-right-radius: 4px;
+  white-space: pre-wrap;
+}
+
+.bubble.from-lax {
+  align-self: flex-start;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-bottom-left-radius: 4px;
+}
+
+.bubble .answer {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.bubble .sources {
+  margin-top: 0.5rem;
+  font-size: 0.95em;
+}
+
+.bubble .sources summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.bubble.thinking {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.bubble.thinking .chat-salmon {
+  width: 38px;
+  height: 22px;
+}
+
+/* While Lax thinks, the salmon swims on the spot and shimmers through its
+   colours, as in the writing assistant's panel. */
+.chat-salmon.working {
+  animation:
+    shimmer 1.6s linear infinite,
+    bob 0.8s ease-in-out infinite alternate;
+}
+
+.dots {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.dots span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+  animation: dot 1.2s ease-in-out infinite;
+}
+
+.dots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.dots span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes dot {
+  0%,
+  80%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+
+.ask-form {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-end;
+  padding: 0.6rem 0 0.2rem;
+  background: var(--bg);
+}
+
+.ask-form textarea {
   flex: 1;
   min-width: 0;
   padding: 0.6rem 0.9rem;
-  border-radius: 999px;
+  border-radius: 18px;
+  font: inherit;
+  resize: none;
+  field-sizing: content;
+  max-height: 8rem;
 }
 
 .ask .hint {
@@ -795,36 +925,24 @@ mark {
 
 .ask .examples {
   margin-top: 1rem;
+  justify-content: center;
 }
 
-.turn {
-  margin-top: 1.25rem;
-  padding: 0.75rem 1rem;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--surface);
-}
-
-.turn .question {
-  margin: 0 0 0.4rem;
-  font-weight: 600;
-}
-
-.turn .answer {
-  margin: 0;
-  font-size: 1.02rem;
-  line-height: 1.55;
-  white-space: pre-wrap;
-}
-
-.turn .sources {
-  margin-top: 0.6rem;
-  font-size: 0.95em;
-}
-
-.turn .sources summary {
+button.link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent, #2e6f73);
+  text-decoration: underline;
   cursor: pointer;
-  color: var(--muted);
+  font: inherit;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-salmon.working,
+  .dots span {
+    animation: none;
+  }
 }
 
 .entity .page-problem {

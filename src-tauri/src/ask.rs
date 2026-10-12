@@ -60,7 +60,8 @@ Answer briefly and directly, in the language of the question. For several things
 lines starting with \"- \". Put the numbers of the journal entries the answer is based on in \
 sources, as a list of numbers such as [1, 4] (what the memory knows has no number). Don't put \
 entry numbers in the answer. If the blocks don't answer the question, say so plainly; don't \
-guess.";
+guess. A block may hold the conversation so far: use it only to understand what a follow-up \
+question refers to, and answer from the memory and the journal entries.";
 const SHAPE: &str = r#"{"answer": string, "sources": [number]}"#;
 
 /// What the model must answer.
@@ -170,16 +171,44 @@ struct Found {
 }
 
 /// Finds the entries `question` is about, oldest first, within the budget.
+#[cfg(test)]
 fn gather<Tz: TimeZone>(
     store: &Store,
     question: &str,
     meaning: Option<&Meaning>,
     now: &DateTime<Tz>,
 ) -> crate::store::Result<Found> {
-    let range = time_range(question, now);
+    gather_after(store, question, &[], meaning, now)
+}
+
+/// Like [`gather`], for a question that may follow up on `earlier` ones
+/// (latest last): with no time of its own, it takes the latest earlier one;
+/// it adds the names in the question before it; and with no words to search
+/// for, it takes that question's.
+fn gather_after<Tz: TimeZone>(
+    store: &Store,
+    question: &str,
+    earlier: &[&str],
+    meaning: Option<&Meaning>,
+    now: &DateTime<Tz>,
+) -> crate::store::Result<Found> {
+    let range = time_range(question, now).or_else(|| {
+        earlier
+            .iter()
+            .rev()
+            .find_map(|earlier| time_range(earlier, now))
+    });
     let asked = words(question);
-    let entities = named_entities(&asked, &store.entity_names()?);
-    let search = search_words(&asked);
+    let before = earlier.last().map(|q| words(q)).unwrap_or_default();
+    let names = store.entity_names()?;
+    let mut entities = named_entities(&asked, &names);
+    entities.extend(named_entities(&before, &names));
+    entities.sort_unstable();
+    entities.dedup();
+    let mut search = search_words(&asked);
+    if search.is_empty() {
+        search = search_words(&before);
+    }
 
     // Within a named time, every match there counts, not only the newest.
     let limit = if range.is_some() { 500 } else { PER_SOURCE };
@@ -696,9 +725,55 @@ pub struct AskAnswer {
     pub recent_only: bool,
 }
 
-/// Answers `question` from the journal with the chosen chat model.
+/// An earlier question and its answer in the same conversation, from the
+/// window. Only held there; never stored.
+#[derive(Debug, Deserialize)]
+pub struct Earlier {
+    question: String,
+    answer: String,
+}
+
+/// At most this many earlier turns, and characters of them, go along.
+const MAX_EARLIER_TURNS: usize = 4;
+const MAX_EARLIER_CHARS: usize = 3000;
+
+/// The conversation so far as one block for the model, latest turns kept
+/// when it is too long; `None` if there is none. Earlier answers came from
+/// the model and captured text, so the block goes in as captured data.
+fn conversation(earlier: &[Earlier]) -> Option<String> {
+    let mut turns: Vec<String> = Vec::new();
+    let mut chars = 0;
+    for turn in earlier.iter().rev().take(MAX_EARLIER_TURNS) {
+        let text = format!(
+            "The user asked: {}\nLax answered: {}",
+            crate::capture::truncate_chars(turn.question.trim(), MAX_QUESTION_CHARS),
+            crate::capture::truncate_chars(turn.answer.trim(), MAX_ANSWER_CHARS),
+        );
+        chars += text.chars().count();
+        if chars > MAX_EARLIER_CHARS && !turns.is_empty() {
+            break;
+        }
+        turns.push(text);
+    }
+    if turns.is_empty() {
+        return None;
+    }
+    turns.reverse();
+    Some(format!(
+        "The conversation so far, oldest first:\n\n{}",
+        turns.join("\n\n")
+    ))
+}
+
+/// Answers `question` from the journal with the chosen chat model, as a
+/// follow-up to `earlier` turns of the same conversation (oldest first).
 #[tauri::command]
-pub async fn ask_memory(app: AppHandle, question: String) -> Result<AskAnswer, String> {
+pub async fn ask_memory(
+    app: AppHandle,
+    question: String,
+    earlier: Option<Vec<Earlier>>,
+) -> Result<AskAnswer, String> {
+    let earlier = earlier.unwrap_or_default();
     let question = question.trim().to_string();
     if question.is_empty() {
         return Err("Type a question.".to_string());
@@ -758,10 +833,16 @@ pub async fn ask_memory(app: AppHandle, question: String) -> Result<AskAnswer, S
             .model_choice(ModelTask::Chat)
             .map_err(failed)?
             .ok_or("Choose a chat model under Models first.")?;
-        (
-            choice,
-            gather(&store, &question, meaning.as_ref(), &now).map_err(failed)?,
-        )
+        (choice, {
+            let before: Vec<&str> = earlier
+                .iter()
+                .rev()
+                .take(MAX_EARLIER_TURNS)
+                .rev()
+                .map(|turn| turn.question.as_str())
+                .collect();
+            gather_after(&store, &question, &before, meaning.as_ref(), &now).map_err(failed)?
+        })
     };
     // A time with nothing in it is answered as such: what the memory knows
     // in general says nothing about that day.
@@ -784,10 +865,9 @@ pub async fn ask_memory(app: AppHandle, question: String) -> Result<AskAnswer, S
         return Err("The chat model's address isn't valid. Check it under Models.".to_string());
     };
     let started = std::time::Instant::now();
-    let texts: Vec<String> = found
-        .known
-        .iter()
-        .cloned()
+    let texts: Vec<String> = conversation(&earlier)
+        .into_iter()
+        .chain(found.known.iter().cloned())
         .chain(
             found
                 .episodes
@@ -1406,5 +1486,64 @@ mod tests {
         .expect("an answer");
         assert!(reply.answer.to_lowercase().contains("offert"));
         assert!(reply.sources.contains(&1));
+    }
+
+    #[test]
+    fn a_follow_up_takes_the_time_and_names_of_the_question_before() {
+        let store = sample();
+        // "And what else?" has no time or words of its own.
+        let found = gather_after(
+            &store,
+            "Och vad mer?",
+            &["Vad gjorde jag i tisdags?"],
+            None,
+            &now(),
+        )
+        .unwrap();
+        assert!(found.timed);
+        assert_eq!(
+            summaries(&found),
+            ["Mailade Anna om Q3-offerten.", "Läste nyheter."]
+        );
+        let alone = gather(&store, "Och vad mer?", None, &now()).unwrap();
+        assert!(!alone.timed);
+        // A time of its own wins over the earlier one.
+        let own = gather_after(
+            &store,
+            "Vad gjorde jag i fredags?",
+            &["Vad gjorde jag i tisdags?"],
+            None,
+            &now(),
+        )
+        .unwrap();
+        assert_eq!(summaries(&own), ["Planerade lanseringen med Bo."]);
+        // The names of the question before come along: "she" is Anna.
+        let her = gather_after(&store, "Vad sa hon?", &["Vad gör Anna?"], None, &now()).unwrap();
+        assert!(!her.recent_only);
+        assert!(summaries(&her).contains(&"Ringde Anna om leveransen."));
+    }
+
+    #[test]
+    fn the_conversation_goes_along_latest_first_within_limits() {
+        assert_eq!(conversation(&[]), None);
+        let turn = |q: &str, a: &str| Earlier {
+            question: q.to_string(),
+            answer: a.to_string(),
+        };
+        let block = conversation(&[turn("Vad gjorde jag igår?", "Du skrev offerten.")]).unwrap();
+        assert!(block.contains("The user asked: Vad gjorde jag igår?"));
+        assert!(block.contains("Lax answered: Du skrev offerten."));
+        // Only the latest four turns.
+        let many: Vec<Earlier> = (0..6)
+            .map(|i| turn(&format!("Fråga {i}"), "Svar"))
+            .collect();
+        let block = conversation(&many).unwrap();
+        assert!(
+            !block.contains("Fråga 1\n") && block.contains("Fråga 2") && block.contains("Fråga 5")
+        );
+        // Long turns: the latest is kept, older ones dropped.
+        let long = "x".repeat(2500);
+        let block = conversation(&[turn("Gammal", &long), turn("Ny", &long)]).unwrap();
+        assert!(block.contains("Ny") && !block.contains("Gammal"));
     }
 }
