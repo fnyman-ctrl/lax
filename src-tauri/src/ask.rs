@@ -784,7 +784,7 @@ pub async fn ask_memory(app: AppHandle, question: String) -> Result<AskAnswer, S
                 ],
             );
             Ok(AskAnswer {
-                answer: reply.answer.trim().to_string(),
+                answer: without_references(&reply.answer),
                 sources: cited
                     .into_iter()
                     .map(|i| item(&found.episodes[i]))
@@ -839,6 +839,43 @@ fn with_store<T>(app: &AppHandle, work: impl FnOnce(&Store) -> T) -> Option<T> {
     let store = app.try_state::<Mutex<Store>>()?;
     let store = store.lock().unwrap_or_else(PoisonError::into_inner);
     Some(work(&store))
+}
+
+/// The answer without entry references such as "[3]" or "[1-8]", which
+/// models put in although sources are shown on their own.
+fn without_references(answer: &str) -> String {
+    let mut out = String::with_capacity(answer.len());
+    let mut rest = answer;
+    while let Some(open) = rest.find('[') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        match after.find(']') {
+            Some(close)
+                if close > 0
+                    && after[..close]
+                        .chars()
+                        .all(|c| c.is_ascii_digit() || matches!(c, ',' | '-' | '–' | ' '))
+                    && after[..close].chars().any(|c| c.is_ascii_digit()) =>
+            {
+                // Drop the space before it too.
+                while out.ends_with(' ') {
+                    out.pop();
+                }
+                rest = &after[close + 1..];
+            }
+            _ => {
+                out.push('[');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out.lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
 }
 
 fn item(e: &Episode) -> EpisodeItem {
@@ -1198,6 +1235,24 @@ mod tests {
         assert!(found.episodes.len() < 24);
         // The end of the day is kept.
         assert_eq!(found.episodes.last().unwrap().started_at, at(10, 23));
+    }
+
+    #[test]
+    fn entry_references_are_taken_out_of_answers() {
+        assert_eq!(
+            without_references("Du mailade Anna [1] och planerade mötet [2-3].\n[1-8]"),
+            "Du mailade Anna och planerade mötet."
+        );
+        assert_eq!(without_references("Se [1, 4] nedan"), "Se nedan");
+        // Brackets that aren't references stay.
+        assert_eq!(
+            without_references("Lista [a] och [ ] och [x1]"),
+            "Lista [a] och [ ] och [x1]"
+        );
+        assert_eq!(
+            without_references("- rad ett\n- rad två"),
+            "- rad ett\n- rad två"
+        );
     }
 
     #[test]
