@@ -88,6 +88,14 @@ previous one, so they can be built, tested and improved independently.
   background (`src-tauri/src/vectors.rs`), and Ask also finds entries close in
   meaning to the question.
 
+## Write
+
+- With the writing assistant on, a double tap of ⌥ Option in a text field
+  calls Lax there ([ADR 0009](adr/0009-writing-assistant.md),
+  `src-tauri/src/summon.rs`). To tell the tap from ⌥2, Lax notices that keys
+  go down, never which, and only while the user has it on. The first version
+  shows a panel by the pointer; drafting and inserting come next.
+
 ## Models
 
 | Task | Default | Notes |

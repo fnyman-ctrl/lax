@@ -880,3 +880,24 @@ mark {
   max-height: 12em;
   overflow: auto;
 }
+
+/* The writing assistant's panel: a small window of its own by the pointer. */
+.panel {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  padding: 18px 20px;
+  min-height: 100vh;
+  box-sizing: border-box;
+  background: var(--surface);
+}
+
+.panel img {
+  width: 56px;
+  height: 56px;
+  flex: none;
+}
+
+.panel p {
+  margin: 0 0 4px;
+}

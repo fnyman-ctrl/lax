@@ -8,6 +8,7 @@ import { Memory } from "./Memory";
 import { Models } from "./Models";
 import { Outbox } from "./Outbox";
 import { usePaged } from "./usePaged";
+import { Write } from "./Write";
 // The app icon is the one source of the mascot (docs/BRAND.md).
 import laxIcon from "../src-tauri/icons/app-icon.svg";
 
@@ -61,7 +62,7 @@ const MATCH_END = "\u0003";
  */
 export function Viewer() {
   const [tab, setTab] = useState<
-    "ask" | "journal" | "memory" | "captures" | "exclusions" | "models" | "outbox"
+    "ask" | "write" | "journal" | "memory" | "captures" | "exclusions" | "models" | "outbox"
   >("ask");
   const [query, setQuery] = useState("");
   // Bumped after a deletion, so the lists start over from the database.
@@ -85,6 +86,13 @@ export function Viewer() {
           onClick={() => setTab("ask")}
         >
           Ask
+        </button>
+        <button
+          type="button"
+          aria-current={tab === "write" ? "page" : undefined}
+          onClick={() => setTab("write")}
+        >
+          Write
         </button>
         <button
           type="button"
@@ -134,7 +142,9 @@ export function Viewer() {
       <div hidden={tab !== "ask"}>
         <Ask onShowJournal={() => setTab("journal")} />
       </div>
-      {tab === "ask" ? null : tab === "journal" ? (
+      {tab === "ask" ? null : tab === "write" ? (
+        <Write />
+      ) : tab === "journal" ? (
         <Journal onShowModels={() => setTab("models")} />
       ) : tab === "memory" ? (
         <Memory onShowModels={() => setTab("models")} />

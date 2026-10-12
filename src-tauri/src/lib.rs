@@ -24,6 +24,7 @@ mod redact;
 mod site;
 #[allow(dead_code)] // Plain search and setting the capture interval await the settings window.
 mod store;
+mod summon;
 mod tray;
 mod vectors;
 mod viewer;
@@ -39,6 +40,7 @@ pub fn run() {
         .manage(models::ModelTurn::default())
         .manage(capture::Heartbeat::default())
         .manage(exclusions::Current::default())
+        .manage(summon::Summoned::default())
         .invoke_handler(tauri::generate_handler![
             accessibility::accessibility_status,
             accessibility::open_accessibility_settings,
@@ -86,6 +88,9 @@ pub fn run() {
             memory::merge_entities,
             memory::dont_learn_list,
             memory::allow_learning,
+            summon::writing_status,
+            summon::set_writing_enabled,
+            summon::close_panel,
         ])
         .setup(|app| {
             // Lax lives in the menu bar, without a Dock icon.
@@ -146,6 +151,9 @@ pub fn run() {
                 }
             }
             tray::create(app.handle())?;
+            // Listens for ⌥ Option only if the user turned the writing
+            // assistant on.
+            summon::start(app.handle());
 
             // Without the Accessibility permission Lax can't capture anything,
             // so show the onboarding window explaining why it's needed.
@@ -154,19 +162,27 @@ pub fn run() {
                 tray::open_window(app.handle());
             }
             accessibility::watch(app.handle().clone(), granted, |app, granted| {
-                if !granted {
+                if granted {
+                    summon::start(app);
+                } else {
+                    summon::stop(app);
                     tray::open_window(app);
                 }
             });
             Ok(())
         })
-        .on_window_event(|window, event| {
+        .on_window_event(|window, event| match event {
             // Closing the window only hides it. Lax keeps running in the menu
             // bar until the user quits from there.
-            if let WindowEvent::CloseRequested { api, .. } = event {
+            WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
                 let _ = window.hide();
             }
+            // The panel goes away when the user clicks elsewhere.
+            WindowEvent::Focused(false) if window.label() == summon::PANEL => {
+                let _ = window.hide();
+            }
+            _ => {}
         })
         .run(tauri::generate_context!())
         .expect("error while running Lax");
@@ -182,7 +198,11 @@ mod tests {
     fn every_command_is_listed_and_allowed() {
         let lib = include_str!("lib.rs");
         let build = include_str!("../build.rs");
-        let capabilities = include_str!("../capabilities/default.json");
+        let capabilities = [
+            include_str!("../capabilities/default.json"),
+            include_str!("../capabilities/panel.json"),
+        ]
+        .concat();
         let start =
             lib.find("generate_handler![").expect("the handler") + "generate_handler![".len();
         let end = start + lib[start..].find("])").expect("its end");
@@ -202,7 +222,7 @@ mod tests {
             let permission = format!("\"allow-{}\"", command.replace('_', "-"));
             assert!(
                 capabilities.contains(&permission),
-                "{command} is not allowed in capabilities/default.json"
+                "{command} is not allowed in capabilities/"
             );
         }
         // The other way: every allowed permission and listed name is a command.

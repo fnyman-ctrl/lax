@@ -45,6 +45,8 @@
     "allow-merge-entities",
     "allow-dont-learn-list",
     "allow-allow-learning",
+    "allow-writing-status",
+    "allow-set-writing-enabled",
     "allow-recreate-page",
     "allow-recreate-about-me",
     "allow-open-memory-folder",

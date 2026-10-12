@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-writing-enabled"
+description = "Enables the set_writing_enabled command without any pre-configured scope."
+commands.allow = ["set_writing_enabled"]
+
+[[permission]]
+identifier = "deny-set-writing-enabled"
+description = "Denies the set_writing_enabled command without any pre-configured scope."
+commands.deny = ["set_writing_enabled"]

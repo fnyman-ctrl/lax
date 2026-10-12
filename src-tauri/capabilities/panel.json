@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "panel",
+  "description": "The writing assistant's panel (ADR 0009). It may only close itself.",
+  "windows": ["panel"],
+  "permissions": ["allow-close-panel"]
+}

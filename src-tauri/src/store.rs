@@ -65,6 +65,7 @@ const RETENTION_KEY: &str = "retention_days";
 const CAPTURE_INTERVAL_KEY: &str = "capture_interval_seconds";
 const OUTBOX_RETENTION_KEY: &str = "outbox_retention_days";
 const JOURNAL_KEY: &str = "journal_enabled";
+const WRITING_KEY: &str = "writing_enabled";
 /// How long the outbox log is kept unless the user chooses otherwise.
 pub const DEFAULT_OUTBOX_RETENTION_DAYS: u32 = 90;
 const PAUSE_KEY: &str = "paused_until";
@@ -381,6 +382,16 @@ impl Store {
 
     pub fn set_journal_enabled(&self, enabled: bool) -> Result<()> {
         self.set_setting(JOURNAL_KEY, if enabled { "on" } else { "off" })
+    }
+
+    /// Whether the user turned the writing assistant on (ADR 0009). Off
+    /// until they do.
+    pub fn writing_enabled(&self) -> Result<bool> {
+        Ok(self.setting(WRITING_KEY)?.as_deref() == Some("on"))
+    }
+
+    pub fn set_writing_enabled(&self, enabled: bool) -> Result<()> {
+        self.set_setting(WRITING_KEY, if enabled { "on" } else { "off" })
     }
 
     /// How many captures wait to be summarized.
