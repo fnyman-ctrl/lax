@@ -8,7 +8,7 @@
 Lax's window would show nothing until the user confirms with Touch ID or
 the login password, through macOS's LocalAuthentication. It locks again
 after 5 minutes away, and settings changes, forgets and exports ask again
-each time. The lock is enforced in Rust: commands that return what Lax
+when they happen. The lock is enforced in Rust: commands that return what Lax
 captured or learned refuse while it is locked. Capture, pausing and the
 writing assistant keep working in the background, but the writing
 assistant uses the memory pages only while Lax is unlocked (open question
@@ -111,7 +111,10 @@ those seconds.
 
 Even while unlocked, these ask for Touch ID or the login password again,
 at the moment they happen. The command itself asks, in Rust, before it
-does anything, so there is no token the web UI could reuse.
+does anything, so there is no token the web UI could reuse. Forgets and
+exports ask every time. For settings, one confirmation covers further
+settings changes for 60 seconds, like the padlock in System Settings
+(open question 5).
 
 - **Settings changes:** retention, the sent log's retention, adding or
   removing an exclusion, turning a default exclusion on or off, choosing or
@@ -168,7 +171,7 @@ Recommended:
 - **Drafts always work.** Locked, the panel drafts from the instruction and
   the window's text only, and says so under the draft: "Written without
   your memory. Unlock to use it." with an **Unlock** button that asks for
-  Touch ID and writes the draft again.
+  Touch ID or the password and writes the draft again.
 - **Unlocked, the panel uses the pages, as today.** Unlocking from the
   panel unlocks Lax (the first two away rules), not the window, which still
   asks when it is next shown.
@@ -212,7 +215,7 @@ If this is accepted, it changes what ADR 0009 says drafts draw on. ADR
   their capability already says; `write_draft` checks the lock itself for
   the pages.
 - **New commands** `lock_status` and `unlock` (in the main window and the
-  panel), and `lock_status` events to the UI. Each is listed in `build.rs`
+  panel), and an event that tells the UI when Lax locks. Each is listed in `build.rs`
   and `capabilities/`, which `every_command_is_listed_and_allowed` checks.
   A UI test with mocked commands can't catch a missing entry there, so the
   Rust tests carry these claims.
@@ -242,8 +245,8 @@ If this is accepted, it changes what ADR 0009 says drafts draw on. ADR
   `objc2-app-kit` that Lax doesn't turn on yet.
 - **To verify in a spike** on a real Mac, alongside ADR 0010's Keychain
   spike: that `evaluatePolicy` works for an ad-hoc signed, non-sandboxed
-  app with no entitlements (we expect it to; LocalAuthentication documents
-  no entitlement for it on macOS); that the dialog names Lax and comes to
+  app with no entitlements (we expect it to, and know of no entitlement it
+  needs on macOS); that the dialog names Lax and comes to
   the front; how it behaves on a Mac without Touch ID and with an Apple
   Watch; whether typing the password at the lock screen resets idle time;
   which notifications fire on screen lock, sleep and account switch; and
@@ -252,11 +255,12 @@ If this is accepted, it changes what ADR 0009 says drafts draw on. ADR
 ### Relation to ADR 0010
 
 - **The lock gates the window. The database key is separate.** Lax reads
-  the key from the login keychain once, at start, without a prompt (ADR
-  0010), and keeps the database open while it runs, because capture writes
-  to it. So, locked or not, the key is in Lax's memory and the database is
+  the key from the login keychain once, at start, normally without a
+  prompt (ADR 0010), and keeps the database open while it runs, because
+  capture writes to it. So, locked or not, the key is in Lax's memory and the database is
   open. The lock encrypts nothing, and doesn't stop another program from
-  asking the keychain for the key (ADR 0010's prompt row).
+  asking the keychain for the key (the Keychain prompt in ADR 0010's
+  malware row).
 - **Later, with the signed `.dmg`:** the key can move to the data
   protection keychain with `SecAccessControl` and `userPresence`, so reading
   it needs Touch ID or the password. An `LAContext` that has just been
@@ -276,11 +280,11 @@ If this is accepted, it changes what ADR 0009 says drafts draw on. ADR
 | Someone opens Lax at an unlocked Mac after the user has been gone 5 minutes, or after the Mac locked or slept | Sees the journal, Ask, pages, captures and sent log, and can change or delete anything | Sees the lock screen. Needs Touch ID or the login password |
 | The same, while the user was present but the window had been hidden for 5 minutes | Sees everything | Asked for Touch ID or the login password |
 | The same, in the first 5 minutes after the user left, with the window in use | Sees everything | **Sees everything.** The cost of not asking all the time |
-| That person changes a setting, forgets or exports in those 5 minutes | Can | Asked for Touch ID or the login password each time |
+| That person changes a setting, forgets or exports in those 5 minutes | Can | Asked for Touch ID or the login password: for every forget and export, and for settings unless the user confirmed one in the last 60 seconds (question 5) |
 | That person double-taps ⌥ and asks for what Lax knows about someone | Gets a draft with the facts | Recommended answer to question 1: no facts unless Lax is unlocked; within the 5 minutes, yes |
 | Someone who knows the login password (family, a colleague who saw it typed) | Sees everything | **Sees everything.** The password is the fallback |
 | Another program of the user reads Lax's files | Not addressed here; ADR 0010 and 0011 | Not addressed here |
-| A program asks the unlocked keychain for the database key | Not addressed here; ADR 0010's prompt row | **Not addressed.** The lock doesn't guard the key |
+| A program asks the unlocked keychain for the database key | Not addressed here; ADR 0010's Keychain prompt | **Not addressed.** The lock doesn't guard the key |
 | Malware running as the user | Not protected | **Not protected.** It can get the key as ADR 0010 says, read Lax's window through Accessibility while it is unlocked, wait for the user, or watch the screen |
 | Screen sharing, or someone watching while the window is open | Not protected | Not protected |
 | A Mac that is off, or lost | FileVault and ADR 0010 | The same. The lock adds nothing |
@@ -315,7 +319,7 @@ New rows, updated as each part lands:
   password, and locks again after 5 minutes away."
 - "While Lax is locked, no command returns what it captured or learned."
 - "Settings changes, forgets and exports ask for Touch ID or your login
-  password each time."
+  password when they happen" (with question 5's answer).
 - "Locked, the writing assistant doesn't use your memory pages" (with
   question 1's answer).
 
@@ -379,8 +383,8 @@ The Decision above assumes the recommended answers.
   minutes without the user's finger or password.
 - The lock is checked by the commands, not drawn over the UI. A command
   added later is refused until it is classified.
-- Touch ID prompts: one on opening after a break, one per change of a
-  setting (or per minute, question 5), one per forget or export, and
+- Touch ID prompts: one on opening after a break, one per minute of
+  settings changes (question 5), one per forget or export, and
   perhaps one in the panel after a break. On Macs without Touch ID, each is
   the login password.
 - A new module, a watcher thread, two commands, and probably one new
