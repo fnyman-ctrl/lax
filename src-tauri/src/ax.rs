@@ -330,12 +330,19 @@ pub struct AxScreen {
 /// An app asked for its full accessibility tree by [`AxScreen::wake`]; the
 /// request is taken back when this is dropped, since some apps (Chromium)
 /// change how they behave while it stands.
-pub struct Awake(Element);
+pub struct Awake {
+    element: Element,
+    /// Whether Lax turned it on, and so takes it back. If VoiceOver or
+    /// another assistive app had it on already, it stays on.
+    ours: bool,
+}
 
 impl Drop for Awake {
     fn drop(&mut self) {
-        self.0
-            .set_flag(&self.0.names.enhanced_user_interface, false);
+        if self.ours {
+            self.element
+                .set_flag(&self.element.names.enhanced_user_interface, false);
+        }
     }
 }
 
@@ -350,8 +357,11 @@ impl AxScreen {
             element: unsafe { owned(AXUIElementCreateApplication(app.pid)) }?,
             names: self.names.clone(),
         };
-        element.set_flag(&self.names.enhanced_user_interface, true);
-        Some(Awake(element))
+        let ours = element.flag(&self.names.enhanced_user_interface) != Some(true);
+        if ours {
+            element.set_flag(&self.names.enhanced_user_interface, true);
+        }
+        Some(Awake { element, ours })
     }
 }
 
@@ -601,6 +611,11 @@ impl Element {
 
     /// Whether the app says where its text cursor is (rather than Lax
     /// falling back to the field's first line).
+    /// The roles of this element's children, at most `max` of them.
+    pub fn child_roles(&self, max: usize) -> Vec<Option<String>> {
+        self.children(max).iter().map(Node::role).collect()
+    }
+
     pub fn has_caret_bounds(&self) -> bool {
         self.caret_bounds().is_some()
     }
