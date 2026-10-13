@@ -1,6 +1,6 @@
 # 0008. How the memory learns, and how user edits are protected
 
-- **Status:** Accepted
+- **Status:** Accepted; superseded in part by [0011](0011-pages-in-the-database.md)
 - **Date:** 2026-10-11
 
 ## Context

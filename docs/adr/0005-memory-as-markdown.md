@@ -1,6 +1,6 @@
 # 0005. Memory pages stored as Markdown files
 
-- **Status:** Accepted
+- **Status:** Accepted; superseded in part by [0011](0011-pages-in-the-database.md)
 - **Date:** 2026-10-10
 
 ## Context

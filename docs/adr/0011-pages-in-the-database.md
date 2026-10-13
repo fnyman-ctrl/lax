@@ -1,6 +1,6 @@
 # 0011. Keep the memory pages in the encrypted database
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-13
 
 ## Summary
@@ -36,9 +36,7 @@ added. He chose these three explicitly:
 The other seven (1, 3, 4, 7, 8, 9 and 10) are answered as recommended. The
 Decision below follows the answers.
 
-**Status.** This ADR stays **Proposed**. It depends on
-[ADR 0010](0010-encrypted-database.md), which is still Proposed until its
-Keychain spike is done: pages only ever move into an encrypted database.
+**Status.** Accepted by the maintainer on 2026-10-13, together with [ADR 0010](0010-encrypted-database.md). Pages only ever move into an encrypted database.
 
 ## Context
 
