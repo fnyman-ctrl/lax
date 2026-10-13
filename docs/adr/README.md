@@ -20,4 +20,4 @@ chat logs.
 | [0007](0007-http-client-for-model-calls.md) | reqwest with macOS TLS for model calls | Accepted |
 | [0008](0008-learning-memory.md) | How the memory learns, and how user edits are protected | Accepted |
 | [0009](0009-writing-assistant.md) | A writing assistant called with the Option key | Proposed |
-| [0012](0012-app-lock.md) | Lock Lax's window with Touch ID or the login password | Proposed |
+| [0012](0012-app-lock.md) | Lock Lax's window with Touch ID or the login password | Accepted |

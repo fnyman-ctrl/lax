@@ -1,6 +1,6 @@
 # 0012. Lock Lax's window with Touch ID or the login password
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-13
 
 ## Summary
@@ -53,8 +53,8 @@ Decision below follows the answers.
 
 **Status.** The LocalAuthentication spike is done (see "The
 LocalAuthentication spike"): `evaluatePolicy` works for an ad-hoc signed
-app like Lax. Its other findings are rules in the Decision now. The ADR is
-ready for the maintainer to accept. It stays **Proposed** until he does.
+app like Lax. Its other findings are rules in the Decision now. Accepted by
+the maintainer on 2026-10-13.
 
 ## Context
 
