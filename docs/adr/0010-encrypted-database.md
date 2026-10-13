@@ -52,14 +52,15 @@ decided.
    [0011](0011-pages-in-the-database.md).
 3. **An app lock.** Lax's window asks for Touch ID or the login password
    when it opens, again after 5 minutes away, and before settings changes,
-   forgets and exports. Forgets and exports ask every time. Settings ask
-   once, then stay open while the user is active in Lax's window and ask
-   again after 5 minutes away, as ADR 0012 records. Capture and the
-   writing assistant keep working in the background. This is
-   [ADR 0012](0012-app-lock.md).
+   forgets and exports. As ADR 0012 records, ordinary settings need only
+   the unlocked window; forgets, exports and every change that loosens
+   privacy ask every time. Capture and the writing assistant keep working
+   in the background. This is [ADR 0012](0012-app-lock.md).
 4. **Accept the prompt once per update, and encrypt now** (question 5,
    after the spike). Lax explains the prompt with its own note right
-   before it. See "After an update: one Keychain prompt".
+   before it, and waits for **Continue** before it reads the key. The note
+   says what "Always Allow" and "Allow" each mean. See "After an update:
+   one Keychain prompt".
 
 What this changes here:
 
@@ -338,9 +339,24 @@ comes out of nowhere.
 
 - **Before it reads an existing key**, Lax checks whether it is a new
   build. If it is, the window shows Lax's own note and waits for
-  **Continue**: "Lax was updated. macOS will ask once whether Lax may use
-  its key. Type your login password and choose Always Allow." Only then
-  does Lax read the key, and macOS asks.
+  **Continue**, which is the maintainer's choice. Only then does Lax read
+  the key, and macOS asks.
+- **The note explains both choices** in the macOS dialog, plainly:
+
+  > Lax was updated. macOS will ask once whether Lax may use its key.
+  > Type your login password and choose **Always Allow**: then this
+  > version of Lax may read its key without asking, until the next update.
+  > If you choose **Allow**, macOS will ask again every time Lax starts.
+
+  It is localized like the rest of Lax. The Swedish text is needed too,
+  with the button names macOS shows in Swedish (to check against the
+  Swedish dialog):
+
+  > Lax har uppdaterats. macOS frågar en gång om Lax får använda sin
+  > nyckel. Skriv ditt inloggningslösenord och välj **Tillåt alltid**: då
+  > får den här versionen av Lax läsa sin nyckel utan att fråga, fram till
+  > nästa uppdatering. Om du väljer **Tillåt** frågar macOS igen varje gång
+  > Lax startar.
 - **How Lax knows it is a new build:** it reads its own code hash (cdhash)
   through the Security framework (`SecCodeCopySelf` and
   `SecCodeCopySigningInformation`; whether `security-framework` exposes
@@ -356,7 +372,8 @@ comes out of nowhere.
   read it without a prompt (spike result 1), so it stores the hash with no
   note.
 - **"Allow" instead of "Always Allow"** lets this start through, but the
-  next start asks again, without the note. To catch that, Lax can first
+  next start asks again, without the note. The note says so, but a user
+  may still choose Allow. To catch that, Lax can first
   try the read with Keychain prompts turned off
   (`kSecUseAuthenticationUIFail`, or the older
   `SecKeychainSetUserInteractionAllowed(false)`), and show the note
@@ -536,7 +553,8 @@ build. No test touches the real Keychain, which could block on a prompt;
   a new hash, or a missing `key-build` file next to an encrypted database,
   shows the note and reads no key before **Continue**; the same hash
   shows no note; the hash is stored only after a successful read; a new
-  install or a conversion stores it with no note.
+  install or a conversion stores it with no note; the note's text exists
+  in English and Swedish.
 - `cipher_provider` is `commoncrypto` on a keyed temporary database, and a
   forget on a large database stays under a set memory ceiling.
 
@@ -548,7 +566,7 @@ build. No test touches the real Keychain, which could block on a prompt;
   keep a copy, what "Start over" does, the login-password-reset case, and
   how to open the database with the `sqlcipher` tool. The prompt after an
   update: Lax's note comes first, type the login password and choose
-  Always Allow. A prompt for Lax's key at any other time, or from another
+  Always Allow; Allow means macOS asks again at every start. A prompt for Lax's key at any other time, or from another
   program, is a warning sign: choose Deny.
 - **PERFORMANCE.md:** temporary data in RAM. **ARCHITECTURE.md:** a line
   pointing here.
