@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- Only this site's own files: no fonts, scripts or trackers from elsewhere. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="referrer" content="no-referrer" />
+    <title>Lax — a private memory for your Mac</title>
+    <meta
+      name="description"
+      content="Lax remembers what you work on and who you work with, writes a journal of your day, answers questions about it and drafts text with you. Open source, and nothing leaves your Mac."
+    />
+    <link rel="icon" href="icon.png" />
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <header class="top">
+      <a class="mark" href="./">Lax</a>
+      <nav aria-label="Pages">
+        <a href="#get">Get it</a>
+        <a href="https://github.com/fnyman-ctrl/lax">GitHub</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div class="river" aria-hidden="true">
+          <svg viewBox="0 0 400 8" preserveAspectRatio="none">
+            <path d="M0 4 Q 25 0 50 4 T 100 4 T 150 4 T 200 4 T 250 4 T 300 4 T 350 4 T 400 4" />
+          </svg>
+          <img class="swimmer" src="salmon.svg" alt="" width="114" height="66" />
+        </div>
+        <p class="eyebrow">Open source · Local · For macOS</p>
+        <h1>Your Mac remembers.<br />Nothing leaves it.</h1>
+        <p class="lede">
+          Lax keeps a memory of what you work on and who you work with. It writes a journal
+          of your day, answers questions about it and helps you write, with AI that runs on
+          your own Mac.
+        </p>
+        <p class="actions">
+          <a class="button" href="#get">Build it yourself</a>
+          <a class="button quiet" href="https://github.com/fnyman-ctrl/lax">Read the code</a>
+        </p>
+      </section>
+
+      <section class="flow" aria-labelledby="flow-title">
+        <h2 id="flow-title">From your screen to your memory</h2>
+        <p class="section-lede">Each step feeds the next, and each one stays on your Mac.</p>
+        <ol>
+          <li>
+            <h3>Reads</h3>
+            <p>
+              The text of the window you're working in, through Accessibility. Never
+              screenshots, never password fields.
+            </p>
+          </li>
+          <li>
+            <h3>Writes a journal</h3>
+            <p>A few lines every quarter hour about what you did, in which app, with whom.</p>
+          </li>
+          <li>
+            <h3>Learns</h3>
+            <p>
+              The people, projects and organisations in your days, each a Markdown page in
+              <code>~/Lax</code> that you can edit.
+            </p>
+          </li>
+          <li>
+            <h3>Answers</h3>
+            <p>"What did I do on Tuesday?" Then ask on, and see the entries it's based on.</p>
+          </li>
+        </ol>
+      </section>
+
+      <section class="write" aria-labelledby="write-title">
+        <div class="write-text">
+          <h2 id="write-title">The salmon comes when you call</h2>
+          <p>
+            No fish jumping around every text field. Double-tap <kbd>⌥ Option</kbd> where you
+            write, and a small salmon swims to your cursor with your instruction. Enter writes
+            a draft from what Lax knows; Enter again puts it in the field. Lax never sends
+            anything.
+          </p>
+        </div>
+        <figure class="demo" aria-label="The writing assistant in a reply">
+          <div class="field">
+            <span class="typed">reply in my tone and thank her for the quote</span><span
+              class="caret"
+            ></span>
+          </div>
+          <div class="demo-row">
+          <img class="demo-salmon" src="salmon.svg" alt="" width="38" height="22" />
+          <div class="demo-card">
+            <p>
+              Hi Anna,<br /><br />Thanks for the quote. It looks good; we'll get back to you
+              by Friday.<br /><br />Best,<br />Sam
+            </p>
+            <p class="hint">Enter inserts · Esc closes</p>
+          </div>
+          </div>
+        </figure>
+      </section>
+
+      <section class="never" aria-labelledby="never-title">
+        <h2 id="never-title">What Lax never does</h2>
+        <ul>
+          <li>Read password fields, password managers or private browser windows</li>
+          <li>Send what it reads anywhere: the AI runs on your Mac</li>
+          <li>Collect analytics or crash reports, or check in with anyone</li>
+          <li>Press Send for you</li>
+        </ul>
+        <p class="section-lede">
+          Banking and health are excluded from the start, raw text is deleted 30 days after
+          it's summarized, and you can pause or forget anything. Each promise has a test:
+          <a href="https://github.com/fnyman-ctrl/lax/blob/main/docs/CLAIMS.md">see them</a>.
+        </p>
+      </section>
+
+      <section class="get" id="get" aria-labelledby="get-title">
+        <h2 id="get-title">Get Lax</h2>
+        <div class="ways">
+          <div class="way">
+            <p class="label">Now</p>
+            <h3>Build it yourself</h3>
+            <p>
+              A few minutes, no Apple account. You need macOS, the Xcode Command Line Tools,
+              <a href="https://rustup.rs">rustup</a> and <a href="https://nodejs.org">Node.js</a>.
+            </p>
+            <div class="code">
+              <pre id="steps"><code>git clone https://github.com/fnyman-ctrl/lax.git
+cd lax
+npm run build:app
+open ~/Applications/Lax.app</code></pre>
+              <button type="button" class="copy" data-copy="steps">Copy</button>
+            </div>
+            <p class="small">
+              Then run a local model server such as LM Studio or Ollama;
+              <a href="https://github.com/fnyman-ctrl/lax/blob/main/docs/USER-GUIDE.md">the guide</a>
+              walks you through it.
+            </p>
+          </div>
+          <div class="way later">
+            <p class="label">Later</p>
+            <h3>Download for Mac</h3>
+            <p>One <code>.dmg</code>, signed and checked by Apple, so it opens like any other app.</p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <p>
+        <em>Lax</em> is Swedish for salmon: it finds its way back to the river it came from.
+        Free and open source under the
+        <a href="https://github.com/fnyman-ctrl/lax/blob/main/LICENSE">AGPL-3.0</a>.
+      </p>
+      <p>
+        <a href="https://github.com/fnyman-ctrl/lax">GitHub</a> ·
+        <a href="https://github.com/fnyman-ctrl/lax/blob/main/docs/GUARDRAILS.md">Guardrails</a> ·
+        <a href="https://github.com/fnyman-ctrl/lax/blob/main/SECURITY.md">Security</a>
+      </p>
+    </footer>
+    <script src="copy.js"></script>
+  </body>
+</html>
