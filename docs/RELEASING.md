@@ -31,8 +31,11 @@ How a version of Lax is released. Lax 0.1 is built from source by its users
    ```sh
    curl -sL https://github.com/fnyman-ctrl/lax/archive/refs/tags/v0.1.0.tar.gz | shasum -a 256
    ```
-4. Check that a clean checkout of the tag builds: `git clone --branch v0.1.0
-   https://github.com/fnyman-ctrl/lax.git && cd lax && npm run build:app`.
+4. The **Release check** workflow runs on the tag: it checks that the three
+   versions match the tag, builds and installs Lax as a user would
+   (`npm run build:app`), and verifies the app's signature. It can also be
+   run by hand from the Actions tab before tagging. Wait for it to pass
+   before announcing the release.
 
 ## After
 
