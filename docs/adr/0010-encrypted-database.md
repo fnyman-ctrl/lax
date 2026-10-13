@@ -9,11 +9,68 @@ Lax's database would be encrypted with SQLCipher, using Apple's own crypto
 library, with a random key that Lax keeps in the user's login keychain.
 That protects the file from other programs that read files, from copies and
 backups, and on Macs without FileVault. It doesn't protect against malware
-aimed at Lax, and it doesn't cover the Markdown pages in `~/Lax`. Existing
-databases are converted once. If the key can't be found, Lax stops instead
-of starting over, and it never throws a key away. Before this is accepted,
-a short spike must show how the Keychain behaves with Lax's ad-hoc signed
-builds (see "Before deciding").
+aimed at Lax. Existing databases are converted once. If the key can't be
+found, Lax stops instead of starting over, and it never throws a key away.
+
+The memory pages are Markdown files in `~/Lax` today, outside the
+database. [ADR 0011](0011-pages-in-the-database.md) (proposed) moves them
+into this database, so they are encrypted with it.
+[ADR 0012](0012-app-lock.md) (proposed) asks for Touch ID or the login
+password before Lax's window shows anything. That lock guards the window.
+It doesn't encrypt anything, and it doesn't change who can read the key.
+
+The maintainer wants encryption before release 0.1, in the self-built app
+(see "Maintainer's answers"). A short spike must still show how the
+Keychain behaves with Lax's ad-hoc signed builds (see "Before deciding").
+
+## Maintainer's answers (2026-10-13)
+
+The maintainer decided three things. The nine open questions below stay as
+they were written, so the reasoning can be followed. This section says which
+of them the decisions answer.
+
+1. **Encrypt now, before release 0.1**, in the app people build themselves
+   (`npm run build:app`, ad-hoc signed). SQLCipher, with the key in the
+   login keychain, as this ADR proposes. User presence on the key itself
+   (`SecAccessControl` with `userPresence`, so reading the key needs Touch
+   ID or the login password) comes only with the signed `.dmg`: it needs
+   the data protection keychain, and that needs a real signing identity.
+2. **The memory pages move into the encrypted database.** They leave
+   `~/Lax` and are edited in Lax's Memory view. This reverses part of
+   [ADR 0008](0008-learning-memory.md), so it has its own ADR,
+   [0011](0011-pages-in-the-database.md).
+3. **An app lock.** Lax's window asks for Touch ID or the login password
+   when it opens, again after 5 minutes away, and before every settings
+   change, forget or export. Capture and the writing assistant keep working
+   in the background. This is [ADR 0012](0012-app-lock.md).
+
+What this changes here:
+
+- **The timing rests on the spike.** "Before deciding" said encryption
+  would wait for the signed `.dmg` if the prompts are bad and a self-signed
+  certificate doesn't help. The maintainer's decision is to encrypt now. If
+  the spike shows a prompt after every rebuild that a self-signed
+  certificate doesn't remove, the timing goes back to the maintainer before
+  rollout step 3. It isn't settled by this section.
+- **Pages are in scope.** The context, the threat model, "No recovery key"
+  and the tests below now count the pages as part of the database, from
+  ADR 0011 on.
+- **"Someone at an unlocked, logged-in Mac"** is partly addressed, by the
+  app lock in ADR 0012, not by encryption. See the threat model.
+
+The open questions:
+
+| # | Question | Where it stands |
+|---|---|---|
+| 1 | On for everyone, no off switch | Open. Decision 1 assumes it, but doesn't say so |
+| 2 | No recovery key | Open, and weightier: with ADR 0011, a lost key also loses the pages, including the user's own notes. Page export (ADR 0011) is the user's way to keep a copy |
+| 3 | Login keychain now, data protection keychain once signed | **Answered: yes** (decision 1) |
+| 4 | Access class after the move | Open. Now also: with `userPresence` on the key, Lax can't open the database after a restart until the user confirms with Touch ID or the login password, so capture waits for that. Whether that class and `userPresence` go together is to verify. To be decided with the signed build |
+| 5 | Keychain prompts after rebuilds | Open. Depends on the spike |
+| 6 | Incremental vacuum | Open |
+| 7 | `cipher_memory_security` off | Open |
+| 8 | Convert automatically at startup | Open |
+| 9 | A plaintext export | Partly taken up by ADR 0011, which proposes an export of the pages. An export of anything else stays open |
 
 ## Context
 
@@ -26,7 +83,11 @@ this would be a feature switch.
 captures and their index, the journal, the memory's entities, aliases,
 facts and every version of the blocks Lax wrote on pages, episode vectors,
 the outbox and settings. The pages themselves are Markdown files in `~/Lax`
-(ADR 0005). They are not in the database, and this ADR doesn't change them.
+today (ADR 0005), outside the database. Lax's blocks and facts are in the
+database as well, but the user's own text on a page is only in its file.
+[ADR 0011](0011-pages-in-the-database.md)
+moves them into the database. This ADR doesn't move them, but from ADR
+0011 on, everything said here about the database covers the pages too.
 
 What protects it today:
 
@@ -52,8 +113,9 @@ below avoids the copy altogether.
 | Another program of the same user reads the file | **Not protected.** `0600` only keeps other users out | Protected from programs that only read files (sync and backup agents, indexers, file-scraping packages). Not from code that targets Lax; see the malware row |
 | Copies of the folder: Time Machine to a disk without encryption, cloud backup tools, a USB stick | **Not protected** | Protected: the key isn't in the copy, or only in a backed-up login keychain locked by the login password |
 | Freed disk blocks read later | Protected while FileVault is on | Protected from the switch on. Plaintext from before stays in old blocks, snapshots and backups until they are gone |
-| Malware running as the user | Not protected | **Not protected.** It can trigger the Keychain prompt users learn to accept after updates, replace `~/Applications/Lax.app` (the user can write there), possibly inject code into an ad-hoc build (not verified), use Accessibility to read Lax's window, read `~/Lax`, or watch the screen itself |
-| Someone at an unlocked, logged-in Mac | Not protected | Not protected: Lax runs and the keychain is unlocked |
+| The memory pages, read by another program of the user | **Not protected.** They are Markdown files in `~/Lax`, `0600`, readable by every program the user runs, and indexed by Spotlight unless the user excludes the folder | Not protected by this ADR alone. Protected once [ADR 0011](0011-pages-in-the-database.md) moves them into the database, as in the row above. Copies the user exports are not |
+| Malware running as the user | Not protected | **Not protected.** It can trigger the Keychain prompt users learn to accept after updates, replace `~/Applications/Lax.app` (the user can write there), possibly inject code into an ad-hoc build (not verified), use Accessibility to read Lax's window, read `~/Lax` until ADR 0011 empties it, or watch the screen itself. The app lock (ADR 0012) changes none of this |
+| Someone at an unlocked, logged-in Mac | Not protected | **Partly**, and not by encryption: with [ADR 0012](0012-app-lock.md), Lax's window asks for Touch ID or the login password when it opens and after 5 minutes away. The keychain is still unlocked, so a program that person starts can still ask for the key and get the prompt from the malware row; they can still read what is on screen; and in the first 5 minutes after the user leaves, Lax may still be unlocked |
 | An administrator or root | Not protected | Not protected |
 
 As far as we know (not verified), macOS doesn't ask before another app
@@ -78,7 +140,9 @@ A spike on a real Mac, before this ADR is accepted, answers:
 3. Does Migration Assistant bring a login-keychain item to a new Mac?
 
 The results go into this ADR. If the prompts are bad and a self-signed
-certificate doesn't help, encryption waits for the signed `.dmg`.
+certificate doesn't help, encryption waits for the signed `.dmg`. Since
+the maintainer has decided to encrypt before 0.1 (see "Maintainer's
+answers"), that case goes back to him before rollout step 3 instead.
 
 ## Open questions for the maintainer
 
@@ -163,9 +227,10 @@ written anywhere else, and never replaced or deleted by Lax on its own.
 before the tray and the window exist. A Keychain prompt or a conversion of
 several seconds would make Lax look hung, with no window to explain why.
 So setup creates the tray and window first, with capture paused, and opens
-the store on a background thread. The window shows "Unlocking…" or
-"Encrypting…" until it's done; commands that need the store answer "not
-ready yet". Capture, expiry and the journal start only once the store is
+the store on a background thread. The window shows "Opening the
+database…" or "Encrypting…" until it's done; commands that need the store
+answer "not ready yet". ("Unlocking" is kept for the app lock in ADR 0012,
+which is a different thing: it doesn't open the database.) Capture, expiry and the journal start only once the store is
 open, as today.
 
 `Store::open` already creates an empty `0600` file before opening. Then:
@@ -284,14 +349,17 @@ file can still be opened.
 ### No recovery key
 
 - Lax is a memory, not a vault. Raw captures expire within 30 to 90 days.
-  Losing the database loses the journal and entity data, but the Markdown
-  pages survive.
+  Losing the database loses the journal and entity data. Today the Markdown
+  pages survive that. Once ADR 0011 moves them into the database, they
+  don't: a lost key loses the pages too, including what the user wrote on
+  them. ADR 0011's page export is the user's own copy. This makes open
+  question 2 weightier than when it was first asked.
 - The key is already visible in Keychain Access. The user guide says where,
   and that a copy in a password manager works on another Mac.
 - A recovery key is one more secret that can leak, and one more screen.
 
 The cost: lose the keychain without a copy of the key, and the database is
-gone. The user guide says so plainly.
+gone, with the pages once ADR 0011 is in. The user guide says so plainly.
 
 ## Consequences
 
@@ -333,6 +401,8 @@ build. No test touches the real Keychain, which could block on a prompt;
 - **Beside them, the encryption test:** with a key, a capture, an episode,
   a page version and an outbox entry hold a synthetic marker ("Anna
   Example"); the marker is in none of `lax.sqlite`, `-wal` and `-shm`.
+  Once ADR 0011 is in, a page's text, with a line of the user's own,
+  holds the marker too.
 - Keyed open works; no key and a wrong key both fail with fixed errors.
 - A new key is never made while an encrypted file exists, and "Start over"
   keeps the old item and file.
@@ -370,8 +440,9 @@ as it lands.
 0. **GUARDRAILS §6, in its own PR first**, as the guardrails' preamble
    requires. "Lax relies on FileVault … Database encryption (SQLCipher) is
    planned" becomes: the database is encrypted with a random key in the
-   login keychain, never synced; the pages in `~/Lax` are plain Markdown,
-   protected by FileVault and permissions; Lax warns if FileVault is off.
+   login keychain, never synced; until ADR 0011 is in, the pages in `~/Lax`
+   are plain Markdown, protected by FileVault and permissions; Lax warns if
+   FileVault is off. ADR 0011 changes the pages' part of §6 in its own PR.
    "Inspect it without Lax" gains: the database needs SQLCipher and the key
    from Keychain Access. Merged once this ADR is accepted. Alongside it,
    the **spike** (not merged), whose results go into this ADR.
@@ -381,7 +452,7 @@ as it lands.
    while plaintext, to keep today's VACUUM memory. The `cipher_provider`
    test.
 3. **Encrypted new databases:** opening off the main thread with
-   "Unlocking…", the plaintext-header branch, the failure screens and
+   "Opening the database…", the plaintext-header branch, the failure screens and
    "Start over", incremental vacuum, the tests above.
 4. **Conversion** with "Encrypting…" and the one-time notice. The
    maintainer's database first, with a copy kept by hand.
