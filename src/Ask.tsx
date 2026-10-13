@@ -46,11 +46,20 @@ export function Ask({ onShowJournal }: { onShowJournal: () => void }) {
   const [turns, setTurns] = useState<Turn[]>([]);
   const end = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
+  // The user is at the end of the conversation, not reading further up.
+  const following = useRef(true);
 
   // Keep the latest message in view.
   useEffect(() => {
     end.current?.scrollIntoView({ block: "end", behavior: "smooth" });
-  }, [turns, asking, streamed, error]);
+  }, [turns, asking, error]);
+  // While the answer is written, follow it, unless the user has scrolled up
+  // to read something else.
+  useEffect(() => {
+    if (streamed !== "" && following.current) {
+      end.current?.scrollIntoView({ block: "end" });
+    }
+  }, [streamed]);
 
   const ask = (text: string) => {
     const q = text.trim();
@@ -98,7 +107,15 @@ export function Ask({ onShowJournal }: { onShowJournal: () => void }) {
 
   return (
     <section className="ask chat">
-      <div className="chat-log" role="log" aria-live="polite">
+      <div
+        className="chat-log"
+        role="log"
+        aria-live="polite"
+        onScroll={(e) => {
+          const log = e.currentTarget;
+          following.current = log.scrollHeight - log.scrollTop - log.clientHeight < 48;
+        }}
+      >
         {turns.length === 0 && asking === null && (
           <div className="chat-empty">
             <img src={salmon} alt="" className="chat-salmon" />
@@ -175,8 +192,9 @@ export function Ask({ onShowJournal }: { onShowJournal: () => void }) {
               </div>
             ) : (
               // Plain text only: React puts it in as text, never as HTML,
-              // and nothing reads it as Markdown.
-              <div className="bubble from-lax writing" aria-busy="true">
+              // and nothing reads it as Markdown. Screen readers hear the
+              // validated answer once, not each piece as it comes.
+              <div className="bubble from-lax writing" aria-live="off" aria-busy="true">
                 <p className="answer">{streamed}</p>
               </div>
             )}
