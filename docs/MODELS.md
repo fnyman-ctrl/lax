@@ -15,6 +15,24 @@ Run them in [LM Studio](https://lmstudio.ai) or [Ollama](https://ollama.com),
 start its local server, and choose them under **Models** in the Lax window.
 Both servers listen only on this Mac by default.
 
+### Keep both models loaded
+
+Lax uses the embedding model and the chat model one right after the other:
+every question in Ask, and the memory's work in the background. LM Studio
+keeps only the last model it loaded on demand ("Only Keep Last JIT Loaded
+Model", on by default), so it unloads the chat model for each search and
+loads all 6 GB of it again for the answer. Turn that setting off under
+**Developer → Server Settings**, or load both models yourself with
+`lms load`.
+
+Measured on 2026-10-13 on the same M1 Pro:
+
+| | Setting on | Both models loaded |
+|---|---|---|
+| A search (embedding) | 1.5–3.7 s | under 0.1 s |
+| A short answer right after a search | 13.4 s | 0.4–0.6 s |
+| An answer from about 1,900 tokens of context | 20.7 s | about 3 s |
+
 ## How we chose
 
 Measured on 2026-10-11 on a MacBook Pro with an M1 Pro and 16 GB, LM Studio,
