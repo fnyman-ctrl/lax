@@ -109,8 +109,9 @@ useful every day.
 - The user reads and edits the draft; Enter puts it in place of the instruction,
   and Lax never sends
 
-Next: the pages of the people in a mail thread, and pasting through the app's
-Edit menu so it works with every keyboard layout.
+Since then: the pages of the people in a mail thread (#113) and pasting
+through the app's own menu, for every keyboard layout (#112). Next: Pages
+(#111).
 
 ## Stage 6: Release 0.1
 

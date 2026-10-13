@@ -106,8 +106,9 @@ previous one, so they can be built, tested and improved independently.
   cursor; the window is read as capture
   reads it, for the app Lax was called to (`src-tauri/src/summon.rs`). On
   Enter, the chat model writes a draft from the instruction, `about-me.md`,
-  the pages of people and projects named in the instruction (not every name
-  in the window), and the window's text, all as `Captured` data
+  the pages of people and projects named in the instruction or in the
+  thread's header lines at the top of the window (From, To, Cc; not every
+  name in the window), and the window's text, all as `Captured` data
   (`src-tauri/src/write.rs`). Secrets are redacted first, and nothing about
   a draft is stored. The user can edit the draft; Enter puts it into the field
   in place of the instruction (after checking it is still there), through
