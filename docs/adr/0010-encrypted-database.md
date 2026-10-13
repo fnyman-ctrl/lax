@@ -1,6 +1,6 @@
 # 0010. Encrypt the database with SQLCipher, keyed from the Keychain
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-13
 
 ## Summary
@@ -29,8 +29,7 @@ encrypts now. Lax shows its own note right before it, so a prompt at any
 other time stands out as a warning sign. The signed `.dmg` removes the
 prompt later.
 
-**Status:** ready to accept, pending the maintainer. It stays Proposed
-until he accepts it.
+**Status.** Accepted by the maintainer on 2026-10-13.
 
 ## Maintainer's answers (2026-10-13)
 
@@ -91,8 +90,7 @@ The open questions:
 
 **Status.** The spike is done and its results are in "Before deciding".
 Only question 4 is still open, and it belongs to the signed build, so it
-doesn't hold this ADR back. The ADR is ready to accept, pending the
-maintainer. It stays **Proposed** until he accepts it.
+doesn't hold this ADR back. Accepted by the maintainer on 2026-10-13.
 
 ## Context
 
