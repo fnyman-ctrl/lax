@@ -23,6 +23,7 @@ use objc2_core_foundation::{
 };
 
 use crate::capture::{App, Node, Screen, truncate_chars};
+use crate::exclusions::is_secure_text_field;
 use crate::summon::Rect;
 
 type AXError = i32;
@@ -36,6 +37,10 @@ const AX_VALUE_CF_RANGE: u32 = 4;
 
 /// The height of a text field's first line, roughly, in points.
 const FIRST_LINE: f64 = 24.0;
+/// How far [`Element::field_within`] looks for the field: elements in all,
+/// and children of each.
+const MAX_FIELD_SEARCH: usize = 400;
+const MAX_FIELD_CHILDREN: usize = 40;
 
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
@@ -222,6 +227,7 @@ struct Names {
     value: CFRetained<CFString>,
     children: CFRetained<CFString>,
     focused_window: CFRetained<CFString>,
+    focused: CFRetained<CFString>,
     manual_accessibility: CFRetained<CFString>,
     visible_character_range: CFRetained<CFString>,
     string_for_range: CFRetained<CFString>,
@@ -254,6 +260,7 @@ impl Names {
             value: name("AXValue"),
             children: name("AXChildren"),
             focused_window: name("AXFocusedWindow"),
+            focused: name("AXFocused"),
             manual_accessibility: name("AXManualAccessibility"),
             visible_character_range: name("AXVisibleCharacterRange"),
             string_for_range: name("AXStringForRange"),
@@ -564,19 +571,120 @@ impl Element {
         self.caret_bounds().is_some()
     }
 
+    /// A field inside this element with one of `roles` that says where its
+    /// text cursor is, breadth first, looking at no more than
+    /// [`MAX_FIELD_SEARCH`] elements and `max_depth` levels down: the first
+    /// that says it has the keyboard focus, or else (unless `focused_only`)
+    /// the first at all. Password fields are passed over unless focused,
+    /// when the caller must stay away. For apps that name a whole scroll
+    /// area as focused (Pages, Claude) rather than the field the user types
+    /// in. Reads roles, flags and positions only, never text.
+    pub fn field_within(
+        &self,
+        roles: &[&str],
+        focused_only: bool,
+        max_depth: usize,
+    ) -> Option<Element> {
+        let mut queue: std::collections::VecDeque<(Element, usize)> = self
+            .children(MAX_FIELD_CHILDREN)
+            .into_iter()
+            .map(|child| (child, 1))
+            .collect();
+        let mut first = None;
+        let mut looked = 0;
+        while let Some((element, depth)) = queue.pop_front() {
+            looked += 1;
+            if looked > MAX_FIELD_SEARCH {
+                break;
+            }
+            let (role, subrole) = element.role_and_subrole();
+            let role = role.unwrap_or_default();
+            if roles.contains(&role.as_str()) {
+                let focused = element.flag(&element.names.focused) == Some(true);
+                if is_secure_text_field(&role, subrole.as_deref()) {
+                    if focused {
+                        return Some(element);
+                    }
+                    continue;
+                }
+                if element.has_caret_bounds() {
+                    if focused {
+                        return Some(element);
+                    }
+                    if !focused_only && first.is_none() {
+                        first = Some(element);
+                    }
+                    continue;
+                }
+            }
+            if depth < max_depth {
+                for child in element.children(MAX_FIELD_CHILDREN) {
+                    queue.push_back((child, depth + 1));
+                }
+            }
+        }
+        first
+    }
+
     fn caret_bounds(&self) -> Option<Rect> {
-        let range = self.copy(&self.names.selected_text_range)?;
-        if CFGetTypeID(Some(&range)) != AXValueGetTypeID() {
+        let range_value = self.copy(&self.names.selected_text_range)?;
+        if CFGetTypeID(Some(&range_value)) != AXValueGetTypeID() {
             return None;
         }
+        let frame = self.frame();
+        // Some apps answer an empty selection with an empty rectangle at 0,0,
+        // and Chromium (Claude, Slack) with one at the screen's bottom left:
+        // a cursor must have a height and sit in or next to its field.
+        let usable = |rect: &Rect| {
+            rect.height > 0.0
+                && (rect.x != 0.0 || rect.y != 0.0)
+                && frame.is_none_or(|frame| near(&frame, rect))
+        };
+        if let Some(rect) = self.bounds_for(&range_value).filter(usable) {
+            return Some(rect);
+        }
+        // Chromium can't say where a cursor after the last character is, but
+        // it can say where that character is: the cursor is at its right edge.
+        let mut range = CFRange::new(0, 0);
+        // SAFETY: `range_value` is an AXValue; `range` is a CFRange, the type
+        // asked for, so the framework writes a value of the right size.
+        let ok = unsafe {
+            AXValueGetValue(
+                &range_value,
+                AX_VALUE_CF_RANGE,
+                (&raw mut range).cast::<c_void>(),
+            )
+        };
+        if ok == 0 || range.length != 0 || range.location <= 0 {
+            return None;
+        }
+        let before = CFRange::new(range.location - 1, 1);
+        // SAFETY: `before` is a CFRange, matching the type passed; returns a
+        // new value or null.
+        let before = unsafe {
+            owned(AXValueCreate(
+                AX_VALUE_CF_RANGE,
+                (&raw const before).cast::<c_void>(),
+            ))
+        }?;
+        let rect = self.bounds_for(&before).filter(usable)?;
+        Some(Rect {
+            x: rect.x + rect.width,
+            width: 0.0,
+            ..rect
+        })
+    }
+
+    /// Where the text in `range` (an AXValue range) is on screen.
+    fn bounds_for(&self, range: &CFType) -> Option<Rect> {
         let mut value: *const CFType = ptr::null();
-        // SAFETY: valid element, attribute, parameter (the AXValue range the
-        // app gave) and out pointer.
+        // SAFETY: valid element, attribute, parameter (an AXValue range) and
+        // out pointer.
         let error = unsafe {
             AXUIElementCopyParameterizedAttributeValue(
                 &self.element,
                 &self.names.bounds_for_range,
-                &range,
+                range,
                 &mut value,
             )
         };
@@ -585,9 +693,7 @@ impl Element {
         }
         // SAFETY: on success the value is a new reference we own.
         let bounds = unsafe { owned(value) }?;
-        let rect: Rect = ax_value(&bounds, AX_VALUE_CG_RECT)?;
-        // Some apps answer an empty selection with an empty rectangle at 0,0.
-        (rect.height > 0.0 && (rect.x != 0.0 || rect.y != 0.0)).then_some(rect)
+        ax_value(&bounds, AX_VALUE_CG_RECT)
     }
 
     /// The text the user selected in a field, at most `max_chars`
@@ -838,9 +944,36 @@ impl Node for Element {
     }
 }
 
+/// Whether a cursor at `caret` is in its field's `frame`, or just next to
+/// it (a cursor can sit on the frame's edge).
+fn near(frame: &Rect, caret: &Rect) -> bool {
+    const SLACK: f64 = 40.0;
+    let (x, y) = (caret.x, caret.y + caret.height / 2.0);
+    x >= frame.x - SLACK
+        && x <= frame.x + frame.width + SLACK
+        && y >= frame.y - SLACK
+        && y <= frame.y + frame.height + SLACK
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cursor_must_be_by_its_field() {
+        let rect = |x, y, width, height| Rect {
+            x,
+            y,
+            width,
+            height,
+        };
+        // Claude's composer, and the cursor Chromium reported for it.
+        let field = rect(1305.0, 1174.0, 672.0, 20.0);
+        assert!(!near(&field, &rect(0.0, 1329.0, 0.0, 18.0)));
+        assert!(near(&field, &rect(1492.0, 1175.0, 0.0, 18.0)));
+        // On the edge, at the end of a full line.
+        assert!(near(&field, &rect(1978.0, 1175.0, 0.0, 18.0)));
+    }
 
     #[test]
     fn idle_time_and_power_source_can_be_read() {

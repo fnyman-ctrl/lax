@@ -41,7 +41,9 @@ mod macos {
     use objc2::MainThreadMarker;
     use objc2::rc::Retained;
     use objc2::runtime::AnyClass;
-    use objc2_app_kit::{NSGlassEffectView, NSView, NSWindow, NSWindowOrderingMode};
+    use objc2_app_kit::{
+        NSAutoresizingMaskOptions, NSGlassEffectView, NSView, NSWindow, NSWindowOrderingMode,
+    };
     use objc2_foundation::{NSPoint, NSRect, NSSize};
 
     use crate::summon::Rect;
@@ -87,11 +89,17 @@ mod macos {
                 glass
             });
             let height = content.bounds().size.height;
-            let y = if content.isFlipped() {
-                card.y
+            let (y, top_fixed) = if content.isFlipped() {
+                (card.y, NSAutoresizingMaskOptions::ViewMaxYMargin)
             } else {
-                height - card.y - card.height
+                (
+                    height - card.y - card.height,
+                    NSAutoresizingMaskOptions::ViewMinYMargin,
+                )
             };
+            // The window is resized for the card too, maybe after this: the
+            // glass keeps its distance from the top, as the card does.
+            glass.setAutoresizingMask(top_fixed);
             glass.setFrame(NSRect::new(
                 NSPoint::new(card.x, y),
                 NSSize::new(card.width, card.height),
