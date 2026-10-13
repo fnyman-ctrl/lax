@@ -8,6 +8,8 @@
 
 **A private, fully local memory for your Mac that learns who you are and what you work on.**
 
+🐟 **[fnyman-ctrl.github.io/lax](https://fnyman-ctrl.github.io/lax/)**
+
 Lax quietly follows what you do on your computer and turns it into a living memory:
 which projects you're working on, who you work with, and what happened when.
 Everything runs on your machine by default: no cloud and no API keys unless you
