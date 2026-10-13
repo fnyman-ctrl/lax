@@ -12,7 +12,7 @@ closer to them.
 | 0 | Foundation | ✅ Done |
 | [1](https://github.com/fnyman-ctrl/lax/milestone/1) | Capture | 🚧 Almost done: a workday measurement is left (#11). Reads nothing while you're away |
 | [2](https://github.com/fnyman-ctrl/lax/milestone/2) | Model layer | 🚧 Local models done, quiet in the background and on battery; remote providers after 0.1 |
-| [3](https://github.com/fnyman-ctrl/lax/milestone/3) | Journal | 🚧 Works, opt-in; when raw captures expire is left (#39) |
+| [3](https://github.com/fnyman-ctrl/lax/milestone/3) | Journal | ✅ Done, opt-in; raw text goes 30 days after it's summarized |
 | [4](https://github.com/fnyman-ctrl/lax/milestone/4) | Learning memory ⭐ | ✅ First version: entities, pages in ~/Lax with facts, about-me.md, history; a week of use to judge |
 | [5](https://github.com/fnyman-ctrl/lax/milestone/5) | Ask your memory | ✅ First version: a conversation, answered from the journal and the memory, found by time, name, words and meaning |
 | — | Writing assistant | ✅ First version, pulled forward ([ADR 0009](adr/0009-writing-assistant.md)): call Lax to any text field for a draft |

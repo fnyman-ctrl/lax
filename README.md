@@ -1,4 +1,4 @@
-<img src="src-tauri/icons/128x128@2x.png" width="96" alt="The Lax app icon: a friendly silver salmon">
+<img src="src-tauri/icons/128x128@2x.png" width="96" alt="The Lax app icon: a pixel-art silver salmon">
 
 # Lax
 
@@ -99,11 +99,12 @@ other local tools can use your memory.
 ## Principles
 
 - **Local by default.** Out of the box, all models run on your machine (via
-  [Ollama](https://ollama.com) or similar) and nothing is sent anywhere.
-- **Your choice of model.** Lax works with any OpenAI-compatible API. If your
-  computer can't run a local model, you can pick a privacy-focused provider
-  instead. That's opt-in, data is redacted first, and every request is logged
-  for you to inspect.
+  [LM Studio](https://lmstudio.ai), [Ollama](https://ollama.com) or similar) and
+  nothing is sent anywhere. Lax 0.1 is local only.
+- **Your choice of model.** Lax works with any OpenAI-compatible API. After 0.1,
+  if your computer can't run a local model, you'll be able to pick a
+  privacy-focused provider instead: opt-in, redacted first, and every request
+  logged for you to inspect.
 - **Your data, open formats.** Memory is stored as Markdown + SQLite in a folder you own.
 - **Transparent.** You can always see what was captured, what Lax believes about you,
   and what was sent off your machine. You can pause, exclude apps or delete anything.
@@ -115,10 +116,13 @@ and [docs/CLAIMS.md](docs/CLAIMS.md) shows the test behind each one.
 ## Tech stack
 
 - [Tauri](https://tauri.app) (Rust backend, React/TypeScript UI)
-- SQLite (FTS5 full-text search, `sqlite-vec` for semantic search)
-- Any OpenAI-compatible model API: local (Ollama, LM Studio…) by default, remote if you choose
-- Apple Vision OCR, ScreenCaptureKit, Accessibility API
-- Whisper for audio, building on the approach of [Handy](https://github.com/cjpais/Handy)
+- SQLite with FTS5 full-text search, and episode vectors for search by meaning
+- Any OpenAI-compatible model API: local (LM Studio, Ollama…), remote after 0.1
+- The macOS Accessibility API to read windows and write drafts; AppKit for the
+  writing assistant's panel and Liquid Glass
+- Rust tests and live model tests, Vitest for the window
+- Later: Apple Vision OCR and ScreenCaptureKit as a fallback for apps without
+  text, and Whisper for audio, following [Handy](https://github.com/cjpais/Handy)
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details, and
 [docs/adr/](docs/adr/) for why things are built the way they are. The look and the mascot are
@@ -131,7 +135,7 @@ To report a security or privacy problem, see [SECURITY.md](SECURITY.md).
 
 ## Acknowledgements
 
-Lax builds on ideas and code from [Handy](https://github.com/cjpais/Handy) by CJ Pais
+Lax builds on ideas from [Handy](https://github.com/cjpais/Handy) by CJ Pais
 (MIT), a great offline speech-to-text app, and on ideas from
 [Mason](https://github.com/Baltsar/mason) by Gustaf Garnow (MIT), a local memory
 of how you build with AI agents.

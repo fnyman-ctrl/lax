@@ -27,9 +27,9 @@ previous one, so they can be built, tested and improved independently.
   and stops after ten minutes without input until they are back. A window
   whose text keeps changing is stored at most every 30 seconds.
   See [PERFORMANCE.md](PERFORMANCE.md).
-- If an app exposes no accessible text, fall back to a screenshot of the window
-  (ScreenCaptureKit) and on-device OCR (Apple Vision). The screenshot is discarded
-  after OCR.
+- Later: if an app exposes no accessible text, fall back to a screenshot of the
+  window (ScreenCaptureKit) and on-device OCR (Apple Vision), with the screenshot
+  discarded after OCR. Not built yet.
 - Skip unchanged content (hash-based dedup) and anything on the exclude list
   (password managers, private browser windows, user-chosen apps).
 - Mask secrets (passwords, keys, tokens, card numbers, personal identity numbers) in
