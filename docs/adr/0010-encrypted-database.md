@@ -20,18 +20,25 @@ password before Lax's window shows anything. That lock guards the window.
 It doesn't encrypt anything, and it doesn't change who can read the key.
 
 The maintainer wants encryption before release 0.1, in the self-built app,
-and has answered every open question that doesn't wait for something else
-(see "Maintainer's answers"). A short spike must still show how the
-Keychain behaves with Lax's ad-hoc signed builds (see "Before deciding").
-That spike hasn't been run yet. **This ADR stays Proposed until its results
-are in.**
+and has answered every open question that doesn't wait for the signed
+build (see "Maintainer's answers"). The Keychain spike has been run (see
+"Before deciding"). After every update, macOS asks once for the login
+password before the new build may read its key, and a self-signed
+certificate doesn't change that. The maintainer accepts that prompt and
+encrypts now. Lax shows its own note right before it, so a prompt at any
+other time stands out as a warning sign. The signed `.dmg` removes the
+prompt later.
+
+**Status:** ready to accept, pending the maintainer. It stays Proposed
+until he accepts it.
 
 ## Maintainer's answers (2026-10-13)
 
 The maintainer decided three things first, and later the same evening
-answered the open questions. The nine open questions below keep the
-reasoning as it was written, with each answer added. This section says
-what was decided.
+answered the open questions. After the Keychain spike he answered question
+5 (decision 4 below). The nine open questions below keep the reasoning as
+it was written, with each answer added. This section says what was
+decided.
 
 1. **Encrypt now, before release 0.1**, in the app people build themselves
    (`npm run build:app`, ad-hoc signed). SQLCipher, with the key in the
@@ -47,17 +54,21 @@ what was decided.
    when it opens, again after 5 minutes away, and before settings changes,
    forgets and exports. Forgets and exports ask every time. Settings ask
    once, then stay open while the user is active in Lax's window and ask
-   again after 5 minutes away, as ADR 0012 records. Capture and the writing assistant keep working in the
-   background. This is [ADR 0012](0012-app-lock.md).
+   again after 5 minutes away, as ADR 0012 records. Capture and the
+   writing assistant keep working in the background. This is
+   [ADR 0012](0012-app-lock.md).
+4. **Accept the prompt once per update, and encrypt now** (question 5,
+   after the spike). Lax explains the prompt with its own note right
+   before it. See "After an update: one Keychain prompt".
 
 What this changes here:
 
-- **The timing rests on the spike.** "Before deciding" said encryption
-  would wait for the signed `.dmg` if the prompts are bad and a self-signed
-  certificate doesn't help. The maintainer's decision is to encrypt now. If
-  the spike shows a prompt after every rebuild that a self-signed
-  certificate doesn't remove, the timing goes back to the maintainer before
-  rollout step 3. It isn't settled by this section.
+- **The timing is settled.** "Before deciding" said encryption would wait
+  for the signed `.dmg` if the prompts are bad and a self-signed
+  certificate doesn't help. The spike showed exactly that: a prompt with
+  the login password after every rebuild, which a self-signed certificate
+  doesn't remove. The case went back to the maintainer, and he decided to
+  encrypt now, with Lax's note (decision 4).
 - **Pages are in scope.** The context, the threat model, "No recovery key"
   and the tests below now count the pages as part of the database, from
   ADR 0011 on.
@@ -72,16 +83,16 @@ The open questions:
 | 2 | No recovery key | **Answered: yes, for 0.x**, as recommended. Weighed with ADR 0011 in mind: a lost key also loses the pages, including the user's own notes. Page export (ADR 0011) is the user's way to keep a copy |
 | 3 | Login keychain now, data protection keychain once signed | **Answered: yes** (decision 1) |
 | 4 | Access class after the move | Open. To be decided with the signed build. Now also: with `userPresence` on the key, Lax can't open the database after a restart until the user confirms with Touch ID or the login password, so capture waits for that. Whether that class and `userPresence` go together is to verify |
-| 5 | Keychain prompts after rebuilds | Open. Depends on the Keychain spike, which hasn't been run yet |
+| 5 | Keychain prompts after rebuilds | **Answered differently from the recommendation:** accept the prompt once per update and encrypt now, with Lax's own note right before it (decision 4). The spike showed a self-signed certificate doesn't remove the prompt |
 | 6 | Incremental vacuum | **Answered: yes**, as recommended |
 | 7 | `cipher_memory_security` off | **Answered: yes, keep it off**, as recommended |
 | 8 | Convert automatically at startup, after a one-time notice | **Answered: yes** |
 | 9 | A plaintext export | **Answered: as recommended.** The pages' export is in ADR 0011. An export of anything else waits for its own decision |
 
-**Status.** Questions 4 and 5 are still open, and question 5 can only be
-answered by the spike. So this ADR stays **Proposed** until the spike's
-results are in and written into "Before deciding". Question 4 doesn't hold
-it back: it belongs to the signed build.
+**Status.** The spike is done and its results are in "Before deciding".
+Only question 4 is still open, and it belongs to the signed build, so it
+doesn't hold this ADR back. The ADR is ready to accept, pending the
+maintainer. It stays **Proposed** until he accepts it.
 
 ## Context
 
@@ -125,7 +136,7 @@ below avoids the copy altogether.
 | Copies of the folder: Time Machine to a disk without encryption, cloud backup tools, a USB stick | **Not protected** | Protected: the key isn't in the copy, or only in a backed-up login keychain locked by the login password |
 | Freed disk blocks read later | Protected while FileVault is on | Protected from the switch on. Plaintext from before stays in old blocks, snapshots and backups until they are gone |
 | The memory pages, read by another program of the user | **Not protected.** They are Markdown files in `~/Lax`, `0600`, readable by every program the user runs, and indexed by Spotlight unless the user excludes the folder | Not protected by this ADR alone. Protected once [ADR 0011](0011-pages-in-the-database.md) moves them into the database, as in the row above. Copies the user exports are not |
-| Malware running as the user | Not protected | **Not protected.** It can trigger the Keychain prompt users learn to accept after updates, replace `~/Applications/Lax.app` (the user can write there), possibly inject code into an ad-hoc build (not verified), use Accessibility to read Lax's window, read `~/Lax` until ADR 0011 empties it, or watch the screen itself. The app lock (ADR 0012) changes none of this |
+| Malware running as the user | Not protected | **Not protected.** It can ask for the key itself and hope the user approves the Keychain prompt, as they do once after every update (see "After an update"). Lax's note narrows this: the prompt is expected only right after the user rebuilt Lax and Lax said so, and the user guide says a prompt at any other time is a warning sign. It doesn't close it: malware can time its request to just after an update, and the user may not read the prompt. It can also replace `~/Applications/Lax.app` (the user can write there), whose next start then shows the note itself, possibly inject code into an ad-hoc build (not verified), use Accessibility to read Lax's window, read `~/Lax` until ADR 0011 empties it, or watch the screen itself. The app lock (ADR 0012) changes none of this |
 | Someone at an unlocked, logged-in Mac | Not protected | **Partly**, and not by encryption: with [ADR 0012](0012-app-lock.md), Lax's window asks for Touch ID or the login password when it opens and after 5 minutes away. The keychain is still unlocked, so a program that person starts can still ask for the key and get the prompt from the malware row; they can still read what is on screen; and in the first 5 minutes after the user leaves, Lax may still be unlocked |
 | An administrator or root | Not protected | Not protected |
 
@@ -155,12 +166,47 @@ certificate doesn't help, encryption waits for the signed `.dmg`. Since
 the maintainer has decided to encrypt before 0.1 (see "Maintainer's
 answers"), that case goes back to him before rollout step 3 instead.
 
-The spike hasn't been run yet. Until its results are here, this ADR stays
-Proposed.
+### Results (2026-10-13)
+
+The maintainer ran the spike (`local/keychain-spike`) on his Mac, macOS
+26, on 2026-10-13. A small program wrote a generic password to the login
+keychain and read it back.
+
+1. **Ad-hoc build, write then read, no rebuild:** no prompt.
+2. **Ad-hoc rebuild, then read:** macOS asked, and the login password was
+   needed.
+3. **A self-signed code-signing certificate** ("Lax Dev", made in Keychain
+   Access): write, rebuild with the same certificate, then read. macOS
+   **still asked for the login password.** While he chose "Allow", every
+   read of that same build asked again. After he chose **"Always Allow"**,
+   the next read of the same build took no time and showed no prompt. So
+   a self-signed certificate doesn't keep access across rebuilds. The
+   likely reason, not verified: a self-signed certificate has no Team ID,
+   so the login keychain's partition list falls back to the build's code
+   hash (cdhash), as it does for ad-hoc code.
+4. **Migration Assistant** (question 3 above): not tested.
+
+`codesign` also asked to use the certificate's private key during each
+build. That is about the certificate, not the key item.
+
+**What it means.** The prompt comes **once per new build**. It needs the
+login password and "Always Allow", and after that it is silent until the
+next build. Lax users get a new build only when they rebuild Lax
+themselves, so the prompt comes right after something they did. The
+maintainer accepted this and decided to encrypt now (decision 4). The
+signed `.dmg`, with a Developer ID that has a Team ID and the data
+protection keychain, removes the prompt later.
+
+Migration Assistant is still untested. It doesn't hold the decision back:
+the user guide tells users to keep a copy of the key, and a key that
+doesn't arrive ends in "Lax can't find its key" with **Try again**, never
+in a new key (see "When the key is missing or wrong"). It is still worth
+testing before release 0.1.
 
 ## Open questions for the maintainer
 
-The Decision below follows the answers. Questions 4 and 5 are still open.
+The Decision below follows the answers. Question 4 is still open; it
+belongs to the signed build.
 
 1. **On for everyone, with no off switch?** Recommended: yes. Users
    without FileVault gain the most. **Answered: yes.**
@@ -177,7 +223,10 @@ The Decision below follows the answers. Questions 4 and 5 are still open.
 5. **Keychain prompts after rebuilds, if the spike shows them?**
    Recommended: acceptable only if a self-signed certificate removes them
    for people who build often; otherwise wait for the signed build.
-   **Open:** depends on the spike, which hasn't been run yet.
+   **Answered differently, after the spike:** a self-signed certificate
+   doesn't remove the prompt, and the maintainer accepts it anyway. Lax
+   encrypts now and explains the prompt with its own note, once per
+   update. See "After an update: one Keychain prompt".
 6. **Incremental vacuum instead of VACUUM?** Recommended: yes.
    `temp_store = FILE` during VACUUM would allow plaintext temporary files.
    **Answered: yes.**
@@ -253,10 +302,11 @@ before the tray and the window exist. A Keychain prompt or a conversion of
 several seconds would make Lax look hung, with no window to explain why.
 So setup creates the tray and window first, with capture paused, and opens
 the store on a background thread. The window shows "Opening the
-database…" or "Encrypting…" until it's done; commands that need the store
-answer "not ready yet". ("Unlocking" is kept for the app lock in ADR 0012,
-which is a different thing: it doesn't open the database.) Capture, expiry and the journal start only once the store is
-open, as today.
+database…", "Encrypting…" or, after an update, the note below until it's
+done; commands that need the store answer "not ready yet". ("Unlocking" is
+kept for the app lock in ADR 0012, which is a different thing: it doesn't
+open the database.) Capture, expiry and the journal start only once the
+store is open, as today.
 
 `Store::open` already creates an empty `0600` file before opening. Then:
 
@@ -264,7 +314,7 @@ open, as today.
 |---|---|
 | Empty (new install) | New key (by the rule above); key; `auto_vacuum = INCREMENTAL`; then WAL; then migrations |
 | Starts with `SQLite format 3\0` | Plaintext: convert it (below) |
-| Anything else | Encrypted: look up the key; key; `cipher_compatibility = 4`; read `sqlite_schema`; then WAL, `secure_delete`, `foreign_keys`, `migrate`, `repair` as today |
+| Anything else | Encrypted: after an update, the note (below); look up the key; key; `cipher_compatibility = 4`; read `sqlite_schema`; then WAL, `secure_delete`, `foreign_keys`, `migrate`, `repair` as today |
 
 Keying uses `sqlite3_key_v2` with the `x'<64 hex>'` form, so the key
 never appears in SQL. The raw form skips PBKDF2, so opening stays fast.
@@ -278,6 +328,51 @@ conversion binds it as a parameter (`ATTACH ?1 AS encrypted KEY ?2`), and
 every error from the key and conversion steps is mapped to a fixed
 `StoreError` (`KeychainLocked`, `KeyMissing`, `CannotUnlock`,
 `ConversionFailed`) that carries no SQLite text.
+
+### After an update: one Keychain prompt
+
+The spike showed that every new build of Lax must be allowed once to read
+its key: macOS asks for the login password, and the user chooses "Always
+Allow" (see "Before deciding"). Lax says so first, so the prompt never
+comes out of nowhere.
+
+- **Before it reads an existing key**, Lax checks whether it is a new
+  build. If it is, the window shows Lax's own note and waits for
+  **Continue**: "Lax was updated. macOS will ask once whether Lax may use
+  its key. Type your login password and choose Always Allow." Only then
+  does Lax read the key, and macOS asks.
+- **How Lax knows it is a new build:** it reads its own code hash (cdhash)
+  through the Security framework (`SecCodeCopySelf` and
+  `SecCodeCopySigningInformation`; whether `security-framework` exposes
+  them is to verify) and compares it with the hash it stored after the
+  last successful read. That hash is kept in a small file in the data
+  folder, `key-build`, `0600`. It can't go in the database's settings,
+  because the database can't be read before the key, and SQLCipher's
+  plaintext header stays unused. The hash isn't secret. If Lax can't read
+  its own hash, or the file is missing while an encrypted database exists,
+  it counts as a new build and shows the note.
+- **After a successful read**, Lax stores the current hash. A new install
+  or a conversion makes the key with the current build, which may then
+  read it without a prompt (spike result 1), so it stores the hash with no
+  note.
+- **"Allow" instead of "Always Allow"** lets this start through, but the
+  next start asks again, without the note. To catch that, Lax can first
+  try the read with Keychain prompts turned off
+  (`kSecUseAuthenticationUIFail`, or the older
+  `SecKeychainSetUserInteractionAllowed(false)`), and show the note
+  whenever that read is refused for needing a prompt. Whether either works
+  for the login keychain's access prompt is to verify. If one does, it
+  decides when the note shows, and the stored hash is only the fallback.
+- **Denied or cancelled:** "Lax can't unlock its database." with **Try
+  again**, as in "When the key is missing or wrong". The note says what to
+  choose; it never chooses for the user.
+- **A prompt at any other time is a warning sign.** Users get a new build
+  only when they rebuild Lax themselves, and then Lax's note comes first.
+  The user guide says: if macOS asks for Lax's key without that note, or
+  for another program, choose Deny.
+
+The signed `.dmg` (a Developer ID with a Team ID, and the data protection
+keychain) removes the prompt, and with it the note.
 
 ### Settings
 
@@ -361,7 +456,7 @@ without one, and never makes a new key while an encrypted file exists.
 | Key not found, encrypted file exists | "Lax can't find its key." **Try again**, or **Start over** |
 | Login password reset: macOS makes a new login keychain and keeps the old one as `login_renamed_1` (Apple's documented behaviour, not verified here) | Same as above, plus: "If you reset your login password, open Keychain Access, unlock the old keychain with the old password, and try again." Lax makes no new key in the meantime |
 | Key found, but the file won't open (wrong key, or damaged; they look the same) | "Lax can't open its database." **Start over** |
-| A new Mac | Depends on the spike and on open question 4 |
+| A new Mac | Migration Assistant wasn't tested in the spike. If the key doesn't arrive: "Lax can't find its key", as above; the user guide says how to bring a copy of the key. After the move to the data protection keychain, open question 4 decides it |
 
 **Start over** is explicit and confirmed, like every forget. It moves the
 file aside as `lax.sqlite.unreadable-<date>` (still encrypted, with any
@@ -437,6 +532,11 @@ build. No test touches the real Keychain, which could block on a prompt;
   export leaves a working plaintext file and the next start converts
   again; too little space changes nothing.
 - No `StoreError` text, log entry or window message contains the key.
+- The note after an update, with a fake `KeySource` and a fake code hash:
+  a new hash, or a missing `key-build` file next to an encrypted database,
+  shows the note and reads no key before **Continue**; the same hash
+  shows no note; the hash is stored only after a successful read; a new
+  install or a conversion stores it with no note.
 - `cipher_provider` is `commoncrypto` on a keyed temporary database, and a
   forget on a large database stays under a set memory ceiling.
 
@@ -446,7 +546,10 @@ build. No test touches the real Keychain, which could block on a prompt;
   never on disk in plaintext"; the forget row says incremental vacuum.
 - **USER-GUIDE.md:** what is and isn't encrypted, where the key is, how to
   keep a copy, what "Start over" does, the login-password-reset case, and
-  how to open the database with the `sqlcipher` tool.
+  how to open the database with the `sqlcipher` tool. The prompt after an
+  update: Lax's note comes first, type the login password and choose
+  Always Allow. A prompt for Lax's key at any other time, or from another
+  program, is a warning sign: choose Deny.
 - **PERFORMANCE.md:** temporary data in RAM. **ARCHITECTURE.md:** a line
   pointing here.
 
@@ -455,7 +558,9 @@ build. No test touches the real Keychain, which could block on a prompt;
 - `sqlite3 lax.sqlite` no longer works; inspecting needs SQLCipher and the
   key.
 - A lost keychain without a copy of the key means a lost database.
-- Possibly Keychain prompts after rebuilds, until the spike says otherwise.
+- One Keychain prompt with the login password after every update, until
+  the signed `.dmg`. People who build Lax often, during development, get
+  it after every build.
 - A slower source of SQLite fixes.
 
 ## Rollout
@@ -470,16 +575,19 @@ as it lands.
    are plain Markdown, protected by FileVault and permissions; Lax warns if
    FileVault is off. ADR 0011 changes the pages' part of §6 in its own PR.
    "Inspect it without Lax" gains: the database needs SQLCipher and the key
-   from Keychain Access. Merged once this ADR is accepted. Alongside it,
-   the **spike** (not merged), whose results go into this ADR.
-1. **`keychain.rs`** with `KeySource` and tests. No change in behaviour.
+   from Keychain Access. Merged once this ADR is accepted. The **spike**
+   is done (`local/keychain-spike`, not merged); its results are in
+   "Before deciding".
+1. **`keychain.rs`** with `KeySource`, reading Lax's own code hash, and
+   tests. No change in behaviour.
 2. **Build with `bundled-sqlcipher`**, databases still plaintext (SQLite
    3.53.2 → 3.51.3 for everyone). Logging compiled out. `temp_store = FILE`
    while plaintext, to keep today's VACUUM memory. The `cipher_provider`
    test.
 3. **Encrypted new databases:** opening off the main thread with
-   "Opening the database…", the plaintext-header branch, the failure screens and
-   "Start over", incremental vacuum, the tests above.
+   "Opening the database…", the plaintext-header branch, the failure
+   screens and "Start over", the note after an update with `key-build`,
+   incremental vacuum, the tests above.
 4. **Conversion** with "Encrypting…" and the one-time notice. The
    maintainer's database first, with a copy kept by hand.
 5. **Docs:** USER-GUIDE, PERFORMANCE, ARCHITECTURE, CHANGELOG ("one-way;
