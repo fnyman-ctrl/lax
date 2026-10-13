@@ -31,11 +31,14 @@ use crate::store::{EntityKind, Episode, ModelTask, Store};
 /// fits a small local model's context and is answered within the timeout.
 const MAX_ENTRIES: usize = 40;
 /// Smaller than the journal's blocks: the user waits while the model reads
-/// it, and finding by meaning picks fewer, better entries.
-const MAX_CHARS: usize = 8_000;
-/// Most entries taken from each way of finding them.
+/// it, and finding by meaning picks fewer, better entries. From 8,000 to
+/// 5,000 took about 1,000 prompt tokens, and 2 seconds before the first
+/// word, off a question on an M1 Pro (#124).
+const MAX_CHARS: usize = 5_000;
+/// Most entries taken from each way of finding them. A count of candidates,
+/// not a size: the budget above cuts from the end of the list.
 const PER_SOURCE: usize = 40;
-/// Entries found by meaning.
+/// Entries found by meaning. A dozen typical entries fit in the budget.
 const NEAREST: usize = 12;
 
 /// The question as a vector, for finding entries by meaning.
