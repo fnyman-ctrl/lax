@@ -10,8 +10,10 @@ use tauri::WebviewWindow;
 use crate::summon::Rect;
 
 /// Puts the glass behind `card` (in points, from the window's top left), or
-/// hides it for `None`. Returns whether this Mac has the glass at all.
-pub fn set(panel: &WebviewWindow, card: Option<Rect>) -> bool {
+/// hides it for `None`. `height` is the window's height once a resize asked
+/// for has happened: AppKit counts from the bottom, and the resize may not
+/// have reached the window yet. Returns whether this Mac has the glass at all.
+pub fn set(panel: &WebviewWindow, card: Option<Rect>, height: Option<f64>) -> bool {
     #[cfg(target_os = "macos")]
     {
         if !macos::available() {
@@ -23,12 +25,12 @@ pub fn set(panel: &WebviewWindow, card: Option<Rect>) -> bool {
         // A pointer can't cross threads; its address can, and the window
         // outlives the call (it is only ever hidden, never closed).
         let window = window as usize;
-        let _ = panel.run_on_main_thread(move || macos::set(window, card));
+        let _ = panel.run_on_main_thread(move || macos::set(window, card, height));
         true
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (panel, card);
+        let _ = (panel, card, height);
         false
     }
 }
@@ -59,7 +61,7 @@ mod macos {
         AnyClass::get(c"NSGlassEffectView").is_some()
     }
 
-    pub fn set(window: usize, card: Option<Rect>) {
+    pub fn set(window: usize, card: Option<Rect>, height: Option<f64>) {
         let Some(mtm) = MainThreadMarker::new() else {
             return;
         };
@@ -86,7 +88,7 @@ mod macos {
                 content.addSubview_positioned_relativeTo(&glass, NSWindowOrderingMode::Below, None);
                 glass
             });
-            let height = content.bounds().size.height;
+            let height = height.unwrap_or_else(|| content.bounds().size.height);
             let y = if content.isFlipped() {
                 card.y
             } else {

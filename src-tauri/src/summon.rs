@@ -247,6 +247,15 @@ pub fn role_code(role: Option<&str>) -> i64 {
     }
 }
 
+/// The roles of fields people type in, which Lax may come to even when
+/// they don't say where their text cursor is (it then uses their first line).
+pub const TYPED_IN: &[&str] = &["AXTextArea", "AXTextField", "AXComboBox", "AXTextView"];
+
+/// Whether `role` is one of [`TYPED_IN`].
+pub fn typed_in(role: Option<&str>) -> bool {
+    role.is_some_and(|role| TYPED_IN.contains(&role))
+}
+
 /// What a draft replaces, as a number for the log: 0 nothing, 1 the
 /// selection, 2 a paragraph, 3 the whole field.
 pub fn replace_code(replace: Replace) -> i64 {
@@ -635,7 +644,7 @@ fn show(app: &AppHandle, call: Call, caret: Option<Rect>, field: Option<Rect>) {
         height: 3.0 * PANEL_HEIGHT,
     });
     // The glass from last time stays hidden until the card opens again.
-    crate::glass::set(&panel, None);
+    crate::glass::set(&panel, None, None);
     let (x, y, width) = place(caret, field.map(|field| field.width), screen);
     let _ = panel.set_size(tauri::LogicalSize::new(width, PANEL_HEIGHT));
     let _ = panel.set_position(tauri::LogicalPosition::new(x, y));
@@ -805,6 +814,11 @@ pub(crate) mod macos {
     /// window: the app, the window title and whether a browser window is
     /// private. `None` if Lax may not come: one of those says no, capture is
     /// paused, or the focus is in a password field.
+    /// How many levels down Lax looks for the field: inside a focused scroll
+    /// area, and in the whole window (web apps nest deeply).
+    const FIELD_DEPTH_IN_AREA: usize = 6;
+    const FIELD_DEPTH_IN_WINDOW: usize = 30;
+
     pub fn locate(app: &AppHandle) -> Option<Found> {
         // Before the user's exclusions are loaded, Lax comes nowhere.
         let (_, exclusions) = app.state::<Current>().newer_than(0)?;
@@ -826,13 +840,41 @@ pub(crate) mod macos {
             caret: None,
             field: None,
         };
-        let Some(element) = screen.focused_element(&found.front) else {
+        let Some(focused) = screen.focused_element(&found.front) else {
             return Some(found);
         };
-        let (role, subrole) = element.role_and_subrole();
+        let (role, subrole) = focused.role_and_subrole();
         if is_secure_text_field(role.as_deref().unwrap_or_default(), subrole.as_deref()) {
             return None;
         }
+        // Some apps (Pages, Claude) name a whole scroll area as focused, not
+        // the field the user types in. Then the field inside it, if one says
+        // where its cursor is; otherwise the mouse pointer, not the area's
+        // top left corner.
+        let (element, role, inner) =
+            if super::typed_in(role.as_deref()) || focused.has_caret_bounds() {
+                (focused, role, false)
+            } else if let Some(field) = focused
+                .field_within(super::TYPED_IN, false, FIELD_DEPTH_IN_AREA)
+                .or_else(|| {
+                    // Not inside it (Claude's composer): the field in the window
+                    // that says it has the keyboard focus.
+                    screen.focused_window(&found.front)?.field_within(
+                        super::TYPED_IN,
+                        true,
+                        FIELD_DEPTH_IN_WINDOW,
+                    )
+                })
+            {
+                let (role, subrole) = field.role_and_subrole();
+                if is_secure_text_field(role.as_deref().unwrap_or_default(), subrole.as_deref()) {
+                    return None;
+                }
+                (field, role, true)
+            } else {
+                log_field(role.as_deref(), false, false, None, &found.call);
+                return Some(found);
+            };
         let caret = element.caret();
         // Some apps (Electron apps with several web views, such as Claude)
         // name a field as focused that is hidden: behind another app's
@@ -854,7 +896,11 @@ pub(crate) mod macos {
             );
             return Some(found);
         }
-        let text = element.field_text(MAX_INSTRUCTION_CHARS);
+        // Inside a scroll area the draft is pasted at the keyboard focus, so
+        // it can replace a selection but not select a paragraph itself.
+        let text = element
+            .field_text(MAX_INSTRUCTION_CHARS)
+            .filter(|text| !inner || matches!(text, FieldText::Selected(_)));
         if let Some(text) = &text {
             (found.call.instruction, found.call.replace) = instruction_in(text);
         }
@@ -865,7 +911,7 @@ pub(crate) mod macos {
             text.as_ref(),
             &found.call,
         );
-        found.call.accessible = true;
+        found.call.accessible = !inner;
         found.caret = caret;
         found.field = element.frame();
         Some(found)
@@ -1265,6 +1311,17 @@ mod tests {
             }),
             3
         );
+    }
+
+    #[test]
+    fn a_scroll_area_is_not_a_field_to_type_in() {
+        // Pages and Claude name a scroll area as focused; its top left corner
+        // is not where the user types, so Lax looks inside it instead.
+        assert!(typed_in(Some("AXTextArea")));
+        assert!(typed_in(Some("AXTextView")));
+        assert!(!typed_in(Some("AXScrollArea")));
+        assert!(!typed_in(Some("AXGroup")));
+        assert!(!typed_in(None));
     }
 
     #[test]

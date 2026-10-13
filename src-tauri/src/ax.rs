@@ -36,6 +36,10 @@ const AX_VALUE_CF_RANGE: u32 = 4;
 
 /// The height of a text field's first line, roughly, in points.
 const FIRST_LINE: f64 = 24.0;
+/// How far [`Element::field_within`] looks for the field: elements in all,
+/// and children of each.
+const MAX_FIELD_SEARCH: usize = 600;
+const MAX_FIELD_CHILDREN: usize = 60;
 
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
@@ -222,6 +226,7 @@ struct Names {
     value: CFRetained<CFString>,
     children: CFRetained<CFString>,
     focused_window: CFRetained<CFString>,
+    focused: CFRetained<CFString>,
     manual_accessibility: CFRetained<CFString>,
     visible_character_range: CFRetained<CFString>,
     string_for_range: CFRetained<CFString>,
@@ -254,6 +259,7 @@ impl Names {
             value: name("AXValue"),
             children: name("AXChildren"),
             focused_window: name("AXFocusedWindow"),
+            focused: name("AXFocused"),
             manual_accessibility: name("AXManualAccessibility"),
             visible_character_range: name("AXVisibleCharacterRange"),
             string_for_range: name("AXStringForRange"),
@@ -562,6 +568,47 @@ impl Element {
     /// falling back to the field's first line).
     pub fn has_caret_bounds(&self) -> bool {
         self.caret_bounds().is_some()
+    }
+
+    /// The first field inside this element with one of `roles` that says
+    /// where its text cursor is (and, if `focused_only`, says it has the
+    /// keyboard focus), breadth first, looking at no more than
+    /// [`MAX_FIELD_SEARCH`] elements and `max_depth` levels down. For apps
+    /// that name a whole scroll area as focused (Pages, Claude) rather than
+    /// the field the user types in. Reads roles, flags and positions only,
+    /// never text.
+    pub fn field_within(
+        &self,
+        roles: &[&str],
+        focused_only: bool,
+        max_depth: usize,
+    ) -> Option<Element> {
+        let mut queue: std::collections::VecDeque<(Element, usize)> = self
+            .children(MAX_FIELD_CHILDREN)
+            .into_iter()
+            .map(|child| (child, 1))
+            .collect();
+        let mut looked = 0;
+        while let Some((element, depth)) = queue.pop_front() {
+            looked += 1;
+            if looked > MAX_FIELD_SEARCH {
+                break;
+            }
+            if element
+                .role()
+                .is_some_and(|role| roles.contains(&role.as_str()))
+                && (!focused_only || element.flag(&element.names.focused) == Some(true))
+                && element.has_caret_bounds()
+            {
+                return Some(element);
+            }
+            if depth < max_depth {
+                for child in element.children(MAX_FIELD_CHILDREN) {
+                    queue.push_back((child, depth + 1));
+                }
+            }
+        }
+        None
     }
 
     fn caret_bounds(&self) -> Option<Rect> {
