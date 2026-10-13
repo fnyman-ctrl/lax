@@ -128,6 +128,45 @@ fn log(level: Level, event: &'static str, fields: &[Field]) {
     }
 }
 
+/// Logs that Lax crashed, and where in its own code: the line, and the
+/// source file as a number (see [`file_code`]). Never the panic's message,
+/// which can hold captured text. Release builds abort on a panic
+/// (`panic = "abort"`), so without this a crash leaves no trace.
+pub fn log_panics() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let (file, line) = info
+            .location()
+            .map_or((0, 0), |at| (file_code(at.file()), i64::from(at.line())));
+        let entry = format_line(
+            &timestamp(),
+            Level::Error,
+            "app.panicked",
+            &[Field::Id("file", file), Field::Id("line", line)],
+        );
+        // The panic may have happened while the log was being written, so
+        // never wait for it.
+        if let Some(logger) = LOGGER.get()
+            && let Ok(mut logger) = logger.try_lock()
+        {
+            let _ = logger.write(Level::Error, &entry);
+        }
+        previous(info);
+    }));
+}
+
+/// A source file's path as a number for the log, which takes no text: the
+/// FNV-1a hash of the path, in 31 bits. A developer finds the file with
+/// `file_code` over the source paths; the path itself is never logged.
+pub fn file_code(path: &str) -> i64 {
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in path.bytes() {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    i64::from(hash >> 1)
+}
+
 /// Deletes all log files, for "Delete all data". Logs hold no captured
 /// content, but their timestamps show when Lax was in use.
 pub fn delete_all(data_dir: &Path) -> std::io::Result<()> {
@@ -436,5 +475,24 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn crashes_are_logged_as_numbers() {
+        // Stable, and different for different files.
+        assert_eq!(file_code("src/ask.rs"), file_code("src/ask.rs"));
+        assert_ne!(file_code("src/ask.rs"), file_code("src/write.rs"));
+        assert!(file_code("src/ask.rs") >= 0);
+        // The entry holds only the event and numbers.
+        let line = format_line(
+            "2026-10-13T08:00:00.000Z",
+            Level::Error,
+            "app.panicked",
+            &[Field::Id("file", 12345), Field::Id("line", 42)],
+        );
+        assert!(
+            line.ends_with("ERROR app.panicked file=12345 line=42"),
+            "{line}"
+        );
     }
 }
