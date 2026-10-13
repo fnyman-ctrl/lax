@@ -77,10 +77,10 @@ decide otherwise.**
    *About me* page, as plain **Markdown files** in `~/Lax` that you can read and
    edit. What you write there is never overwritten, and facts you delete stay
    deleted.
-5. **Ask** (works today): a conversation about your work. Ask "Vad gjorde jag
-   igår?" or "What did I work on with Anna last week?", then ask on ("and the day
-   before?"). Answers come from your journal and memory, with the entries they're
-   based on.
+5. **Ask** (works today): a conversation about your work. Ask "What did I do
+   yesterday?" or "What did I work on with Anna last week?", then ask on ("and
+   the day before?"). Answers come from your journal and memory, with the entries
+   they're based on. Ask in English or Swedish.
 6. **Write** (works today, opt-in): double-tap ⌥ Option (or a key you pick, so it
    doesn't clash with other apps) in any text field, and a small pixel salmon
    swims to your cursor. Tell it what to write ("reply in my tone and thank her

@@ -41,9 +41,10 @@ Lax lives in the menu bar. Click the salmon to open the window or to pause.
 The sections sit along the line at the top; the salmon swims to the one you
 choose.
 
-- **Ask:** a conversation about your work. "Vad gjorde jag igår?", "What did I
-  work on with Anna last week?", then ask on: "and the day before?". Each answer
-  shows the journal entries it's based on. Nothing you ask is saved.
+- **Ask:** a conversation about your work. "What did I do yesterday?", "What did
+  I work on with Anna last week?", then ask on: "and the day before?". Ask in
+  English or Swedish. Each answer shows the journal entries it's based on.
+  Nothing you ask is saved.
 - **Write:** turn the writing assistant on and pick the key that calls it.
 - **Journal:** what you did, a few lines every 15 minutes or so.
 - **Memory:** the people, projects and organisations Lax has learned about. You
@@ -59,8 +60,8 @@ choose.
 
 ## The writing assistant
 
-1. In any text field, write what you want ("svara i min ton och tacka för
-   offerten"), or select text you want changed.
+1. In any text field, write what you want ("reply in my tone and thank them for
+   the quote"), or select text you want changed. English and Swedish both work.
 2. Double-tap **⌥ Option** (or the key you picked under Write). The salmon swims
    to your cursor with your instruction.
 3. Press **Enter**. The draft appears; edit it if you like.

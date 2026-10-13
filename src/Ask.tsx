@@ -20,8 +20,8 @@ type AskAnswer = {
 type Turn = { question: string; answer: AskAnswer };
 
 const EXAMPLES = [
-  "Vad gjorde jag igår?",
-  "Vad har jag jobbat med i veckan?",
+  "What did I do yesterday?",
+  "What have I worked on this week?",
   "What did I work on last week?",
 ];
 

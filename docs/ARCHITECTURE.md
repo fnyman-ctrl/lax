@@ -60,7 +60,8 @@ previous one, so they can be built, tested and improved independently.
 - Resolve them against known entities to avoid duplicates. For now only an
   exact match of the normalized name (case and spacing ignored, diacritics
   kept) joins a known entity; embeddings can suggest merges later, such as
-  "Q3 offert" and "Q3 proposal".
+  the same project named in Swedish and in English ("Q3 offert" and "Q3
+  proposal").
 
 ## 4. Learn
 
@@ -84,7 +85,8 @@ previous one, so they can be built, tested and improved independently.
   (`src-tauri/src/ask.rs`), as a conversation: the latest turns go along as
   one captured block, and a follow-up with no names or words of its own takes
   the time, names and words of the question before it. The entries are found without a model call: a
-  time in the question ("i tisdags", "last week"), names the memory knows,
+  time in the question ("last Tuesday", "last week", and the same in Swedish),
+  names the memory knows,
   and a full-text search, within a size budget. The answer names the entries
   it is based on. With an embedding model chosen, episodes get vectors in the
   background (`src-tauri/src/vectors.rs`), and Ask also finds entries close in
