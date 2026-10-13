@@ -199,6 +199,11 @@ export function Forget({ onForgotten }: { onForgotten: () => void }) {
       )}
 
       <h3>How long raw captures are kept</h3>
+      <p className="muted">
+        Once the journal has summarized them, raw captures are deleted after 30 days; the
+        journal and the memory keep what was learned. Captures not yet summarized are kept
+        until the limit below.
+      </p>
       {retention === null ? (
         <p className="muted">Lax couldn't read this setting.</p>
       ) : (
@@ -206,7 +211,7 @@ export function Forget({ onForgotten }: { onForgotten: () => void }) {
           <select
             value={retention}
             disabled={busy}
-            aria-label="Days raw captures are kept"
+            aria-label="Days raw captures are kept at most"
             onChange={(e) => changeRetention(Number(e.target.value))}
           >
             {choices.map((days) => (

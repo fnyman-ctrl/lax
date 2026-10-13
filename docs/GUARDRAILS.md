@@ -121,10 +121,10 @@ Exclusions come in three tiers:
   stops any pending processing. The menu bar icon shows clearly that Lax is paused.
 - **Retention:** Lax is meant to remember everything you do, and it does so in
   episodes and memory pages, which are kept until the user deletes them. Raw
-  captures, the most sensitive data, expire automatically (default 90 days,
-  configurable). Once the journal exists (Stage 3), a raw capture expires only
-  after it has been summarized, or when it reaches the maximum age, so nothing is
-  lost before Lax has learned from it.
+  captures, the most sensitive data, expire automatically: 30 days after they
+  were captured once the journal has summarized them, and at the latest at the
+  maximum age (default 90 days, configurable), summarized or not. So nothing is
+  lost before Lax has learned from it, and raw text doesn't linger after.
 - **Forget:** the user can delete a time range, an app or an entity, and the deletion
   includes everything derived from it.
 - Screenshots used for OCR are processed in memory and **never written to disk**.

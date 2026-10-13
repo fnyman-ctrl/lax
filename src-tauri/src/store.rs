@@ -65,6 +65,10 @@ const RETENTION_KEY: &str = "retention_days";
 const CAPTURE_INTERVAL_KEY: &str = "capture_interval_seconds";
 const OUTBOX_RETENTION_KEY: &str = "outbox_retention_days";
 const JOURNAL_KEY: &str = "journal_enabled";
+/// How long raw captures are kept once the journal has summarized them
+/// (decided with the maintainer, #39). Unsummarized ones are kept up to the
+/// retention setting, so nothing is lost before the journal has read it.
+pub const SUMMARIZED_KEPT_DAYS: i64 = 30;
 const WRITING_KEY: &str = "writing_enabled";
 const WRITING_CALL_KEY: &str = "writing_key";
 /// How long the outbox log is kept unless the user chooses otherwise.
@@ -972,9 +976,19 @@ impl Store {
     /// does. Deleted text is still gone from the files: `secure_delete`
     /// overwrites the freed pages, FTS5 secure-delete removes it from the index,
     /// and the checkpoint empties the write-ahead log.
+    /// Deletes raw captures that have done their job (#39): those the
+    /// journal summarized more than [`SUMMARIZED_KEPT_DAYS`] ago (counted
+    /// from when they were captured), and every capture older than the
+    /// retention setting, summarized or not. The episodes made from them
+    /// stay: the knowledge lives on in the journal and the memory.
     pub fn expire(&self, now: DateTime<Utc>) -> Result<usize> {
         let days = i64::from(self.retention_days()?);
-        let deleted = self.delete(&Forget::Before(now - TimeDelta::days(days)))?;
+        let mut deleted = self.delete(&Forget::Before(now - TimeDelta::days(days)))?;
+        let summarized_days = SUMMARIZED_KEPT_DAYS.min(days);
+        deleted += self.conn.execute(
+            "DELETE FROM captures WHERE episode_id IS NOT NULL AND captured_at < ?1",
+            [(now - TimeDelta::days(summarized_days)).timestamp_millis()],
+        )?;
         let outbox_days = i64::from(self.outbox_retention_days()?);
         let outbox_deleted = self.conn.execute(
             "DELETE FROM outbox WHERE sent_at < ?1",
@@ -2260,6 +2274,45 @@ mod tests {
         let now = at_minute(1000) + TimeDelta::days(1);
         assert_eq!(store.expire(now).unwrap(), 1);
         assert_eq!(remaining(&store), ["new"]);
+    }
+
+    #[test]
+    fn summarized_captures_go_after_30_days_and_the_rest_at_the_cap() {
+        let mut store = Store::open_in_memory().unwrap();
+        let day = 24 * 60;
+        // Captured 40 days and 10 days before "now", summarized or not.
+        let old_summarized = insert_at(&store, 0, "Inbox", "old, summarized");
+        insert_at(&store, 1, "Inbox", "old, waiting");
+        let new_summarized = insert_at(&store, 30 * day, "Inbox", "new, summarized");
+        let episode_old = store
+            .record_episode(&episode("Läste offerten."), &[old_summarized])
+            .unwrap()
+            .unwrap();
+        store
+            .record_episode(&episode("Svarade Anna."), &[new_summarized])
+            .unwrap()
+            .unwrap();
+        let now = at(40 * day);
+        assert_eq!(store.expire(now).unwrap(), 1);
+        assert_eq!(remaining(&store), ["old, waiting", "new, summarized"]);
+        // The episode made from it stays.
+        assert!(
+            store
+                .episodes(None, 10)
+                .unwrap()
+                .iter()
+                .any(|e| e.id == episode_old)
+        );
+        // At the 90-day cap the unsummarized one goes too.
+        assert_eq!(store.expire(at(92 * day)).unwrap(), 2);
+        assert_eq!(store.episodes(None, 10).unwrap().len(), 2);
+        // A retention under 30 days applies to summarized captures as well.
+        let short = Store::open_in_memory().unwrap();
+        short.set_retention_days(7, at(0)).unwrap();
+        let a = insert_at(&short, 0, "Inbox", "a");
+        let mut short = short;
+        short.record_episode(&episode("A."), &[a]).unwrap().unwrap();
+        assert_eq!(short.expire(at(8 * day)).unwrap(), 1);
     }
 
     #[test]
