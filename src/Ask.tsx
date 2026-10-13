@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 // The pixel salmon (docs/BRAND.md).
 import salmon from "../src-tauri/icons/salmon.svg";
 
@@ -30,10 +30,17 @@ const EXAMPLES = [
  * journal and memory. Follow-up questions go with the turns before them.
  * The conversation lives only in this window; nothing is saved. Answers come
  * from captured text through a model, so they are shown as text only.
+ *
+ * While the model writes, the answer's text so far is shown as it arrives,
+ * before it is validated (GUARDRAILS §5). It is only ever plain text, and it
+ * is replaced by the validated answer, or removed and replaced by the error
+ * if the answer fails. Only validated answers go along with a follow-up.
  */
 export function Ask({ onShowJournal }: { onShowJournal: () => void }) {
   const [question, setQuestion] = useState("");
   const [asking, setAsking] = useState<string | null>(null);
+  // The answer to `asking` as the model writes it, not yet validated.
+  const [streamed, setStreamed] = useState("");
   const [error, setError] = useState<string | null>(null);
   // Oldest first.
   const [turns, setTurns] = useState<Turn[]>([]);
@@ -43,7 +50,7 @@ export function Ask({ onShowJournal }: { onShowJournal: () => void }) {
   // Keep the latest message in view.
   useEffect(() => {
     end.current?.scrollIntoView({ block: "end", behavior: "smooth" });
-  }, [turns, asking, error]);
+  }, [turns, asking, streamed, error]);
 
   const ask = (text: string) => {
     const q = text.trim();
@@ -51,13 +58,23 @@ export function Ask({ onShowJournal }: { onShowJournal: () => void }) {
       return;
     }
     setAsking(q);
+    setStreamed("");
     setError(null);
     setQuestion("");
     const earlier = turns.map((turn) => ({
       question: turn.question,
       answer: turn.answer.answer,
     }));
-    invoke<AskAnswer>("ask_memory", { question: q, earlier })
+    // Pieces of this question's answer. Once it is answered or has failed,
+    // pieces that arrive late are dropped.
+    let open = true;
+    const onText = new Channel<string>();
+    onText.onmessage = (piece) => {
+      if (open && typeof piece === "string") {
+        setStreamed((text) => text + piece);
+      }
+    };
+    invoke<AskAnswer>("ask_memory", { question: q, earlier, onText })
       .then(
         (answer) => setTurns((list) => [...list, { question: q, answer }]),
         (e) => {
@@ -66,6 +83,8 @@ export function Ask({ onShowJournal }: { onShowJournal: () => void }) {
         },
       )
       .finally(() => {
+        open = false;
+        setStreamed("");
         setAsking(null);
         input.current?.focus();
       });
@@ -145,14 +164,22 @@ export function Ask({ onShowJournal }: { onShowJournal: () => void }) {
         {asking !== null && (
           <>
             <p className="bubble from-you">{asking}</p>
-            <div className="bubble from-lax thinking" aria-label="Lax is thinking">
-              <img src={salmon} alt="" className="chat-salmon working" />
-              <span className="dots">
-                <span />
-                <span />
-                <span />
-              </span>
-            </div>
+            {streamed === "" ? (
+              <div className="bubble from-lax thinking" aria-label="Lax is thinking">
+                <img src={salmon} alt="" className="chat-salmon working" />
+                <span className="dots">
+                  <span />
+                  <span />
+                  <span />
+                </span>
+              </div>
+            ) : (
+              // Plain text only: React puts it in as text, never as HTML,
+              // and nothing reads it as Markdown.
+              <div className="bubble from-lax writing" aria-busy="true">
+                <p className="answer">{streamed}</p>
+              </div>
+            )}
           </>
         )}
         {error && (

@@ -8,20 +8,29 @@
 //!   written from captured text, so they go in only as `Captured` data, and
 //!   the answer must be `{"answer": string, "sources": [number]}`, with
 //!   sources among the entries given (GUARDRAILS §5).
+//! - The answer's text is shown in the window as the model writes it, as
+//!   plain text, before the reply is validated (the one exception in
+//!   GUARDRAILS §5). Only the window that asked gets it, through the
+//!   command's own channel. When the reply is complete it is validated in
+//!   full, and the validated answer replaces the streamed text; if it fails,
+//!   the window shows the usual error instead and drops what was streamed.
 //! - Nothing is stored: not the question, not the answer. Logs hold counts
 //!   and timings only.
 
 use std::collections::HashSet;
 use std::sync::{Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use chrono::{
     DateTime, Datelike, Local, Months, NaiveDate, NaiveTime, TimeDelta, TimeZone, Utc, Weekday,
 };
 use serde::{Deserialize, Serialize};
+use tauri::ipc::Channel;
 use tauri::{AppHandle, Manager};
 
 use crate::journal::EpisodeItem;
 use crate::logging::{self, ErrorKind, Field};
+use crate::models::partial::FieldText;
 use crate::models::structured::{self, Captured, StructuredError, Validate};
 use crate::models::{Endpoint, ModelClient, ModelHealth, ModelTurn};
 use crate::pause::Pause;
@@ -802,11 +811,17 @@ fn conversation(earlier: &[Earlier]) -> Option<String> {
 
 /// Answers `question` from the journal with the chosen chat model, as a
 /// follow-up to `earlier` turns of the same conversation (oldest first).
+///
+/// While the model writes, the answer's text so far goes to `on_text`, in
+/// pieces, as plain text for the window that asked (GUARDRAILS §5). It is
+/// not validated yet: the window shows it only until this returns, and then
+/// shows the validated answer this returns, or the error.
 #[tauri::command]
 pub async fn ask_memory(
     app: AppHandle,
     question: String,
     earlier: Option<Vec<Earlier>>,
+    on_text: Channel<String>,
 ) -> Result<AskAnswer, String> {
     let earlier = earlier.unwrap_or_default();
     let question = question.trim().to_string();
@@ -899,13 +914,20 @@ pub async fn ask_memory(
     let Ok(endpoint) = Endpoint::parse(&choice.base_url) else {
         return Err("The chat model's address isn't valid. Check it under Models.".to_string());
     };
-    let started = std::time::Instant::now();
+    let started = Instant::now();
     let texts = blocks(&found, &earlier, &Local);
     let request = request(&question, &now);
-    let asked = answer(endpoint, &choice.model, &request, &texts);
+    // The window may lose interest (closed); the answer is still validated.
+    let mut streamed = Streamed::new(started, |text| {
+        let _ = on_text.send(text);
+    });
+    let asked = answer(endpoint, &choice.model, &request, &texts, |piece| {
+        streamed.push(piece)
+    });
     let Some(reply) = app.state::<Pause>().unless_paused(asked).await else {
         return Err("Lax was paused, so the question was dropped.".to_string());
     };
+    let (first_words, shown) = (streamed.first, streamed.chars);
     let reply = reply.and_then(|reply| {
         if reply
             .sources
@@ -928,15 +950,16 @@ pub async fn ask_memory(
             let mut cited: Vec<usize> = reply.sources.iter().map(|&n| n as usize - 1).collect();
             cited.sort_unstable();
             cited.dedup();
-            logging::info(
-                "ask.answered",
-                &[
-                    Field::Count("entries", found.episodes.len() as u64),
-                    Field::Count("cited", cited.len() as u64),
-                    Field::Flag("recent_only", found.recent_only),
-                    Field::Duration("elapsed", started.elapsed()),
-                ],
-            );
+            let mut fields = vec![
+                Field::Count("entries", found.episodes.len() as u64),
+                Field::Count("cited", cited.len() as u64),
+                Field::Flag("recent_only", found.recent_only),
+                Field::Duration("elapsed", started.elapsed()),
+            ];
+            if let Some(first) = first_words {
+                fields.push(Field::Duration("first_words", first));
+            }
+            logging::info("ask.answered", &fields);
             Ok(AskAnswer {
                 answer: without_references(&reply.answer),
                 sources: cited
@@ -952,6 +975,8 @@ pub async fn ask_memory(
                 "ask.failed",
                 &[
                     Field::Flag("model_unavailable", error.model_unavailable()),
+                    // How much the window showed before it was taken back.
+                    Field::Count("streamed_chars", shown as u64),
                     Field::Error(ErrorKind::Other),
                 ],
             );
@@ -965,11 +990,14 @@ pub async fn ask_memory(
     }
 }
 
+/// The model's reply, validated, with `on_text` getting the raw output as
+/// it is written.
 async fn answer(
     endpoint: Endpoint,
     model: &str,
     request: &str,
     texts: &[String],
+    on_text: impl FnMut(&str),
 ) -> Result<Reply, StructuredError> {
     // The user waits for this: no reasoning, which makes a small local model
     // about ten times faster.
@@ -977,7 +1005,54 @@ async fn answer(
         .map_err(StructuredError::Model)?
         .without_reasoning();
     let captured: Vec<Captured> = texts.iter().map(|t| Captured(t.as_str())).collect();
-    structured::ask_for_last(&client, model, TASK, SHAPE, request, &captured, MAX_TOKENS).await
+    structured::ask_streaming(
+        &client, model, TASK, SHAPE, request, &captured, MAX_TOKENS, on_text,
+    )
+    .await
+}
+
+/// The answer's text as the model writes it, for the window: only what is
+/// in the `answer` field (never the sources or anything around them), from
+/// its first visible character, at most `MAX_ANSWER_CHARS`. Not validated,
+/// so it is only ever shown as plain text and taken back unless the reply
+/// passes (GUARDRAILS §5). Never stored or logged; only its length is.
+struct Streamed<F: FnMut(String)> {
+    field: FieldText,
+    send: F,
+    started: Instant,
+    /// When the first words were sent.
+    first: Option<Duration>,
+    /// Characters sent so far.
+    chars: usize,
+}
+
+impl<F: FnMut(String)> Streamed<F> {
+    fn new(started: Instant, send: F) -> Self {
+        Streamed {
+            field: FieldText::new("answer"),
+            send,
+            started,
+            first: None,
+            chars: 0,
+        }
+    }
+
+    /// Takes the next piece of the model's raw output.
+    fn push(&mut self, piece: &str) {
+        let mut text = self.field.push(piece);
+        if self.chars == 0 {
+            // The answer is shown trimmed, as it will be once validated.
+            text = text.trim_start().to_string();
+        }
+        let room = MAX_ANSWER_CHARS.saturating_sub(self.chars);
+        let text: String = text.chars().take(room).collect();
+        if text.is_empty() {
+            return;
+        }
+        self.chars += text.chars().count();
+        self.first.get_or_insert_with(|| self.started.elapsed());
+        (self.send)(text);
+    }
 }
 
 /// The captured blocks for the model, most stable first, so that a
@@ -986,7 +1061,7 @@ async fn answer(
 /// question), what it knows about the entities named, the journal entries,
 /// and the conversation so far, which grows with every turn. The question
 /// and today's date and time go after all of them, as the request
-/// ([`structured::ask_for_last`]).
+/// ([`structured::ask_streaming`]).
 fn blocks<Tz: TimeZone>(found: &Found, earlier: &[Earlier], tz: &Tz) -> Vec<String>
 where
     Tz::Offset: std::fmt::Display,
@@ -1525,14 +1600,21 @@ mod tests {
             .enumerate()
             .map(|(i, e)| entry_text(i + 1, e, &stockholm()))
             .collect();
+        let mut shown = String::new();
+        let mut streamed = Streamed::new(Instant::now(), |text| shown.push_str(&text));
         let reply = answer(
             Endpoint::parse(&env("LAX_LIVE_MODEL_URL")).unwrap(),
             &env("LAX_LIVE_CHAT_MODEL"),
             &request("Vad pratade jag med Anna om i tisdags?", &now()),
             &texts,
+            |piece| streamed.push(piece),
         )
         .await
         .expect("an answer");
+        assert!(streamed.first.is_some());
+        drop(streamed);
+        // What was shown as it was written is the answer itself.
+        assert_eq!(shown.trim_end(), reply.answer.trim());
         assert!(reply.answer.to_lowercase().contains("offert"));
         assert!(reply.sources.contains(&1));
     }
@@ -1580,6 +1662,107 @@ mod tests {
         let her = gather_after(&store, "Vad sa hon?", &["Vad gör Anna?"], None, &now()).unwrap();
         assert!(!her.recent_only);
         assert!(summaries(&her).contains(&"Ringde Anna om leveransen."));
+    }
+
+    #[test]
+    fn only_the_answer_s_text_is_streamed() {
+        let mut sent: Vec<String> = Vec::new();
+        let mut streamed = Streamed::new(Instant::now(), |text| sent.push(text));
+        for piece in [
+            "```json\n{\"sources\": [1, 2], ",
+            "\"answer\": \"  ",
+            "\\nDu mail",
+            "ade Anna\\",
+            "\"Example\\",
+            "\".\", \"sour",
+            "ces\": [3]}\n```",
+        ] {
+            streamed.push(piece);
+        }
+        let (first, chars) = (streamed.first, streamed.chars);
+        drop(streamed);
+        // From the first visible character, as the validated answer will be
+        // trimmed; never the sources, the keys or the fence.
+        assert_eq!(sent, ["Du mail", "ade Anna", "\"Example", "\"."]);
+        assert_eq!(chars, "Du mailade Anna\"Example\".".chars().count());
+        assert!(first.is_some());
+    }
+
+    #[test]
+    fn a_streamed_answer_stops_at_the_longest_answer() {
+        let mut shown = String::new();
+        let mut streamed = Streamed::new(Instant::now(), |text| shown.push_str(&text));
+        streamed.push("{\"answer\": \"");
+        for _ in 0..50 {
+            streamed.push(&"ä".repeat(100));
+        }
+        drop(streamed);
+        assert_eq!(shown.chars().count(), MAX_ANSWER_CHARS);
+    }
+
+    #[test]
+    fn nothing_is_streamed_from_a_reply_without_an_answer() {
+        let mut sent: Vec<String> = Vec::new();
+        let mut streamed = Streamed::new(Instant::now(), |text| sent.push(text));
+        streamed.push("I can't answer that. {\"sources\": []}");
+        streamed.push("{\"answer\": \"too late\"}");
+        assert!(streamed.first.is_none());
+        drop(streamed);
+        assert!(sent.is_empty());
+    }
+
+    #[test]
+    fn only_the_main_window_can_ask() {
+        // The streamed answer goes back through the caller's own channel, so
+        // only a window allowed to call `ask_memory` can receive it.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("capabilities");
+        let mut found = 0;
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            let capability: serde_json::Value =
+                serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+            let allows_ask = capability["permissions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p == "allow-ask-memory");
+            if allows_ask {
+                assert_eq!(
+                    capability["windows"],
+                    serde_json::json!(["main"]),
+                    "{}",
+                    path.display()
+                );
+                found += 1;
+            }
+        }
+        assert_eq!(found, 1);
+    }
+
+    #[test]
+    fn only_ask_streams() {
+        // GUARDRAILS §5: only Ask may show model output before it is
+        // validated. The journal, the memory, page facts and the writing
+        // assistant validate first, so they never ask for a stream.
+        let allowed = ["ask.rs", "client.rs", "structured.rs"];
+        let mut dirs = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs")
+                    && path
+                        .file_name()
+                        .is_some_and(|n| !allowed.iter().any(|a| n == *a))
+                {
+                    let source = std::fs::read_to_string(&path).unwrap();
+                    for name in ["ask_streaming", "chat_stream"] {
+                        assert!(!source.contains(name), "{} uses {name}", path.display());
+                    }
+                }
+            }
+        }
     }
 
     #[test]
