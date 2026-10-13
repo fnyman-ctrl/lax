@@ -19,6 +19,27 @@ This supersedes part of [ADR 0005](0005-memory-as-markdown.md) and part of
 [ADR 0008](0008-learning-memory.md). "Relation to ADR 0005 and 0008" below
 says which parts.
 
+## Maintainer's answers (2026-10-13)
+
+The maintainer answered every open question as recommended, late on
+2026-10-13. The questions at the end keep their reasoning, with each answer
+added. He chose these three explicitly:
+
+- **A plain-text editor**, with no Markdown rendering (question 2).
+- **Forgetting an entity deletes the user's own text on its page too**,
+  after the forget dialog shows that text and offers "Export it first"
+  (question 5).
+- **The old files:** Lax asks once, with "Delete the old files" as the
+  default, and deletes only files that still hold exactly what was moved
+  (question 6).
+
+The other seven (1, 3, 4, 7, 8, 9 and 10) are answered as recommended. The
+Decision below follows the answers.
+
+**Status.** This ADR stays **Proposed**. It depends on
+[ADR 0010](0010-encrypted-database.md), which is still Proposed until its
+Keychain spike is done: pages only ever move into an encrypted database.
+
 ## Context
 
 [ADR 0005](0005-memory-as-markdown.md) put the memory in Markdown files in
@@ -94,6 +115,10 @@ model gets "the user's own notes" from the file (`facts::notes_of`).
 - **Versions and history stay as they are:** `page_versions`, the sources
   that tie them to episodes, the 20 kept versions of Lax's, "restore" and
   "undo the restore", and About me keeping only its latest version.
+- **The user's own edits are versioned too**, as `by = 'user'` versions:
+  one each time the user opens a page and changes it (not one per save),
+  the last 20 kept. They are the user's text, so a forget of episodes
+  doesn't remove them; forgetting the entity does.
 - The page's `path` column is no longer a place on disk. The export names
   its files from it (`people/anna-example.md`).
 
@@ -139,7 +164,8 @@ model gets "the user's own notes" from the file (`facts::notes_of`).
   but with files the code takes only Lax's block out and keeps a file that
   holds anything of the user's. A row can't stay behind like a file can,
   where nobody would see it. So the forget dialog shows the user's text on
-  that page and says it is deleted with the page (open question 5).
+  that page, says it is deleted with the page, and offers "Export it first"
+  next to "Forget" (question 5, answered).
 - "Forget everything the memory noted" deletes all pages, including the
   user's text on them, after the confirmation says so.
 - Deleted page text is handled like all deleted text: `secure_delete`, and
@@ -170,11 +196,12 @@ model gets "the user's own notes" from the file (`facts::notes_of`).
   Importing is not part of this ADR.
 
 **Relation to ADR 0010, open question 9** ("A plaintext export?",
-recommended "not now"). Moving the pages in without a way out would break
-the reason for ADR 0005 and GUARDRAILS §6's promise that the user can
-export their data. So the export of pages belongs in this ADR, and ships
-with it. An export of the journal, captures or anything else stays with
-ADR 0010's question 9, for a later decision.
+recommended "not now", answered as recommended). Moving the pages in
+without a way out would break the reason for ADR 0005 and GUARDRAILS §6's
+promise that the user can export their data. So the export of pages
+belongs in this ADR, and ships with it. An export of the journal, captures
+or anything else waits for its own decision, as ADR 0010's answer to
+question 9 says.
 
 ### Moving the existing pages in
 
@@ -213,7 +240,7 @@ ADR 0008's rules carry over:
 
 **Then Lax asks, one time**, in the Memory view: "Your pages are now in
 Lax's encrypted database. Delete the old files in ~/Lax?" with **Delete the
-old files** and **Keep them**. The text says:
+old files**, the default button, and **Keep them**. The text says:
 
 - Edits to the old files are no longer read.
 - Deleting doesn't reliably erase the old text from the disk: on APFS and
@@ -351,45 +378,53 @@ Markdown files as today, on request.
 
 ## Open questions for the maintainer
 
-The Decision above assumes the recommended answers.
+All answered on 2026-10-13, as recommended (see "Maintainer's answers").
+The Decision above follows the answers.
 
 1. **One Markdown text per page, with the markers, or the user's text and
    Lax's block in two columns?** Recommended: one text. `block.rs` and its
    tests, including the hostile-input ones, carry over unchanged, and the
    move is a plain copy. Two columns would make the boundary structural (no
    markers to break), but rewrite the part that carries the guarantee. That
-   can come later, in its own ADR.
+   can come later, in its own ADR. **Answered: one text.**
 2. **A plain text editor, with no Markdown rendering?** Recommended: yes.
    Rendered Markdown means HTML from captured text. A preview that renders
    only headings, lists and emphasis as text styles could come later.
+   **Answered: yes, plain text, no Markdown rendering.**
 3. **Should Lax skip a page that is open in the editor?** Recommended: yes,
    and a save that still finds the page changed shows both texts, never
-   drops the user's.
+   drops the user's. **Answered: yes.**
 4. **Keep versions of the user's own edits too?** Today only Lax's blocks
    and adopted edits are versioned; the user's text had their editor's
    undo, Time Machine or git. Recommended: yes, as `by = 'user'` versions,
    one per time the user opened the page and changed it (not one per
    save), the last 20 kept. They are the user's text, so a forget of
-   episodes doesn't remove them; forgetting the entity does.
+   episodes doesn't remove them; forgetting the entity does. **Answered:
+   yes.**
 5. **What happens to the user's text when an entity is forgotten?** Today
    the file stays as theirs. Recommended: it is deleted with the page, and
    the forget dialog shows it first, with "Export it first" next to
    "Forget". The user asked to forget that person; a row nobody sees
-   shouldn't keep them.
+   shouldn't keep them. **Answered: it is deleted with the page, after the
+   dialog shows it and offers "Export it first".**
 6. **Delete or keep the old files by default?** Recommended: ask, with
    "Delete the old files" as the default button, and delete only files that
-   still hold what was moved.
+   still hold what was moved. **Answered: ask once, Delete as the default,
+   and delete only files that still hold exactly what was moved.**
 7. **Export with the markers?** Recommended: yes. The files look like the
    pages users know, and an import, if one comes, can read them back.
+   **Answered: yes.**
 8. **Export in this ADR, or later?** Recommended: in this ADR, pages only
    (see "Relation to ADR 0010"). Everything else in question 9 of ADR 0010
-   stays open.
+   stays open. **Answered: in this ADR, pages only.** An export of anything
+   else waits for its own decision.
 9. **Exporting into a synced folder: warn or refuse?** Recommended: warn
    and confirm separately. It is the user's explicit choice, and that is the
-   consent GUARDRAILS §1 asks for.
+   consent GUARDRAILS §1 asks for. **Answered: warn and confirm
+   separately.**
 10. **Move the pages only on an encrypted database?** Recommended: yes.
     Moving them into a plaintext database gives up the editors and gains
-    nothing.
+    nothing. **Answered: yes.**
 
 ## Consequences
 
@@ -401,8 +436,9 @@ The Decision above assumes the recommended answers.
   retries and no file left half-cleaned.
 - The block writer's guarantee keeps its code and its tests.
 - A lost database key (ADR 0010) now loses the pages too, including the
-  user's own notes. The export is the user's own copy. This makes ADR
-  0010's open question 2 ("No recovery key") weigh more.
+  user's own notes. The export is the user's own copy. ADR 0010's open
+  question 2 ("No recovery key") was answered with this in mind: no
+  recovery key, for 0.x.
 - The move is one-way. It runs only on an encrypted database, which an
   older Lax can't open anyway (ADR 0010). The CHANGELOG says so.
 - New code: the editor, the export, the move and its one-time question.
@@ -447,7 +483,7 @@ conversion is in.
 1. **The `text` column and the block writer on rows**, with the folder code
    kept for pages that haven't moved. Tests on rows.
 2. **The editor:** `page_text` and `save_page`, behind the app lock, and
-   versions of the user's edits if question 4 says so.
+   versions of the user's edits (question 4).
 3. **The move** and the one-time question, with its tests. The
    maintainer's pages first, with a copy kept by hand.
 4. **Export**, with the notice, the synced-folder check and the lock.
