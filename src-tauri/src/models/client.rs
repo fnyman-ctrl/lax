@@ -15,6 +15,7 @@ use reqwest::{Client, Response, StatusCode, redirect};
 use serde::{Deserialize, Serialize};
 
 use super::endpoint::{Endpoint, Locality};
+use super::sse;
 use crate::logging::{self, Field};
 
 /// How long to wait for a server to accept a connection.
@@ -156,69 +157,92 @@ impl ModelClient {
         messages: &[ChatMessage],
         max_tokens: Option<u32>,
     ) -> Result<String, ModelError> {
-        #[derive(Serialize)]
-        struct Request<'a> {
-            model: &'a str,
-            messages: &'a [ChatMessage],
-            #[serde(skip_serializing_if = "Option::is_none")]
-            max_tokens: Option<u32>,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            reasoning_effort: Option<&'static str>,
-            stream: bool,
+        let started = Instant::now();
+        let request = self.chat_request(model, messages, max_tokens, false);
+        let (opened, attempts) = self.open_chat(request).await;
+        let result = match opened {
+            Ok(response) => read(response).await,
+            Err(error) => Err(error),
+        };
+        log_call("model.chat", &result, attempts, started, &[]);
+        let reply: ChatReply =
+            serde_json::from_slice(&result?).map_err(|_| ModelError::InvalidResponse)?;
+        reply.content()
+    }
+
+    /// Like [`chat`](Self::chat), but the server sends the reply as it is
+    /// written (`"stream": true`, server-sent events), and `on_text` gets
+    /// each new piece of it. Returns the whole reply, which the caller must
+    /// still validate: the pieces are the model's raw output.
+    ///
+    /// The timeout, retries and fallback are the same as for `chat`, and
+    /// dropping the future (as `Pause::unless_paused` does) closes the
+    /// connection, so the server can stop. Logs carry counts and timings
+    /// only.
+    pub async fn chat_stream(
+        &self,
+        model: &str,
+        messages: &[ChatMessage],
+        max_tokens: Option<u32>,
+        mut on_text: impl FnMut(&str),
+    ) -> Result<String, ModelError> {
+        let started = Instant::now();
+        let request = self.chat_request(model, messages, max_tokens, true);
+        let (opened, attempts) = self.open_chat(request).await;
+        let mut first: Option<Duration> = None;
+        let mut pieces: u64 = 0;
+        let result = match opened {
+            Ok(response) => {
+                read_stream(response, |piece| {
+                    first.get_or_insert_with(|| started.elapsed());
+                    pieces += 1;
+                    on_text(piece);
+                })
+                .await
+            }
+            Err(error) => Err(error),
+        };
+        let mut fields = vec![Field::Count("pieces", pieces)];
+        if let Some(first) = first {
+            fields.push(Field::Duration("first_piece", first));
         }
-        #[derive(Deserialize)]
-        struct Reply {
-            choices: Vec<Choice>,
-        }
-        #[derive(Deserialize)]
-        struct Choice {
-            message: Message,
-            finish_reason: Option<String>,
-        }
-        #[derive(Deserialize)]
-        struct Message {
-            content: Option<String>,
-        }
-        let mut request = Request {
+        log_call("model.chat_stream", &result, attempts, started, &fields);
+        result
+    }
+
+    fn chat_request<'a>(
+        &self,
+        model: &'a str,
+        messages: &'a [ChatMessage],
+        max_tokens: Option<u32>,
+        stream: bool,
+    ) -> ChatRequest<'a> {
+        ChatRequest {
             model,
             messages,
             max_tokens,
             reasoning_effort: (!self.reasoning).then_some("none"),
-            stream: false,
-        };
-        let mut reply: Result<Reply, ModelError> = self
-            .call(
-                "model.chat",
-                "chat/completions",
-                Some(&request),
-                CHAT_TIMEOUT,
-            )
-            .await;
-        // A server that doesn't take "none" refuses the request; ask again
-        // without it, and let the model reason.
-        if request.reasoning_effort.is_some() && matches!(reply, Err(ModelError::Status(400 | 422)))
+            stream,
+        }
+    }
+
+    /// Sends a chat request. A server that doesn't take
+    /// `reasoning_effort: "none"` refuses it; then it is sent again without,
+    /// and the model may reason.
+    async fn open_chat(
+        &self,
+        mut request: ChatRequest<'_>,
+    ) -> (Result<Response, ModelError>, usize) {
+        let path = "chat/completions";
+        let (opened, attempts) = self.open(path, Some(&request), CHAT_TIMEOUT).await;
+        if request.reasoning_effort.is_none()
+            || !matches!(opened, Err(ModelError::Status(400 | 422)))
         {
-            request.reasoning_effort = None;
-            reply = self
-                .call(
-                    "model.chat",
-                    "chat/completions",
-                    Some(&request),
-                    CHAT_TIMEOUT,
-                )
-                .await;
+            return (opened, attempts);
         }
-        let reply = reply?;
-        let choice = reply
-            .choices
-            .into_iter()
-            .next()
-            .ok_or(ModelError::InvalidResponse)?;
-        match choice.message.content {
-            Some(content) if !content.trim().is_empty() => Ok(content),
-            _ if choice.finish_reason.as_deref() == Some("length") => Err(ModelError::OutOfRoom),
-            _ => Err(ModelError::InvalidResponse),
-        }
+        request.reasoning_effort = None;
+        let (opened, more) = self.open(path, Some(&request), CHAT_TIMEOUT).await;
+        (opened, attempts + more)
     }
 
     /// One embedding per input, in the order of `inputs`.
@@ -272,9 +296,29 @@ impl ModelClient {
         timeout: Duration,
     ) -> Result<T, ModelError> {
         let started = Instant::now();
+        let (opened, attempts) = self.open(path, body, timeout).await;
+        let result = match opened {
+            Ok(response) => read(response).await,
+            Err(error) => Err(error),
+        };
+        log_call(event, &result, attempts, started, &[]);
+        let bytes = result?;
+        serde_json::from_slice(&bytes).map_err(|_| ModelError::InvalidResponse)
+    }
+
+    /// Sends `body` (or a GET without one) to `path`, retrying when the
+    /// server is busy or briefly unreachable. Returns a response that
+    /// answered 200, whose body is still to be read, and how many attempts
+    /// it took.
+    async fn open<B: Serialize>(
+        &self,
+        path: &str,
+        body: Option<&B>,
+        timeout: Duration,
+    ) -> (Result<Response, ModelError>, usize) {
         let url = self.endpoint.url(path);
         let mut attempts = 0;
-        let result = loop {
+        loop {
             attempts += 1;
             let request = match body {
                 Some(body) => self.http.post(url.clone()).json(body),
@@ -283,36 +327,25 @@ impl ModelClient {
             // Only retry what didn't reach the server (a failed connection)
             // or what the server turned down without handling (busy, down).
             // Anything else may have been received, and sending it again
-            // would send its content again.
+            // would send its content again. The timeout covers reading the
+            // body too.
             let (outcome, retry) = match request.timeout(timeout).send().await {
+                Ok(response) if response.status() == StatusCode::OK => (Ok(response), false),
                 Ok(response) => {
-                    let outcome = read(response).await;
-                    let busy = matches!(outcome, Err(ModelError::Status(429 | 502 | 503 | 504)));
-                    (outcome, busy)
+                    let code = response.status().as_u16();
+                    (
+                        Err(ModelError::Status(code)),
+                        matches!(code, 429 | 502 | 503 | 504),
+                    )
                 }
                 Err(error) if error.is_timeout() => (Err(ModelError::Timeout), false),
                 Err(error) => (Err(ModelError::Unreachable), error.is_connect()),
             };
             match self.backoff.get(attempts - 1) {
                 Some(wait) if retry && self.retries => tokio::time::sleep(*wait).await,
-                _ => break outcome,
+                _ => return (outcome, attempts),
             }
-        };
-        let status = match result {
-            Ok(_) => 200,
-            Err(ModelError::Status(code)) => u64::from(code),
-            Err(_) => 0,
-        };
-        logging::info(
-            event,
-            &[
-                Field::Count("status", status),
-                Field::Count("attempts", attempts as u64),
-                Field::Duration("elapsed", started.elapsed()),
-            ],
-        );
-        let bytes = result?;
-        serde_json::from_slice(&bytes).map_err(|_| ModelError::InvalidResponse)
+        }
     }
 
     /// The same client, asking models not to reason before answering
@@ -337,12 +370,106 @@ impl ModelClient {
     }
 }
 
+/// Logs a call to the server: its status (0 if none came back), attempts,
+/// time, and `extra`. Never anything the server sent.
+fn log_call<T>(
+    event: &'static str,
+    result: &Result<T, ModelError>,
+    attempts: usize,
+    started: Instant,
+    extra: &[Field],
+) {
+    let status = match result {
+        Ok(_) => 200,
+        Err(ModelError::Status(code)) => u64::from(*code),
+        Err(_) => 0,
+    };
+    let mut fields = vec![
+        Field::Count("status", status),
+        Field::Count("attempts", attempts as u64),
+        Field::Duration("elapsed", started.elapsed()),
+    ];
+    fields.extend_from_slice(extra);
+    logging::info(event, &fields);
+}
+
+#[derive(Serialize)]
+struct ChatRequest<'a> {
+    model: &'a str,
+    messages: &'a [ChatMessage],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<&'static str>,
+    stream: bool,
+}
+
+#[derive(Deserialize)]
+struct ChatReply {
+    choices: Vec<ChatChoice>,
+}
+
+#[derive(Deserialize)]
+struct ChatChoice {
+    message: ChatContent,
+    finish_reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ChatContent {
+    content: Option<String>,
+}
+
+impl ChatReply {
+    fn content(self) -> Result<String, ModelError> {
+        let choice = self
+            .choices
+            .into_iter()
+            .next()
+            .ok_or(ModelError::InvalidResponse)?;
+        content_or_why(choice.message.content, choice.finish_reason.as_deref())
+    }
+}
+
+/// The reply, or why there is none.
+fn content_or_why(content: Option<String>, finish: Option<&str>) -> Result<String, ModelError> {
+    match content {
+        Some(content) if !content.trim().is_empty() => Ok(content),
+        _ if finish == Some("length") => Err(ModelError::OutOfRoom),
+        _ => Err(ModelError::InvalidResponse),
+    }
+}
+
+/// One event of a streamed reply.
+#[derive(Deserialize)]
+struct StreamChunk {
+    #[serde(default)]
+    choices: Vec<StreamChoice>,
+    /// Some servers report a failure mid-stream as an event of its own.
+    #[serde(default)]
+    error: Option<serde::de::IgnoredAny>,
+}
+
+#[derive(Deserialize)]
+struct StreamChoice {
+    #[serde(default)]
+    index: u32,
+    #[serde(default)]
+    delta: Option<StreamDelta>,
+    #[serde(default)]
+    finish_reason: Option<String>,
+}
+
+/// Only the reply's content is read: a reasoning model's thinking
+/// (`reasoning_content`) is never passed on.
+#[derive(Deserialize)]
+struct StreamDelta {
+    #[serde(default)]
+    content: Option<String>,
+}
+
 /// The body of a successful response, at most `MAX_RESPONSE_BYTES`.
 async fn read(mut response: Response) -> Result<Vec<u8>, ModelError> {
-    let status = response.status();
-    if status != StatusCode::OK {
-        return Err(ModelError::Status(status.as_u16()));
-    }
     let mut body = Vec::new();
     loop {
         match response.chunk().await {
@@ -359,29 +486,151 @@ async fn read(mut response: Response) -> Result<Vec<u8>, ModelError> {
     }
 }
 
+/// A streamed reply, read as it arrives, at most `MAX_RESPONSE_BYTES` in
+/// all. A server that ignores `stream` and answers with one JSON body (by
+/// whatever content type) is read as such, and `on_text` gets the whole
+/// reply at once.
+async fn read_stream(
+    mut response: Response,
+    mut on_text: impl FnMut(&str),
+) -> Result<String, ModelError> {
+    let mut decoder = sse::Decoder::default();
+    let mut reply = StreamedReply::default();
+    // The body, kept only until the first event shows it is a stream.
+    let mut body = Vec::new();
+    let mut streaming = false;
+    let mut read_bytes = 0;
+    loop {
+        let chunk = match response.chunk().await {
+            Ok(Some(chunk)) => chunk,
+            Ok(None) => break,
+            Err(error) if error.is_timeout() => return Err(ModelError::Timeout),
+            Err(_) => return Err(ModelError::Unreachable),
+        };
+        read_bytes += chunk.len();
+        if read_bytes > MAX_RESPONSE_BYTES {
+            return Err(ModelError::TooLarge);
+        }
+        if !streaming {
+            body.extend_from_slice(&chunk);
+        }
+        let events = decoder
+            .push(&chunk)
+            .map_err(|_| ModelError::InvalidResponse)?;
+        for data in events {
+            streaming = true;
+            if reply.event(&data, &mut on_text)? {
+                return reply.finish();
+            }
+        }
+        if streaming {
+            body = Vec::new();
+        }
+    }
+    // The body ended without "[DONE]", which some servers leave out.
+    if let Some(data) = decoder.finish().map_err(|_| ModelError::InvalidResponse)? {
+        streaming = true;
+        reply.event(&data, &mut on_text)?;
+    }
+    if streaming {
+        return reply.finish();
+    }
+    let whole: ChatReply =
+        serde_json::from_slice(&body).map_err(|_| ModelError::InvalidResponse)?;
+    let content = whole.content()?;
+    on_text(&content);
+    Ok(content)
+}
+
+/// A streamed reply as far as it has come.
+#[derive(Default)]
+struct StreamedReply {
+    content: String,
+    finish_reason: Option<String>,
+}
+
+impl StreamedReply {
+    /// Takes one event's data. `Ok(true)` at the end of the stream.
+    fn event(&mut self, data: &str, on_text: &mut impl FnMut(&str)) -> Result<bool, ModelError> {
+        match data.trim() {
+            "[DONE]" => return Ok(true),
+            // A keep-alive.
+            "" => return Ok(false),
+            _ => {}
+        }
+
+        let chunk: StreamChunk =
+            serde_json::from_str(data).map_err(|_| ModelError::InvalidResponse)?;
+        if chunk.error.is_some() {
+            return Err(ModelError::InvalidResponse);
+        }
+        // Only the first choice, as `chat` reads only the first.
+        for choice in chunk.choices.into_iter().filter(|c| c.index == 0) {
+            if let Some(piece) = choice.delta.and_then(|d| d.content)
+                && !piece.is_empty()
+            {
+                self.content.push_str(&piece);
+                on_text(&piece);
+            }
+            if choice.finish_reason.is_some() {
+                self.finish_reason = choice.finish_reason;
+            }
+        }
+        Ok(false)
+    }
+
+    fn finish(self) -> Result<String, ModelError> {
+        content_or_why(Some(self.content), self.finish_reason.as_deref())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     use std::thread;
+
+    /// What the mock server answers to one request.
+    enum Reply {
+        /// A status and a JSON body.
+        Json(u16, &'static str),
+        /// Server-sent events, written in `parts` with a short wait between
+        /// them. With `hold`, the connection is then kept open with comments
+        /// until the client closes it.
+        Stream { parts: Vec<Vec<u8>>, hold: bool },
+    }
 
     /// A tiny HTTP server on 127.0.0.1 that answers with `replies`, one per
     /// request, and records each request's first line and body.
     struct MockServer {
         address: String,
         requests: Arc<Mutex<Vec<(String, String)>>>,
+        /// The client closed a held stream.
+        closed: Arc<AtomicBool>,
     }
 
     impl MockServer {
         fn start(replies: Vec<(u16, &'static str)>) -> Self {
+            Self::start_with(
+                replies
+                    .into_iter()
+                    .map(|(status, body)| Reply::Json(status, body))
+                    .collect(),
+            )
+        }
+
+        fn start_with(replies: Vec<Reply>) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let address = format!("http://{}/v1", listener.local_addr().unwrap());
             let requests = Arc::new(Mutex::new(Vec::new()));
             let seen = requests.clone();
+            let closed = Arc::new(AtomicBool::new(false));
+            let closed_seen = closed.clone();
             thread::spawn(move || {
-                for (status, body) in replies {
+                for reply in replies {
                     let Ok((mut stream, _)) = listener.accept() else {
                         return;
                     };
@@ -407,14 +656,41 @@ mod tests {
                         first.trim().to_string(),
                         String::from_utf8(request_body).unwrap(),
                     ));
-                    let reply = format!(
-                        "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                        body.len()
-                    );
-                    stream.write_all(reply.as_bytes()).unwrap();
+                    match reply {
+                        Reply::Json(status, body) => {
+                            let reply = format!(
+                                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                                body.len()
+                            );
+                            stream.write_all(reply.as_bytes()).unwrap();
+                        }
+                        Reply::Stream { parts, hold } => {
+                            let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n";
+                            stream.write_all(head.as_bytes()).unwrap();
+                            for part in parts {
+                                stream.write_all(&part).unwrap();
+                                stream.flush().unwrap();
+                                thread::sleep(Duration::from_millis(5));
+                            }
+                            // Until the client closes the connection.
+                            while hold
+                                && stream.write_all(b": waiting\n\n").is_ok()
+                                && stream.flush().is_ok()
+                            {
+                                thread::sleep(Duration::from_millis(50));
+                            }
+                            if hold {
+                                closed_seen.store(true, Ordering::SeqCst);
+                            }
+                        }
+                    }
                 }
             });
-            MockServer { address, requests }
+            MockServer {
+                address,
+                requests,
+                closed,
+            }
         }
 
         fn client(&self) -> ModelClient {
@@ -650,6 +926,193 @@ mod tests {
             let vectors = client.embeddings(&embedding_model, &inputs).await.unwrap();
             assert_eq!(vectors.len(), 2);
             assert!(vectors[0].len() > 100 && vectors[0].len() == vectors[1].len());
+        }
+    }
+
+    /// One server-sent event carrying `content` as the next piece.
+    fn piece(content: &str) -> String {
+        let event = serde_json::json!({
+            "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": null}]
+        });
+        format!("data: {event}\n\n")
+    }
+
+    fn finished(reason: &str) -> String {
+        format!(
+            "data: {{\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"{reason}\"}}]}}\n\n"
+        )
+    }
+
+    async fn stream(client: &ModelClient) -> (Result<String, ModelError>, Vec<String>) {
+        let mut pieces = Vec::new();
+        let reply = client
+            .chat_stream("gemma", &[user("Say hello")], Some(20), |p| {
+                pieces.push(p.to_string())
+            })
+            .await;
+        (reply, pieces)
+    }
+
+    /// A stream of `parts`, each written on its own.
+    fn events(parts: Vec<String>) -> Reply {
+        Reply::Stream {
+            parts: parts.into_iter().map(String::into_bytes).collect(),
+            hold: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_streamed_reply_comes_in_pieces() {
+        let role = "data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\"}}]}\n\n";
+        let body = [
+            role.to_string(),
+            piece(r#"{"answer": "Hej"#),
+            piece(" Åsa"),
+            piece(r#"", "sources": [1]}"#),
+            finished("stop"),
+            "data: [DONE]\n\n".to_string(),
+        ]
+        .concat()
+        .into_bytes();
+        // Written in three parts: one cuts an event in two, the other cuts
+        // "Å", which takes two bytes.
+        let inside = body.windows(2).position(|w| w == "Å".as_bytes()).unwrap() + 1;
+        let parts = vec![
+            body[..20].to_vec(),
+            body[20..inside].to_vec(),
+            body[inside..].to_vec(),
+        ];
+        let server = MockServer::start_with(vec![Reply::Stream { parts, hold: false }]);
+        let client = server.client().without_reasoning();
+        let (reply, pieces) = stream(&client).await;
+        assert_eq!(reply.unwrap(), r#"{"answer": "Hej Åsa", "sources": [1]}"#);
+        assert_eq!(
+            pieces,
+            [r#"{"answer": "Hej"#, " Åsa", r#"", "sources": [1]}"#]
+        );
+        let sent: serde_json::Value = serde_json::from_str(&server.requests()[0].1).unwrap();
+        assert_eq!(sent["stream"], true);
+        assert_eq!(sent["reasoning_effort"], "none");
+    }
+
+    #[tokio::test]
+    async fn a_stream_without_done_ends_with_the_body() {
+        let parts = vec![piece("Hej"), piece(" då")];
+        let server = MockServer::start_with(vec![events(parts)]);
+        let (reply, _) = stream(&server.client()).await;
+        assert_eq!(reply.unwrap(), "Hej då");
+    }
+
+    #[tokio::test]
+    async fn a_reasoning_model_s_thinking_is_never_passed_on() {
+        let thinking = "data: {\"choices\":[{\"index\":0,\"delta\":{\"reasoning_content\":\"Anna Example is\"}}]}\n\n";
+        let parts = vec![
+            thinking.to_string(),
+            piece("Hej"),
+            "data: [DONE]\n\n".to_string(),
+        ];
+        let server = MockServer::start_with(vec![events(parts)]);
+        let (reply, pieces) = stream(&server.client()).await;
+        assert_eq!(reply.unwrap(), "Hej");
+        assert_eq!(pieces, ["Hej"]);
+    }
+
+    #[tokio::test]
+    async fn a_stream_that_runs_out_of_room_is_told_apart() {
+        let parts = vec![finished("length"), "data: [DONE]\n\n".to_string()];
+        let server = MockServer::start_with(vec![events(parts)]);
+        assert_eq!(stream(&server.client()).await.0, Err(ModelError::OutOfRoom));
+    }
+
+    #[tokio::test]
+    async fn errors_in_a_stream_never_carry_what_the_server_sent() {
+        for bad in [
+            "data: {\"error\":{\"message\":\"Anna Example's diagnosis\"}}\n\n",
+            "data: Anna Example's diagnosis\n\n",
+        ] {
+            let parts = vec![piece("Hej"), bad.to_string()];
+            let server = MockServer::start_with(vec![events(parts)]);
+            let error = stream(&server.client()).await.0.unwrap_err();
+            assert_eq!(error, ModelError::InvalidResponse);
+            assert!(!error.to_string().contains("Anna"));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_server_that_does_not_stream_is_read_whole() {
+        let server = MockServer::start(vec![(
+            200,
+            r#"{"choices":[{"message":{"role":"assistant","content":"Hej Anna"}}]}"#,
+        )]);
+        let (reply, pieces) = stream(&server.client()).await;
+        assert_eq!(reply.unwrap(), "Hej Anna");
+        assert_eq!(pieces, ["Hej Anna"]);
+        // Also when it says it is something else.
+        let body = r#"{"choices":[{"message":{"role":"assistant","content":"Hej Bo"}}]}"#;
+        let server = MockServer::start_with(vec![events(vec![body.to_string()])]);
+        let (reply, pieces) = stream(&server.client()).await;
+        assert_eq!(reply.unwrap(), "Hej Bo");
+        assert_eq!(pieces, ["Hej Bo"]);
+    }
+
+    #[tokio::test]
+    async fn keep_alives_in_a_stream_are_passed_over() {
+        let parts = vec![
+            ": ping\n\n".to_string(),
+            "data:\n\n".to_string(),
+            "data: \n\n".to_string(),
+            piece("Hej"),
+            "data: [DONE]\n\n".to_string(),
+        ];
+        let server = MockServer::start_with(vec![events(parts)]);
+        let (reply, pieces) = stream(&server.client()).await;
+        assert_eq!(reply.unwrap(), "Hej");
+        assert_eq!(pieces, ["Hej"]);
+    }
+
+    #[tokio::test]
+    async fn a_stream_is_asked_again_without_no_reasoning_if_refused() {
+        let server = MockServer::start_with(vec![
+            Reply::Json(400, r#"{"error":"unknown reasoning_effort"}"#),
+            events(vec![piece("Hej")]),
+        ]);
+        let (reply, _) = stream(&server.client().without_reasoning()).await;
+        assert_eq!(reply.unwrap(), "Hej");
+        let requests = server.requests();
+        assert_eq!(requests.len(), 2);
+        let second: serde_json::Value = serde_json::from_str(&requests[1].1).unwrap();
+        assert!(second.get("reasoning_effort").is_none());
+        assert_eq!(second["stream"], true);
+    }
+
+    #[tokio::test]
+    async fn a_pause_stops_a_stream_within_a_second() {
+        use crate::pause::{Pause, PauseLength};
+        let server = MockServer::start_with(vec![Reply::Stream {
+            parts: vec![piece("Hej").into_bytes()],
+            hold: true,
+        }]);
+        let client = server.client();
+        let pause = Pause::default();
+        let mut pieces = Vec::new();
+        let messages = [user("x")];
+        let streaming = client.chat_stream("gemma", &messages, None, |p| {
+            pieces.push(p.to_string());
+        });
+        let pause_soon = async {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            pause.pause(PauseLength::UntilResumed);
+            Instant::now()
+        };
+        let (reply, paused_at) = tokio::join!(pause.unless_paused(streaming), pause_soon);
+        assert_eq!(reply, None);
+        assert!(paused_at.elapsed() < Duration::from_millis(1500));
+        assert_eq!(pieces, ["Hej"]);
+        // The connection is closed, so the server can stop writing.
+        let waiting = Instant::now();
+        while !server.closed.load(Ordering::SeqCst) {
+            assert!(waiting.elapsed() < Duration::from_secs(2), "still open");
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
     }
 
