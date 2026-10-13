@@ -240,25 +240,25 @@ where
     // In order of priority; the budget cuts from the end.
     let candidates: Vec<Episode> = match range {
         Some((from, to)) => {
-            let mut in_range = store.episodes_between(from, to, 500)?;
-            in_range.reverse(); // Latest first, so the budget keeps the end of the time.
-            if !entities.is_empty() || !search.is_empty() {
-                // A time and a subject ("Vitas the last two days"): only what
-                // is about the subject, found by name or word, then by
-                // meaning; not everything else from that time.
-                in_turns([mentioning, matching, near])
-            } else if near.is_empty() {
-                in_range
+            let direct = in_turns([mentioning, matching]);
+            if (!entities.is_empty() || !search.is_empty()) && !direct.is_empty() {
+                // A time and a subject that was found ("Vitas the last two
+                // days"): only the entries about it, not everything else from
+                // that time, and not the nearest by meaning either.
+                direct
             } else {
-                let wanted: HashSet<i64> = mentioning
-                    .iter()
-                    .chain(&matching)
-                    .chain(&near)
-                    .map(|e| e.id)
-                    .collect();
-                let (first, rest): (Vec<Episode>, Vec<Episode>) =
-                    in_range.into_iter().partition(|e| wanted.contains(&e.id));
-                first.into_iter().chain(rest).collect()
+                // Only a time, or a subject the words didn't find: everything
+                // from that time, the nearest by meaning first.
+                let mut in_range = store.episodes_between(from, to, 500)?;
+                in_range.reverse(); // Latest first, so the budget keeps the end of the time.
+                if near.is_empty() {
+                    in_range
+                } else {
+                    let wanted: HashSet<i64> = near.iter().map(|e| e.id).collect();
+                    let (first, rest): (Vec<Episode>, Vec<Episode>) =
+                        in_range.into_iter().partition(|e| wanted.contains(&e.id));
+                    first.into_iter().chain(rest).collect()
+                }
             }
         }
         None => {
@@ -586,8 +586,6 @@ const STOP_WORDS: &[&str] = &[
     "also",
 ];
 
-/// Month names are left in: "Jan" and "Maj" are names too, and a month
-/// name alone doesn't narrow the time.
 /// A small count, in digits or words, Swedish or English: "2", "två", "two".
 fn count_word(word: &str) -> Option<i64> {
     if let Ok(n) = word.parse::<i64>() {
@@ -608,6 +606,8 @@ fn count_word(word: &str) -> Option<i64> {
     Some(n)
 }
 
+/// Month names are left in: "Jan" and "Maj" are names too, and a month
+/// name alone doesn't narrow the time.
 fn is_time_word(word: &str) -> bool {
     TIME_WORDS.contains(&word) || weekday(word).is_some()
 }
@@ -1226,6 +1226,18 @@ mod tests {
         .unwrap();
         // Tuesday also has "Läste nyheter.", which isn't about Anna.
         assert_eq!(summaries(&found), ["Mailade Anna om Q3-offerten."]);
+        // A subject the words don't find gives the whole time instead.
+        let found = gather(
+            &sample(),
+            "Vad gjorde jag med kunden i tisdags?",
+            None,
+            &now(),
+        )
+        .unwrap();
+        assert_eq!(
+            summaries(&found),
+            ["Mailade Anna om Q3-offerten.", "Läste nyheter."]
+        );
         let found = gather(&sample(), "Vad gjorde jag i tisdags?", None, &now()).unwrap();
         assert_eq!(
             summaries(&found),
