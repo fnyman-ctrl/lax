@@ -48,6 +48,9 @@ signature.
 **Download for Mac** (later): one `.dmg`, signed and notarized by Apple, so it
 opens like any other app.
 
+[docs/USER-GUIDE.md](docs/USER-GUIDE.md) explains the first start, each
+section, the writing assistant and what to do when something doesn't work.
+
 ## Why
 
 Personal memory apps have shown how useful it is to have a computer that remembers

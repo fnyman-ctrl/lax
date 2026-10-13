@@ -43,6 +43,13 @@ they change.
 
 ## How to check
 
+`npm run perf` does most of it (`scripts/perf-report.sh`): the running Lax's
+average CPU since it started and its memory now, the data folder's size, and a
+day-by-day summary of the log below. It reads only Lax's own log and `ps`.
+Several evenings of normal use count as well as one workday.
+
+By hand:
+
 1. Run Lax for a normal workday.
 2. In Activity Monitor, find Lax: CPU (the % CPU column and CPU Time),
    Memory, and Energy (Avg Energy Impact).

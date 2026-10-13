@@ -121,8 +121,9 @@ Gatekeeper warnings. A signed and notarized `.dmg` comes later.
 
 - `npm run build:app`: build from a tagged release and install in ~/Applications
 - First-run onboarding: hardware check, finding a local model server, permissions
-- User documentation
-- Release process documented (tag, release notes, checksums)
+- User documentation ([USER-GUIDE.md](USER-GUIDE.md))
+- Release process documented ([RELEASING.md](RELEASING.md), [CHANGELOG.md](../CHANGELOG.md))
+- `npm run perf` for the performance budget (#11), measured over a few evenings
 - Later: signed and notarized `.dmg` built by CI with build provenance
 
 ## Later

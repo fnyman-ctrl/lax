@@ -11,7 +11,8 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "icons": "sh scripts/icons.sh",
-    "build:app": "sh scripts/build-app.sh"
+    "build:app": "sh scripts/build-app.sh",
+    "perf": "sh scripts/perf-report.sh"
   },
   "dependencies": {
     "react": "^19.1.0",
