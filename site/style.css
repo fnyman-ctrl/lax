@@ -156,26 +156,67 @@ footer {
   vector-effect: non-scaling-stroke;
 }
 
+/* The salmon swims along the river: across, turning at each bank, bobbing
+   with the waves and flicking its tail. The span travels and turns; the
+   picture bobs. */
 .swimmer {
   position: absolute;
   bottom: 0;
   left: 0;
   width: 114px;
   height: 66px;
-  image-rendering: pixelated;
-  animation: upstream 2.4s cubic-bezier(0.2, 0.8, 0.3, 1) 0.2s both;
+  animation: along 26s ease-in-out infinite;
 }
 
-@keyframes upstream {
-  from {
-    transform: translateX(-140px);
-    opacity: 0;
+.swimmer img {
+  display: block;
+  width: 114px;
+  height: 66px;
+  image-rendering: pixelated;
+  transform-origin: 70% 55%;
+  animation:
+    bob 1.6s ease-in-out infinite alternate,
+    flick 0.45s ease-in-out infinite alternate;
+}
+
+@keyframes along {
+  0% {
+    left: -120px;
+    transform: scaleX(1);
   }
-  15% {
-    opacity: 1;
+  46% {
+    left: calc(100% - 114px);
+    transform: scaleX(1);
+  }
+  50% {
+    left: calc(100% - 114px);
+    transform: scaleX(-1);
+  }
+  96% {
+    left: 0;
+    transform: scaleX(-1);
+  }
+  100% {
+    left: 0;
+    transform: scaleX(1);
+  }
+}
+
+@keyframes bob {
+  from {
+    translate: 0 -3px;
   }
   to {
-    transform: translateX(min(55vw, 30rem));
+    translate: 0 3px;
+  }
+}
+
+@keyframes flick {
+  from {
+    rotate: -2.5deg;
+  }
+  to {
+    rotate: 2.5deg;
   }
 }
 
@@ -458,7 +499,11 @@ footer {
 @media (prefers-reduced-motion: reduce) {
   .swimmer {
     animation: none;
-    transform: translateX(min(55vw, 30rem));
+    left: min(55vw, 30rem);
+  }
+
+  .swimmer img {
+    animation: none;
   }
 
   .caret {
