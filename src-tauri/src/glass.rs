@@ -10,10 +10,8 @@ use tauri::WebviewWindow;
 use crate::summon::Rect;
 
 /// Puts the glass behind `card` (in points, from the window's top left), or
-/// hides it for `None`. `height` is the window's height once a resize asked
-/// for has happened: AppKit counts from the bottom, and the resize may not
-/// have reached the window yet. Returns whether this Mac has the glass at all.
-pub fn set(panel: &WebviewWindow, card: Option<Rect>, height: Option<f64>) -> bool {
+/// hides it for `None`. Returns whether this Mac has the glass at all.
+pub fn set(panel: &WebviewWindow, card: Option<Rect>) -> bool {
     #[cfg(target_os = "macos")]
     {
         if !macos::available() {
@@ -25,12 +23,12 @@ pub fn set(panel: &WebviewWindow, card: Option<Rect>, height: Option<f64>) -> bo
         // A pointer can't cross threads; its address can, and the window
         // outlives the call (it is only ever hidden, never closed).
         let window = window as usize;
-        let _ = panel.run_on_main_thread(move || macos::set(window, card, height));
+        let _ = panel.run_on_main_thread(move || macos::set(window, card));
         true
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = (panel, card, height);
+        let _ = (panel, card);
         false
     }
 }
@@ -43,7 +41,9 @@ mod macos {
     use objc2::MainThreadMarker;
     use objc2::rc::Retained;
     use objc2::runtime::AnyClass;
-    use objc2_app_kit::{NSGlassEffectView, NSView, NSWindow, NSWindowOrderingMode};
+    use objc2_app_kit::{
+        NSAutoresizingMaskOptions, NSGlassEffectView, NSView, NSWindow, NSWindowOrderingMode,
+    };
     use objc2_foundation::{NSPoint, NSRect, NSSize};
 
     use crate::summon::Rect;
@@ -61,7 +61,7 @@ mod macos {
         AnyClass::get(c"NSGlassEffectView").is_some()
     }
 
-    pub fn set(window: usize, card: Option<Rect>, height: Option<f64>) {
+    pub fn set(window: usize, card: Option<Rect>) {
         let Some(mtm) = MainThreadMarker::new() else {
             return;
         };
@@ -88,12 +88,18 @@ mod macos {
                 content.addSubview_positioned_relativeTo(&glass, NSWindowOrderingMode::Below, None);
                 glass
             });
-            let height = height.unwrap_or_else(|| content.bounds().size.height);
-            let y = if content.isFlipped() {
-                card.y
+            let height = content.bounds().size.height;
+            let (y, top_fixed) = if content.isFlipped() {
+                (card.y, NSAutoresizingMaskOptions::ViewMaxYMargin)
             } else {
-                height - card.y - card.height
+                (
+                    height - card.y - card.height,
+                    NSAutoresizingMaskOptions::ViewMinYMargin,
+                )
             };
+            // The window is resized for the card too, maybe after this: the
+            // glass keeps its distance from the top, as the card does.
+            glass.setAutoresizingMask(top_fixed);
             glass.setFrame(NSRect::new(
                 NSPoint::new(card.x, y),
                 NSSize::new(card.width, card.height),

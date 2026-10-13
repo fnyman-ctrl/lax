@@ -292,10 +292,10 @@ pub fn fit_panel(app: AppHandle, height: f64, card: Option<Rect>) -> bool {
     let card = card.filter(Rect::is_sane);
     let height = height.clamp(60.0, 480.0);
     let Ok(scale) = panel.scale_factor() else {
-        return crate::glass::set(&panel, card, None);
+        return crate::glass::set(&panel, card);
     };
     let (Ok(size), Ok(position)) = (panel.inner_size(), panel.outer_position()) else {
-        return crate::glass::set(&panel, card, None);
+        return crate::glass::set(&panel, card);
     };
     let width = size.to_logical::<f64>(scale).width;
     let mut position = position.to_logical::<f64>(scale);
@@ -307,9 +307,7 @@ pub fn fit_panel(app: AppHandle, height: f64, card: Option<Rect>) -> bool {
     }
     let _ = panel.set_size(tauri::LogicalSize::new(width, height));
     let _ = panel.set_position(position);
-    // The glass is placed from the new height, which the window may not
-    // have yet when it is placed.
-    crate::glass::set(&panel, card, Some(height))
+    crate::glass::set(&panel, card)
 }
 
 #[cfg(test)]

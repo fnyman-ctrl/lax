@@ -23,6 +23,7 @@ use objc2_core_foundation::{
 };
 
 use crate::capture::{App, Node, Screen, truncate_chars};
+use crate::exclusions::is_secure_text_field;
 use crate::summon::Rect;
 
 type AXError = i32;
@@ -38,8 +39,8 @@ const AX_VALUE_CF_RANGE: u32 = 4;
 const FIRST_LINE: f64 = 24.0;
 /// How far [`Element::field_within`] looks for the field: elements in all,
 /// and children of each.
-const MAX_FIELD_SEARCH: usize = 600;
-const MAX_FIELD_CHILDREN: usize = 60;
+const MAX_FIELD_SEARCH: usize = 400;
+const MAX_FIELD_CHILDREN: usize = 40;
 
 #[link(name = "ApplicationServices", kind = "framework")]
 unsafe extern "C" {
@@ -570,13 +571,14 @@ impl Element {
         self.caret_bounds().is_some()
     }
 
-    /// The first field inside this element with one of `roles` that says
-    /// where its text cursor is (and, if `focused_only`, says it has the
-    /// keyboard focus), breadth first, looking at no more than
-    /// [`MAX_FIELD_SEARCH`] elements and `max_depth` levels down. For apps
-    /// that name a whole scroll area as focused (Pages, Claude) rather than
-    /// the field the user types in. Reads roles, flags and positions only,
-    /// never text.
+    /// A field inside this element with one of `roles` that says where its
+    /// text cursor is, breadth first, looking at no more than
+    /// [`MAX_FIELD_SEARCH`] elements and `max_depth` levels down: the first
+    /// that says it has the keyboard focus, or else (unless `focused_only`)
+    /// the first at all. Password fields are passed over unless focused,
+    /// when the caller must stay away. For apps that name a whole scroll
+    /// area as focused (Pages, Claude) rather than the field the user types
+    /// in. Reads roles, flags and positions only, never text.
     pub fn field_within(
         &self,
         roles: &[&str],
@@ -588,19 +590,32 @@ impl Element {
             .into_iter()
             .map(|child| (child, 1))
             .collect();
+        let mut first = None;
         let mut looked = 0;
         while let Some((element, depth)) = queue.pop_front() {
             looked += 1;
             if looked > MAX_FIELD_SEARCH {
                 break;
             }
-            if element
-                .role()
-                .is_some_and(|role| roles.contains(&role.as_str()))
-                && (!focused_only || element.flag(&element.names.focused) == Some(true))
-                && element.has_caret_bounds()
-            {
-                return Some(element);
+            let (role, subrole) = element.role_and_subrole();
+            let role = role.unwrap_or_default();
+            if roles.contains(&role.as_str()) {
+                let focused = element.flag(&element.names.focused) == Some(true);
+                if is_secure_text_field(&role, subrole.as_deref()) {
+                    if focused {
+                        return Some(element);
+                    }
+                    continue;
+                }
+                if element.has_caret_bounds() {
+                    if focused {
+                        return Some(element);
+                    }
+                    if !focused_only && first.is_none() {
+                        first = Some(element);
+                    }
+                    continue;
+                }
             }
             if depth < max_depth {
                 for child in element.children(MAX_FIELD_CHILDREN) {
@@ -608,7 +623,7 @@ impl Element {
                 }
             }
         }
-        None
+        first
     }
 
     fn caret_bounds(&self) -> Option<Rect> {

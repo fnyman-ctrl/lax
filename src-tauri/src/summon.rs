@@ -644,7 +644,7 @@ fn show(app: &AppHandle, call: Call, caret: Option<Rect>, field: Option<Rect>) {
         height: 3.0 * PANEL_HEIGHT,
     });
     // The glass from last time stays hidden until the card opens again.
-    crate::glass::set(&panel, None, None);
+    crate::glass::set(&panel, None);
     let (x, y, width) = place(caret, field.map(|field| field.width), screen);
     let _ = panel.set_size(tauri::LogicalSize::new(width, PANEL_HEIGHT));
     let _ = panel.set_position(tauri::LogicalPosition::new(x, y));
@@ -809,16 +809,27 @@ pub(crate) mod macos {
         pub field: Option<Rect>,
     }
 
-    /// Where the text cursor is in the app in front, and the instruction in
-    /// the field, after the same checks capture makes before reading a
-    /// window: the app, the window title and whether a browser window is
-    /// private. `None` if Lax may not come: one of those says no, capture is
-    /// paused, or the focus is in a password field.
+    /// How Lax found the field, as a number for the log: 0 the app named it
+    /// as focused, 1 inside the focused scroll area, 2 in the window, 3 not
+    /// at all (Lax goes by the mouse pointer).
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Way {
+        Focused = 0,
+        InArea = 1,
+        InWindow = 2,
+        Pointer = 3,
+    }
+
     /// How many levels down Lax looks for the field: inside a focused scroll
     /// area, and in the whole window (web apps nest deeply).
     const FIELD_DEPTH_IN_AREA: usize = 6;
     const FIELD_DEPTH_IN_WINDOW: usize = 30;
 
+    /// Where the text cursor is in the app in front, and the instruction in
+    /// the field, after the same checks capture makes before reading a
+    /// window: the app, the window title and whether a browser window is
+    /// private. `None` if Lax may not come: one of those says no, capture is
+    /// paused, or the focus is in a password field.
     pub fn locate(app: &AppHandle) -> Option<Found> {
         // Before the user's exclusions are loaded, Lax comes nowhere.
         let (_, exclusions) = app.state::<Current>().newer_than(0)?;
@@ -851,30 +862,39 @@ pub(crate) mod macos {
         // the field the user types in. Then the field inside it, if one says
         // where its cursor is; otherwise the mouse pointer, not the area's
         // top left corner.
-        let (element, role, inner) =
-            if super::typed_in(role.as_deref()) || focused.has_caret_bounds() {
-                (focused, role, false)
-            } else if let Some(field) = focused
-                .field_within(super::TYPED_IN, false, FIELD_DEPTH_IN_AREA)
-                .or_else(|| {
-                    // Not inside it (Claude's composer): the field in the window
-                    // that says it has the keyboard focus.
-                    screen.focused_window(&found.front)?.field_within(
-                        super::TYPED_IN,
-                        true,
-                        FIELD_DEPTH_IN_WINDOW,
-                    )
-                })
-            {
-                let (role, subrole) = field.role_and_subrole();
-                if is_secure_text_field(role.as_deref().unwrap_or_default(), subrole.as_deref()) {
-                    return None;
-                }
-                (field, role, true)
-            } else {
-                log_field(role.as_deref(), false, false, None, &found.call);
-                return Some(found);
-            };
+        let (element, role, way) = if super::typed_in(role.as_deref()) || focused.has_caret_bounds()
+        {
+            (focused, role, Way::Focused)
+        } else if let Some((field, way)) = focused
+            .field_within(super::TYPED_IN, false, FIELD_DEPTH_IN_AREA)
+            .map(|field| (field, Way::InArea))
+            .or_else(|| {
+                // Not inside it (Claude's composer): the field in the window
+                // that says it has the keyboard focus.
+                let window = screen.focused_window(&found.front)?;
+                window
+                    .field_within(super::TYPED_IN, true, FIELD_DEPTH_IN_WINDOW)
+                    .map(|field| (field, Way::InWindow))
+            })
+        {
+            // A focused password field comes back so that Lax stays away.
+            let (role, subrole) = field.role_and_subrole();
+            if is_secure_text_field(role.as_deref().unwrap_or_default(), subrole.as_deref()) {
+                return None;
+            }
+            (field, role, way)
+        } else {
+            log_field(
+                role.as_deref(),
+                false,
+                false,
+                Way::Pointer,
+                None,
+                &found.call,
+            );
+            return Some(found);
+        };
+        let inner = way != Way::Focused;
         let caret = element.caret();
         // Some apps (Electron apps with several web views, such as Claude)
         // name a field as focused that is hidden: behind another app's
@@ -891,6 +911,7 @@ pub(crate) mod macos {
                 role.as_deref(),
                 element.has_caret_bounds(),
                 true,
+                way,
                 None,
                 &found.call,
             );
@@ -908,6 +929,7 @@ pub(crate) mod macos {
             role.as_deref(),
             element.has_caret_bounds(),
             false,
+            way,
             text.as_ref(),
             &found.call,
         );
@@ -924,6 +946,7 @@ pub(crate) mod macos {
         role: Option<&str>,
         caret_bounds: bool,
         hidden: bool,
+        way: Way,
         text: Option<&FieldText>,
         call: &Call,
     ) {
@@ -942,6 +965,7 @@ pub(crate) mod macos {
                 Field::Id("role", super::role_code(role)),
                 Field::Flag("caret_bounds", caret_bounds),
                 Field::Flag("hidden", hidden),
+                Field::Id("found", way as i64),
                 Field::Flag("has_text", text.is_some()),
                 Field::Flag("selected", selected),
                 Field::Count("value_chars", value_chars),
