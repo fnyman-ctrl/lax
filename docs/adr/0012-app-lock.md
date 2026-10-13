@@ -7,9 +7,10 @@
 
 Lax's window would show nothing until the user confirms with Touch ID or
 the login password, through macOS's LocalAuthentication. It locks again
-after 5 minutes away. Forgets and exports ask again every time. Settings
-changes ask once, then stay open while the user is active in Lax's window,
-and ask again after 5 minutes away. The lock is enforced in Rust: commands
+after 5 minutes away. Ordinary settings need only the unlocked window.
+Forgets, exports and every change that loosens privacy (an exclusion
+turned off, a name allowed back, a model that doesn't run on this Mac)
+ask again every time. The lock is enforced in Rust: commands
 that return what Lax captured or learned refuse while it is locked.
 Capture, pausing and the writing assistant keep working in the background,
 but the writing assistant uses the memory pages only while Lax is
@@ -27,11 +28,18 @@ Decision below follows the answers.
 - **The writing assistant while locked (question 1): as recommended.**
   Drafts always work, but use the memory pages only while Lax is unlocked.
   Locked, the panel offers Unlock and then writes the draft again.
-- **Settings changes (question 5): changed from the recommendation.** Not
-  60 seconds. After one Touch ID or password, settings stay open while the
-  user is active in Lax's window, and ask again after 5 minutes away, by
-  the same rules that lock the window. Forgets, including forgetting
-  everything, and exports still ask every time.
+- **Settings changes (question 5): changed from the recommendation, then
+  settled on Claude's recommendation.** Not 60 seconds, and no separate
+  confirmation for ordinary settings: unlocking the window is enough, and
+  they stay open while the window is unlocked, under the same away rules.
+  Every change that **loosens privacy** asks for Touch ID or the password
+  every time, like forget and export. The reason: someone at an unlocked
+  window can already see everything, so the real risk is a lasting change
+  that weakens privacy after they leave. See "What else asks" for the
+  list. The list comes from reading the commands in `src-tauri/src`.
+  Retention, the user's other names, and turning on the journal, the
+  memory or the writing assistant are judgement calls, for the maintainer
+  to confirm.
 - **Away (questions 2 and 3): as recommended.** A screen lock, sleep or
   account switch locks at once. No input for 5 minutes locks Lax, and a
   window hidden for 5 minutes locks the window.
@@ -106,15 +114,14 @@ and no Dock icon (see "The LocalAuthentication spike").
 captured content. macOS puts it into its own sentence, "<App> is trying to
 <reason>." (in Swedish, "<App> försöker att <reason>."), and shows the
 rest of the dialog in the system language. So each reason is a lowercase
-verb phrase that fits that sentence ("open your memory", "change a
-setting", "forget the last hour"), localized to the system language,
+verb phrase that fits that sentence ("open your memory", "turn off an
+exclusion", "forget the last hour"), localized to the system language,
 Swedish and English at least.
 
 **A new `LAContext` after every lock.** The spike showed that a second
 `evaluatePolicy` on the same context succeeds at once, without asking. So
 `lock.rs` throws its context away whenever Lax or the window locks, and
-whenever a forget, an export or the first settings change asks, and makes
-a new one for the next request. Reusing a context would silently skip
+after every change that asks, and makes a new one for the next request. Reusing a context would silently skip
 the prompt.
 
 **Only when the user asked.** Lax asks only in answer to something the
@@ -167,45 +174,62 @@ those seconds.
 
 ### What else asks
 
-Even while unlocked, these ask for Touch ID or the login password again.
-The command itself asks, in Rust, before it does anything, so there is no
-token the web UI could reuse.
+The rule (question 5): **ordinary settings need only the unlocked window.
+Every change that loosens privacy asks for Touch ID or the login password
+every time**, at the moment it happens, like forgets and exports. Someone
+at an unlocked window can already see everything; what the lock must stop
+is a lasting change that weakens privacy after they leave. The command
+itself asks, in Rust, before it does anything, so there is no token the
+web UI could reuse, and no "confirmed" state to keep.
 
-- **Settings changes:** retention, the sent log's retention, adding or
-  removing an exclusion, turning a default exclusion on or off, choosing or
-  clearing a model (the model provider), turning the journal, the memory or
-  the writing assistant on or off, the writing assistant's key, the user's
-  other names. (`set_retention_days`, `set_outbox_retention_days`,
-  `add_exclusion`, `remove_exclusion`, `set_default_excluded`, `set_model`,
-  `clear_model`, `set_journal_enabled`, `set_memory_enabled`,
-  `set_writing_enabled`, `set_writing_key`, `set_own_names`.)
+**Asks every time:**
+
 - **Forgets:** a time range or app (`forget_captures`), everything
   (`delete_all_data`), an entity (`forget_entity`), everything the memory
-  noted (`forget_memory`), the sent log (`delete_outbox`), and allowing a
-  name back from the "don't learn" list (`allow_learning`), which loosens
-  what Lax may learn.
+  noted (`forget_memory`), and the sent log (`delete_outbox`).
 - **Export** of pages, and deleting the old page files (ADR 0011).
 - **"Start over" and "Delete the old file"** when the database can't be
   opened (ADR 0010).
+- **Removing one of the user's own exclusions** (`remove_exclusion`).
+- **Allowing a name back** from the "don't learn" list (`allow_learning`),
+  which lets Lax learn something it was told not to.
+- **Retention**, for raw captures (`set_retention_days`) and for the sent
+  log (`set_outbox_retention_days`). A longer time keeps more of what was
+  captured or sent. A shorter one deletes at once, so it is a forget.
+- **The user's other names** (`set_own_names`). Adding a name forgets the
+  people the memory noted under it, and removing one lets Lax learn a
+  person by that name again.
 
-**How often.** Everything in the list except settings asks every time, at
-the moment it happens. **Settings ask once** (question 5): the first
-settings change after unlocking asks. After that, settings stay open while
-the user is active in Lax's window, and ask again after 5 minutes away, by
-the same rules that lock the window: 5 minutes without input, the window
-hidden for 5 minutes, or at once on a screen lock, sleep or account switch.
-So the settings confirmation ends when the window locks. Unlocking the
-window again doesn't bring it back: the next settings change asks again.
-Lax keeps this state in `lock.rs`, never in the web UI.
+**Asks when the change loosens privacy.** The command looks at its
+arguments and the current setting, in Rust, and asks only in the
+loosening direction:
 
-Turning off an exclusion is in the list above. The never tier can't be
-turned off at all, as today.
+- **Turning off a banking or health default** (`set_default_excluded`
+  with `excluded: false`). Turning one back on doesn't ask.
+- **Choosing a model that doesn't run on this Mac**, or routing a task to
+  one (`set_model`, when the endpoint's locality isn't local). Today
+  `set_model` refuses such endpoints anyway; this is the rule for when
+  remote providers come (#16). A model on this Mac doesn't ask.
+- **Turning on the journal, the memory or the writing assistant**
+  (`set_journal_enabled`, `set_memory_enabled`, `set_writing_enabled`
+  with `true`). Each makes Lax do more with what it reads: keep summaries
+  longer than the raw captures, learn about people, or read the focused
+  window when called, and send it to the chosen model. Turning them off
+  doesn't ask.
+- **Anything added later** that widens what is captured, what is kept or
+  what may leave the Mac, such as loosening an exclusion tier. The never
+  tier can't be turned off at all, as today.
 
-Not asking at all: the light/dark switch, finishing the setup guide,
-looking for models on this Mac (`find_local_models`), testing a model, and
+**Doesn't ask, once the window is unlocked** (question 6): adding an
+exclusion, clearing a model, choosing a model on this Mac, looking for
+models on this Mac (`find_local_models`), testing a model, the call key
+(`set_writing_key`), the light/dark switch, finishing the setup guide, and
 the memory's everyday edits: rename, merge, keep, recreate a page, restore
-a version, and saving a page (ADR 0011). Those need the window unlocked,
-nothing more (question 6).
+a version, and saving a page (ADR 0011).
+
+**One exception, kept on purpose:** resuming capture from the menu bar
+widens what is captured, but stays one click (question 4). See "What stays
+unlocked".
 
 ### What stays unlocked
 
@@ -294,10 +318,9 @@ ADR 0009's status line then gets "superseded in part by 0012", as
 ### Implementation sketch
 
 - `src-tauri/src/lock.rs`: the lock's state (locked; unlocked, with when;
-  window hidden since; settings confirmed, until the window locks), the
-  away rules, the command lists, an
-  `Authenticator` trait with the macOS one and a fake for tests, and the
-  watcher.
+  window hidden since), the away rules, the command lists, the check that
+  tells whether a call loosens privacy, an `Authenticator` trait with the
+  macOS one and a fake for tests, and the watcher.
 - `LAContext`: a new context for each request, and the old one dropped
   whenever Lax or the window locks. A used context doesn't ask again (the
   spike), so an earlier success must never stand in for a later one.
@@ -381,8 +404,8 @@ lock, sleep and account-switch notifications (see "Still to verify").
 | Someone opens Lax at an unlocked Mac after the user has been gone 5 minutes, or after the Mac locked or slept | Sees the journal, Ask, pages, captures and sent log, and can change or delete anything | Sees the lock screen. Needs Touch ID or the login password |
 | The same, while the user was present but the window had been hidden for 5 minutes | Sees everything | Asked for Touch ID or the login password |
 | The same, in the first 5 minutes after the user left, with the window in use | Sees everything | **Sees everything.** The cost of not asking all the time |
-| That person forgets or exports in those 5 minutes | Can | Asked for Touch ID or the login password, every time |
-| That person changes a setting in those 5 minutes | Can | Asked for Touch ID or the login password, unless the user had already confirmed a settings change before leaving. Then settings stay open until the window locks, and that person's own input keeps it from locking (question 5) |
+| That person forgets, exports or loosens privacy in those 5 minutes: turns off an exclusion, allows a name back, lengthens retention, turns on the journal, the memory or the writing assistant, or picks a model off this Mac | Can | Asked for Touch ID or the login password, every time (question 5) |
+| That person changes an ordinary setting in those 5 minutes: the theme, the call key, a model on this Mac, a page edit, a rename or merge | Can | **Can**, without asking, and their own input keeps the window from locking. None of these weakens privacy after they leave (question 5) |
 | That person double-taps ⌥ and asks for what Lax knows about someone | Gets a draft with the facts | No facts unless Lax is unlocked (question 1); within the 5 minutes, yes |
 | Someone who knows the login password (family, a colleague who saw it typed) | Sees everything | **Sees everything.** The password is the fallback |
 | Another program of the user reads Lax's files | Not addressed here; ADR 0010 and 0011 | Not addressed here |
@@ -409,22 +432,22 @@ lock, sleep and account-switch notifications (see "Still to verify").
   message; other errors leave it locked with one.
 - `lock::tests::every_reason_is_localized`: each action's reason exists in
   Swedish and English, is not empty, and starts with a lowercase letter.
-- `lock::tests` for settings: the first settings change after unlocking
-  asks; later ones don't while the window stays unlocked; 5 minutes
-  without input, the window hidden for 5 minutes, and a screen lock, sleep
-  or account switch each end the settings confirmation; unlocking the
-  window again doesn't bring it back; a forget or an export right after a
-  settings confirmation still asks.
+- `lock::tests` for asking: an ordinary setting changes with the window
+  unlocked and no request; each `every_time` command asks on every call,
+  also twice in a row; each `loosening` command asks in the loosening
+  direction and not in the other (`set_default_excluded` with `false` and
+  `true`, `set_model` with an endpoint off this Mac and on it, each
+  `set_*_enabled` with `true` and `false`).
 - `lib::tests::every_command_has_a_lock_rule`: every command in
-  `generate_handler!` is in exactly one of the lists in `lock.rs` (open
-  while locked, needs unlocked, settings, asks every time, panel), next to
+  `generate_handler!` is in exactly one of the lists in `lock.rs`: `open`
+  (allowed while locked), `none` (needs the unlocked window, nothing
+  more), `every_time`, `loosening` or `panel`. It sits next to
   `every_command_is_listed_and_allowed`.
 - `lock::tests::locked_commands_are_refused`: the gate refuses every
   command not open while locked, and every main-window command from the
   panel.
-- For each settings command and each command that asks every time, a test
-  that a failed authentication changes nothing (with the fake
-  authenticator).
+- For each command that asks, a test that a failed authentication changes
+  nothing (with the fake authenticator).
 - `write::tests::no_page_facts_while_locked`.
 - Live, opt-in, on a real Mac (`#[ignore]`): `live_unlock`.
 - A Vitest test that the lock screen shows no content. It can't show the
@@ -437,8 +460,8 @@ New rows, updated as each part lands:
 - "Lax's window shows nothing until you confirm with Touch ID or your login
   password, and locks again after 5 minutes away."
 - "While Lax is locked, no command returns what it captured or learned."
-- "Forgets and exports ask for Touch ID or your login password every time.
-  Settings changes ask once, and again after 5 minutes away."
+- "Forgets, exports and every change that loosens your privacy ask for
+  Touch ID or your login password every time."
 - "Locked, the writing assistant doesn't use your memory pages."
 
 ### Docs
@@ -477,11 +500,11 @@ the answers.
 5. **Every settings change, or one authentication for a minute of
    settings changes?** The recommendation was one authentication for 60
    seconds of settings changes, so editing a list of exclusions doesn't
-   ask five times. **Answered differently:** after one Touch ID or
-   password, settings stay open while the user is active in Lax's window,
-   and ask again after 5 minutes away, by the same rules that lock the
-   window. Forgets, including forgetting everything, and exports ask
-   every time. See "What else asks".
+   ask five times. **Answered differently, on Claude's later
+   recommendation:** ordinary settings need only the unlocked window, with
+   no separate confirmation, and stay open while it is unlocked. Every
+   change that loosens privacy asks every time, like forgets, forget-all
+   and exports. See "What else asks".
 6. **Do the memory's everyday edits ask each time?** Recommended: no
    (rename, merge, keep, recreate, restore, saving a page); the unlocked
    window is enough. `allow_learning` does ask, since it loosens.
@@ -504,14 +527,14 @@ the answers.
 - Lax's window, with the journal, Ask and, after ADR 0011, the pages, is
   closed to someone who sits down at an unlocked Mac after the user has
   been gone for 5 minutes, or after it slept or locked.
-- Forgets and exports can't be done by someone in those 5 minutes without
-  the user's finger or password. Settings can't be changed either, unless
-  the user had already confirmed a settings change before leaving.
+- Forgets, exports and changes that loosen privacy can't be done by
+  someone in those 5 minutes without the user's finger or password.
+  Ordinary settings can.
 - The lock is checked by the commands, not drawn over the UI. A command
   added later is refused until it is classified.
-- Touch ID prompts: one on opening after a break, one for the first
-  settings change after that, one per forget or export, and perhaps one in
-  the panel after a break. On Macs without Touch ID, each is the login
+- Touch ID prompts: one on opening after a break, one per forget, export
+  or change that loosens privacy, and perhaps one in the panel after a
+  break. On Macs without Touch ID, each is the login
   password.
 - A new module, a watcher thread, two commands, and probably one new
   crate.
@@ -519,7 +542,8 @@ the answers.
 ### What we give up
 
 - One-click access to Lax's window. Every break costs a touch.
-- Quick forgets and exports, and a first settings change without a touch.
+- Quick forgets, exports and changes that loosen privacy. Removing three
+  exclusions costs three touches.
 - Writing-assistant drafts with the pages right after a break, without a
   touch (question 1).
 
@@ -550,7 +574,7 @@ Each PR green on its own, labelled `security-sensitive`.
    and the fake, and their tests. No change in behaviour.
 2. **The gate** and the command lists, `lock_status`, `unlock`, the lock
    screen, the reload on lock, `every_command_has_a_lock_rule`.
-3. **Asking again:** once for settings, until the window locks, and every
-   time for forgets and exports.
+3. **Asking again**, every time, for forgets, exports and changes that
+   loosen privacy, with the `every_time` and `loosening` lists.
 4. **The panel:** pages only while unlocked, and its Unlock.
 5. **Docs:** USER-GUIDE, ARCHITECTURE, PERFORMANCE, onboarding, CLAIMS.
