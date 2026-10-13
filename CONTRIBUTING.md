@@ -89,6 +89,12 @@ must keep its original copyright notice.
   `echo 'export PATH="/opt/homebrew/opt/rustup/bin:$HOME/.cargo/bin:$PATH"' >> ~/.zprofile`
 - Node.js (version in `.nvmrc`)
 
+### Build the app
+
+`npm run build:app` builds a release `Lax.app` and puts it in `~/Applications`
+(`scripts/build-app.sh`). It is ad-hoc signed (`signingIdentity: "-"` in
+`tauri.conf.json`), which is enough for an app built on the Mac that runs it.
+
 ### Run
 
 ```bash

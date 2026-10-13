@@ -11,7 +11,7 @@ closer to them.
 |---|---|---|
 | 0 | Foundation | ✅ Done |
 | [1](https://github.com/fnyman-ctrl/lax/milestone/1) | Capture | 🚧 Almost done: a workday measurement is left (#11). Reads nothing while you're away |
-| [2](https://github.com/fnyman-ctrl/lax/milestone/2) | Model layer | 🚧 Local models done, quiet in the background and on battery; remote providers next |
+| [2](https://github.com/fnyman-ctrl/lax/milestone/2) | Model layer | 🚧 Local models done, quiet in the background and on battery; remote providers after 0.1 |
 | [3](https://github.com/fnyman-ctrl/lax/milestone/3) | Journal | 🚧 Works, opt-in; when raw captures expire is left (#39) |
 | [4](https://github.com/fnyman-ctrl/lax/milestone/4) | Learning memory ⭐ | ✅ First version: entities, pages in ~/Lax with facts, about-me.md, history; a week of use to judge |
 | [5](https://github.com/fnyman-ctrl/lax/milestone/5) | Ask your memory | ✅ First version: a conversation, answered from the journal and the memory, found by time, name, words and meaning |
@@ -114,12 +114,16 @@ Edit menu so it works with every keyboard layout.
 
 ## Stage 6: Release 0.1
 
-**Goal:** The first version others can install.
+**Goal:** The first version others can install. Decided with the maintainer
+(2026-10-13): 0.1 is local only, without remote providers, and is built from
+source (`npm run build:app`), so it needs no Apple account and opens without
+Gatekeeper warnings. A signed and notarized `.dmg` comes later.
 
-- Signed and notarized macOS app, built by CI with build provenance
-- First-run onboarding: hardware check, local or remote setup, permissions
+- `npm run build:app`: build from a tagged release and install in ~/Applications
+- First-run onboarding: hardware check, finding a local model server, permissions
 - User documentation
-- Release process documented
+- Release process documented (tag, release notes, checksums)
+- Later: signed and notarized `.dmg` built by CI with build provenance
 
 ## Later
 

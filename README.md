@@ -24,6 +24,30 @@ you decide it should.
 > assistant are off until you turn them on. See the [roadmap](docs/ROADMAP.md), follow
 > along or help out!
 
+## Get Lax
+
+**Build it yourself** (works today). You need macOS, the Xcode Command Line
+Tools (`xcode-select --install`), [rustup](https://rustup.rs) and
+[Node.js](https://nodejs.org). Then:
+
+```sh
+git clone https://github.com/fnyman-ctrl/lax.git
+cd lax
+npm run build:app
+open ~/Applications/Lax.app
+```
+
+A Lax you build yourself opens without warnings and needs no Apple account.
+Lax then asks for the Accessibility permission and explains what it reads. For
+the AI parts, run a local model server such as [LM Studio](https://lmstudio.ai)
+or [Ollama](https://ollama.com) and pick its models under **Models**
+([docs/MODELS.md](docs/MODELS.md)). After building a new version, macOS may ask
+you to turn Lax on under Accessibility again, since each build has a new
+signature.
+
+**Download for Mac** (later): one `.dmg`, signed and notarized by Apple, so it
+opens like any other app.
+
 ## Why
 
 Personal memory apps have shown how useful it is to have a computer that remembers
