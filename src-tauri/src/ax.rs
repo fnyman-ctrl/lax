@@ -19,7 +19,7 @@ use objc2::rc::autoreleasepool;
 use objc2_app_kit::NSWorkspace;
 use objc2_core_foundation::{
     CFArray, CFBoolean, CFDictionary, CFGetTypeID, CFIndex, CFNumber, CFRange, CFRetained,
-    CFString, CFType, CFTypeID, CFURL, kCFBooleanTrue,
+    CFString, CFType, CFTypeID, CFURL, kCFBooleanFalse, kCFBooleanTrue,
 };
 
 use crate::capture::{App, Node, Screen, truncate_chars};
@@ -229,6 +229,7 @@ struct Names {
     focused_window: CFRetained<CFString>,
     focused: CFRetained<CFString>,
     manual_accessibility: CFRetained<CFString>,
+    enhanced_user_interface: CFRetained<CFString>,
     visible_character_range: CFRetained<CFString>,
     string_for_range: CFRetained<CFString>,
     focused_element: CFRetained<CFString>,
@@ -262,6 +263,7 @@ impl Names {
             focused_window: name("AXFocusedWindow"),
             focused: name("AXFocused"),
             manual_accessibility: name("AXManualAccessibility"),
+            enhanced_user_interface: name("AXEnhancedUserInterface"),
             visible_character_range: name("AXVisibleCharacterRange"),
             string_for_range: name("AXStringForRange"),
             focused_element: name("AXFocusedUIElement"),
@@ -323,6 +325,44 @@ pub struct AxScreen {
     names: Rc<Names>,
     /// Processes already asked to expose their accessibility tree.
     prepared: HashSet<i32>,
+}
+
+/// An app asked for its full accessibility tree by [`AxScreen::wake`]; the
+/// request is taken back when this is dropped, since some apps (Chromium)
+/// change how they behave while it stands.
+pub struct Awake {
+    element: Element,
+    /// Whether Lax turned it on, and so takes it back. If VoiceOver or
+    /// another assistive app had it on already, it stays on.
+    ours: bool,
+}
+
+impl Drop for Awake {
+    fn drop(&mut self) {
+        if self.ours {
+            self.element
+                .set_flag(&self.element.names.enhanced_user_interface, false);
+        }
+    }
+}
+
+impl AxScreen {
+    /// Asks `app` for its full accessibility tree, as VoiceOver does, until
+    /// the returned guard is dropped. Pages shows only an empty scroll area
+    /// for its document until something asks; it then builds the tree and
+    /// keeps it, although it answers the request with an error.
+    pub fn wake(&self, app: &App) -> Option<Awake> {
+        // SAFETY: any pid is accepted; returns a new element or null.
+        let element = Element {
+            element: unsafe { owned(AXUIElementCreateApplication(app.pid)) }?,
+            names: self.names.clone(),
+        };
+        let ours = element.flag(&self.names.enhanced_user_interface) != Some(true);
+        if ours {
+            element.set_flag(&self.names.enhanced_user_interface, true);
+        }
+        Some(Awake { element, ours })
+    }
 }
 
 impl Default for AxScreen {
@@ -543,14 +583,18 @@ impl Element {
     }
 
     fn set_true(&self, attribute: &CFString) {
-        // SAFETY: reading a static the framework provides.
-        let Some(yes) = (unsafe { kCFBooleanTrue }) else {
+        self.set_flag(attribute, true);
+    }
+
+    fn set_flag(&self, attribute: &CFString, on: bool) {
+        // SAFETY: reading statics the framework provides.
+        let Some(value) = (unsafe { if on { kCFBooleanTrue } else { kCFBooleanFalse } }) else {
             return;
         };
-        let yes: &CFBoolean = yes;
+        let value: &CFBoolean = value;
         // SAFETY: valid element, attribute and value. A failure (the app
         // doesn't support it) is ignored.
-        unsafe { AXUIElementSetAttributeValue(&self.element, attribute, yes.as_ref()) };
+        unsafe { AXUIElementSetAttributeValue(&self.element, attribute, value.as_ref()) };
     }
 
     /// Where the text cursor is, or the element's first line where the app
@@ -567,6 +611,11 @@ impl Element {
 
     /// Whether the app says where its text cursor is (rather than Lax
     /// falling back to the field's first line).
+    /// The roles of this element's children, at most `max` of them.
+    pub fn child_roles(&self, max: usize) -> Vec<Option<String>> {
+        self.children(max).iter().map(Node::role).collect()
+    }
+
     pub fn has_caret_bounds(&self) -> bool {
         self.caret_bounds().is_some()
     }

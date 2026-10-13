@@ -156,11 +156,16 @@ written to manipulate an AI ("ignore previous instructions and…"). Therefore:
   memory folder (`~/Lax`, the memory's Markdown pages, files `0600`). Lax refuses
   to write pages if the memory folder is inside iCloud Drive or another synced
   folder, since that would copy the memory off the machine (§1).
-- Lax relies on FileVault for disk encryption and warns if FileVault is off.
-  Database encryption (SQLCipher) is planned.
+- **The database is encrypted** with SQLCipher, with a random key that Lax keeps
+  in the login keychain, never synced and never written anywhere else
+  ([ADR 0010](adr/0010-encrypted-database.md)).
+- Until [ADR 0011](adr/0011-pages-in-the-database.md) moves them into the
+  database, the memory pages in `~/Lax` are plain Markdown, protected by FileVault
+  and the permissions above. Lax warns if FileVault is off.
 - **Logs never contain captured content**, only metadata such as counts and timings.
 - Everything is stored in open formats (SQLite + Markdown) so the user can export,
-  back up or inspect it without Lax.
+  back up or inspect it without Lax. The database needs SQLCipher and its key,
+  which the user can copy from Keychain Access.
 
 ## 7. Network
 

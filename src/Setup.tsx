@@ -113,6 +113,10 @@ export function Setup({ memoryGb, onDone }: { memoryGb: number; onDone: () => vo
                   Start its local server: in LM Studio, the Developer tab, or{" "}
                   <code>~/.lmstudio/bin/lms server start</code>.
                 </li>
+                <li>
+                  In LM Studio, turn off "Only Keep Last JIT Loaded Model" (Developer → Server
+                  Settings), so the two models stay loaded together.
+                </li>
                 <li>Come back and press "Find models on this Mac" below.</li>
               </ol>
             </details>
