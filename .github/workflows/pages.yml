@@ -34,7 +34,7 @@ jobs:
       - name: Put the site together
         run: |
           mkdir -p _site/fonts
-          cp site/index.html site/style.css site/copy.js _site/
+          cp site/index.html site/style.css site/copy.js site/theme.js _site/
           cp src/fonts/*.woff2 src/fonts/OFL-*.txt _site/fonts/
           cp src-tauri/icons/salmon.svg _site/salmon.svg
           cp src-tauri/icons/128x128.png _site/icon.png

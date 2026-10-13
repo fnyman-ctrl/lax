@@ -46,8 +46,10 @@
   --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
 }
 
+/* Dark: the system's choice unless the visitor picked light, or picked dark
+   with the button (site/theme.js). */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: var(--djupvatten);
     --surface: #163843;
     --fg: var(--alvsten);
@@ -57,6 +59,22 @@
     --accent-fg: var(--djupvatten);
     --code-bg: #0a1f26;
   }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: var(--djupvatten);
+  --surface: #163843;
+  --fg: var(--alvsten);
+  --muted: #9db4bb;
+  --line: #2c4c56;
+  --accent: #7cc4c4;
+  --accent-fg: var(--djupvatten);
+  --code-bg: #0a1f26;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
 }
 
 * {
@@ -130,6 +148,61 @@ footer {
 
 .top nav a:hover {
   color: var(--fg);
+}
+
+.top nav {
+  align-items: center;
+}
+
+/* The light/dark switch: a sun in dark mode, a moon in light mode. */
+.theme {
+  display: inline-grid;
+  place-items: center;
+  width: 2.1rem;
+  height: 2.1rem;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.theme:hover {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--line) 40%, transparent);
+}
+
+.theme svg {
+  width: 1.15rem;
+  height: 1.15rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.theme .sun {
+  display: none;
+}
+
+:root[data-theme="dark"] .theme .sun {
+  display: block;
+}
+
+:root[data-theme="dark"] .theme .moon {
+  display: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .theme .sun {
+    display: block;
+  }
+
+  :root:not([data-theme="light"]) .theme .moon {
+    display: none;
+  }
 }
 
 /* The hero: the river, the salmon swimming in, and the thesis. */
