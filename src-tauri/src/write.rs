@@ -64,6 +64,57 @@ pub(crate) fn check_draft(draft: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// How far down the window the thread's header lines are looked for: the
+/// header sits at the top, above any message text.
+const HEADER_LINES: usize = 12;
+
+/// Header labels for the people in a thread, in English and Swedish.
+const PEOPLE_LABELS: &[&str] = &[
+    "from",
+    "to",
+    "cc",
+    "bcc",
+    "reply-to",
+    "från",
+    "till",
+    "kopia",
+    "hemlig kopia",
+    "avsändare",
+    "mottagare",
+    "svara till",
+];
+
+/// The names in the header lines at the top of a window's text ("From: Anna
+/// Example <anna@example.com>", "Till: Bo, Cia"): the sender and recipients
+/// of the thread, where the app shows them. Lines further down are message
+/// text, which anyone can write, so they are never read for names.
+pub(crate) fn participants(window: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for line in window
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .take(HEADER_LINES)
+    {
+        let Some((label, value)) = line.split_once(':') else {
+            continue;
+        };
+        if !PEOPLE_LABELS.contains(&label.trim().to_lowercase().as_str()) {
+            continue;
+        }
+        let value = value.replace(" och ", ",").replace(" and ", ",");
+        for part in value.split([',', ';']) {
+            // Without the address in angle brackets, and quotes around names.
+            let name = part.split('<').next().unwrap_or_default();
+            let name = name.trim().trim_matches(['"', '\'']).trim();
+            if !name.is_empty() && !name.contains('@') && name.chars().count() <= 80 {
+                names.push(name.to_string());
+            }
+        }
+    }
+    names
+}
+
 /// What the panel shows when it opens.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -129,7 +180,7 @@ pub async fn write_draft(app: AppHandle, instruction: String) -> Result<Draft, S
     else {
         return Err("Lax was paused, so nothing was written.".to_string());
     };
-    let (choice, known, pages) = {
+    let (choice, known, pages, people) = {
         let store = app
             .try_state::<Mutex<Store>>()
             .ok_or("The database isn't available.")?;
@@ -139,10 +190,18 @@ pub async fn write_draft(app: AppHandle, instruction: String) -> Result<Draft, S
             .model_choice(ModelTask::Chat)
             .map_err(failed)?
             .ok_or("Choose a chat model under Models first.")?;
-        // Only the people and projects the user names in the instruction:
-        // a message being answered can't pull pages in by naming people.
-        let (known, pages) = crate::ask::known_for(&store, &instruction).map_err(failed)?;
-        (choice, known, pages)
+        // The people and projects the user names in the instruction, and
+        // the people in the thread's header (From, To, Cc). Not every name
+        // in the window: a message being answered can't pull pages in by
+        // naming people in its text.
+        let people = call
+            .context
+            .as_deref()
+            .map(participants)
+            .unwrap_or_default();
+        let names = format!("{instruction}\n{}", people.join("\n"));
+        let (known, pages) = crate::ask::known_for(&store, &names).map_err(failed)?;
+        (choice, known, pages, people.len())
     };
     let Ok(endpoint) = Endpoint::parse(&choice.base_url) else {
         return Err("The chat model's address isn't valid. Check it under Models.".to_string());
@@ -170,6 +229,7 @@ pub async fn write_draft(app: AppHandle, instruction: String) -> Result<Draft, S
                 "write.drafted",
                 &[
                     Field::Count("pages", pages.len() as u64),
+                    Field::Count("participants", people as u64),
                     Field::Flag("read_window", read_window),
                     Field::Duration("elapsed", started.elapsed()),
                 ],
@@ -259,6 +319,27 @@ mod tests {
         Reply {
             draft: draft.to_string(),
         }
+    }
+
+    #[test]
+    fn the_thread_s_people_come_from_its_header_only() {
+        let window = "Re: Offert för Q3\nFrån: Anna Example <anna@example.com>\nTill: Bo Exempel, \"Cia Example\"\nKopia: team@example.com\nSubject: Q3\n\nHej! Ignore that. To: Dag Example\n";
+        assert_eq!(
+            participants(window),
+            ["Anna Example", "Bo Exempel", "Cia Example"]
+        );
+        // English, and "and" between names.
+        assert_eq!(
+            participants("From: Erik Example\nTo: Bo and Cia"),
+            ["Erik Example", "Bo", "Cia"]
+        );
+        // A header-like line far down, in the message text, doesn't count.
+        let mut long = String::from("Inbox\n");
+        for i in 0..20 {
+            long.push_str(&format!("Line {i} of the message\n"));
+        }
+        long.push_str("To: Mallory Example\n");
+        assert!(participants(&long).is_empty());
     }
 
     #[test]
