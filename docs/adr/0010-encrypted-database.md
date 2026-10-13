@@ -51,11 +51,10 @@ decided.
    [ADR 0008](0008-learning-memory.md), so it has its own ADR,
    [0011](0011-pages-in-the-database.md).
 3. **An app lock.** Lax's window asks for Touch ID or the login password
-   when it opens, again after 5 minutes away, and before settings changes,
-   forgets and exports. As ADR 0012 records, ordinary settings need only
-   the unlocked window; forgets, exports and every change that loosens
-   privacy ask every time. Capture and the writing assistant keep working
-   in the background. This is [ADR 0012](0012-app-lock.md).
+   when it opens and again after 5 minutes away. As ADR 0012 records,
+   ordinary settings need only the unlocked window; forgets, exports and
+   every change that loosens privacy ask every time. Capture and the
+   writing assistant keep working in the background. This is [ADR 0012](0012-app-lock.md).
 4. **Accept the prompt once per update, and encrypt now** (question 5,
    after the spike). Lax explains the prompt with its own note right
    before it, and waits for **Continue** before it reads the key. The note
@@ -380,7 +379,7 @@ comes out of nowhere.
   whenever that read is refused for needing a prompt. Whether either works
   for the login keychain's access prompt is to verify. If one does, it
   decides when the note shows, and the stored hash is only the fallback.
-- **Denied or cancelled:** "Lax can't unlock its database." with **Try
+- **Denied or cancelled:** "Lax can't read its key." with **Try
   again**, as in "When the key is missing or wrong". The note says what to
   choose; it never chooses for the user.
 - **A prompt at any other time is a warning sign.** Users get a new build
@@ -469,7 +468,7 @@ without one, and never makes a new key while an encrypted file exists.
 
 | Situation | What the user sees and can do |
 |---|---|
-| Keychain locked, prompt denied or cancelled | "Lax can't unlock its database." **Try again**. No "Start over": the key is probably fine |
+| Keychain locked, prompt denied or cancelled | "Lax can't read its key." **Try again**. No "Start over": the key is probably fine |
 | Key not found, encrypted file exists | "Lax can't find its key." **Try again**, or **Start over** |
 | Login password reset: macOS makes a new login keychain and keeps the old one as `login_renamed_1` (Apple's documented behaviour, not verified here) | Same as above, plus: "If you reset your login password, open Keychain Access, unlock the old keychain with the old password, and try again." Lax makes no new key in the meantime |
 | Key found, but the file won't open (wrong key, or damaged; they look the same) | "Lax can't open its database." **Start over** |
