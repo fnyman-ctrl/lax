@@ -256,6 +256,17 @@ pub fn typed_in(role: Option<&str>) -> bool {
     role.is_some_and(|role| TYPED_IN.contains(&role))
 }
 
+/// Whether a focused element with `role` and children with `children` roles
+/// is a document that hasn't built its accessibility tree yet: a scroll area
+/// holding nothing but scroll bars, as Pages shows until an assistive app
+/// asks for its full tree.
+pub fn sleeping_document(role: Option<&str>, children: &[Option<String>]) -> bool {
+    role == Some("AXScrollArea")
+        && children
+            .iter()
+            .all(|child| child.as_deref() == Some("AXScrollBar"))
+}
+
 /// What a draft replaces, as a number for the log: 0 nothing, 1 the
 /// selection, 2 a paragraph, 3 the whole field.
 pub fn replace_code(replace: Replace) -> i64 {
@@ -735,7 +746,7 @@ pub(crate) mod macos {
         Call, CallKey, Input, Listener, MAX_CONTEXT_CHARS, MAX_INSTRUCTION_CHARS, Rect, come, held,
         instruction_in,
     };
-    use crate::ax::{AxScreen, FieldText, window_owner_at};
+    use crate::ax::{AxScreen, Element, FieldText, window_owner_at};
     use crate::capture::{App, Capturer, Limits, Node, Outcome, Screen, admit, truncate_chars};
     use crate::exclusions::{Current, is_secure_text_field};
     use crate::logging::{self, Field};
@@ -811,19 +822,50 @@ pub(crate) mod macos {
 
     /// How Lax found the field, as a number for the log: 0 the app named it
     /// as focused, 1 inside the focused scroll area, 2 in the window, 3 not
-    /// at all (Lax goes by the mouse pointer).
+    /// at all (Lax goes by the mouse pointer), 4 after asking the app for its
+    /// full accessibility tree (Pages).
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum Way {
         Focused = 0,
         InArea = 1,
         InWindow = 2,
         Pointer = 3,
+        Woken = 4,
     }
 
     /// How many levels down Lax looks for the field: inside a focused scroll
     /// area, and in the whole window (web apps nest deeply).
     const FIELD_DEPTH_IN_AREA: usize = 6;
     const FIELD_DEPTH_IN_WINDOW: usize = 30;
+
+    /// How long Lax waits for an app it asked for its full accessibility tree
+    /// to name the field, and how often it looks meanwhile.
+    const WAKE_WAIT: std::time::Duration = std::time::Duration::from_millis(1000);
+    const WAKE_STEP: std::time::Duration = std::time::Duration::from_millis(100);
+    /// More children than this is not an empty scroll area.
+    const MAX_EMPTY_AREA_CHILDREN: usize = 4;
+
+    /// The focused field of `front` after asking it for its full
+    /// accessibility tree: Pages names an empty scroll area as focused until
+    /// something asks. Only a field people type in, or one that says where its
+    /// cursor is, counts.
+    fn woken_field(screen: &AxScreen, front: &App) -> Option<Element> {
+        let _awake = screen.wake(front)?;
+        let mut waited = std::time::Duration::ZERO;
+        loop {
+            if let Some(focused) = screen.focused_element(front) {
+                let (role, _) = focused.role_and_subrole();
+                if super::typed_in(role.as_deref()) || focused.has_caret_bounds() {
+                    return Some(focused);
+                }
+            }
+            if waited >= WAKE_WAIT {
+                return None;
+            }
+            std::thread::sleep(WAKE_STEP);
+            waited += WAKE_STEP;
+        }
+    }
 
     /// Where the text cursor is in the app in front, and the instruction in
     /// the field, after the same checks capture makes before reading a
@@ -876,6 +918,15 @@ pub(crate) mod macos {
                     .field_within(super::TYPED_IN, true, FIELD_DEPTH_IN_WINDOW)
                     .map(|field| (field, Way::InWindow))
             })
+            .or_else(|| {
+                // Only for the empty scroll area Pages shows before it is
+                // asked, so other apps aren't changed and don't wait.
+                let roles = focused.child_roles(MAX_EMPTY_AREA_CHILDREN);
+                super::sleeping_document(role.as_deref(), &roles)
+                    .then(|| woken_field(&screen, &found.front))
+                    .flatten()
+                    .map(|field| (field, Way::Woken))
+            })
         {
             // A focused password field comes back so that Lax stays away.
             let (role, subrole) = field.role_and_subrole();
@@ -894,7 +945,8 @@ pub(crate) mod macos {
             );
             return Some(found);
         };
-        let inner = way != Way::Focused;
+        // After waking, the app itself names the field as focused.
+        let inner = !matches!(way, Way::Focused | Way::Woken);
         let caret = element.caret();
         // Some apps (Electron apps with several web views, such as Claude)
         // name a field as focused that is hidden: behind another app's
@@ -1335,6 +1387,20 @@ mod tests {
             }),
             3
         );
+    }
+
+    #[test]
+    fn only_an_empty_scroll_area_is_woken() {
+        let bar = || Some("AXScrollBar".to_string());
+        // Pages before it is asked: two scroll bars and nothing else.
+        assert!(sleeping_document(Some("AXScrollArea"), &[bar(), bar()]));
+        // With its document in it, or anything else, it's left alone.
+        assert!(!sleeping_document(
+            Some("AXScrollArea"),
+            &[bar(), Some("AXLayoutArea".to_string())]
+        ));
+        assert!(!sleeping_document(Some("AXGroup"), &[bar()]));
+        assert!(!sleeping_document(Some("AXWebArea"), &[]));
     }
 
     #[test]
