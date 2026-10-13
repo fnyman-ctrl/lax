@@ -997,6 +997,25 @@ mark {
   }
 }
 
+/* While the answer is being written, and not yet checked: a cursor after
+   the text, until the checked answer takes its place. */
+.bubble.writing .answer::after {
+  content: "";
+  display: inline-block;
+  width: 0.45em;
+  height: 1em;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--muted);
+  animation: writing 1s steps(1) infinite;
+}
+
+@keyframes writing {
+  50% {
+    opacity: 0;
+  }
+}
+
 .ask-form {
   position: sticky;
   bottom: 0;
@@ -1040,7 +1059,8 @@ button.link {
 
 @media (prefers-reduced-motion: reduce) {
   .chat-salmon.working,
-  .dots span {
+  .dots span,
+  .bubble.writing .answer::after {
     animation: none;
   }
 }

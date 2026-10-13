@@ -1041,14 +1041,19 @@ async fn answer(
 }
 
 /// The answer's text as the model writes it, for the window: only what is
-/// in the `answer` field (never the sources or anything around them), from
-/// its first visible character, at most `MAX_ANSWER_CHARS`. Not validated,
-/// so it is only ever shown as plain text and taken back unless the reply
-/// passes (GUARDRAILS §5). Never stored or logged; only its length is.
+/// in the `answer` field (never the sources or anything around them), as
+/// the validated answer will read (`without_references`, trimmed), at most
+/// `MAX_ANSWER_CHARS`. Not validated, so it is only ever shown as plain text
+/// and taken back unless the reply passes (GUARDRAILS §5). Never stored or
+/// logged; only its length is.
 struct Streamed<F: FnMut(String)> {
     field: FieldText,
     send: F,
     started: Instant,
+    /// The field's text so far, as the model wrote it.
+    written: String,
+    /// What has been sent: always the start of what is shown next.
+    sent: String,
     /// When the first words were sent.
     first: Option<Duration>,
     /// Characters sent so far.
@@ -1061,6 +1066,8 @@ impl<F: FnMut(String)> Streamed<F> {
             field: FieldText::new("answer"),
             send,
             started,
+            written: String::new(),
+            sent: String::new(),
             first: None,
             chars: 0,
         }
@@ -1068,20 +1075,42 @@ impl<F: FnMut(String)> Streamed<F> {
 
     /// Takes the next piece of the model's raw output.
     fn push(&mut self, piece: &str) {
-        let mut text = self.field.push(piece);
-        if self.chars == 0 {
-            // The answer is shown trimmed, as it will be once validated.
-            text = text.trim_start().to_string();
-        }
-        let room = MAX_ANSWER_CHARS.saturating_sub(self.chars);
-        let text: String = text.chars().take(room).collect();
-        if text.is_empty() {
+        let text = self.field.push(piece);
+        // Enough to fill the longest answer, even after references go.
+        if text.is_empty() || self.written.len() > 4 * MAX_ANSWER_CHARS {
             return;
         }
-        self.chars += text.chars().count();
+        self.written.push_str(&text);
+        // What may still change is held back: a "[" that may yet turn out
+        // to be a reference, and spaces, which go before a reference and
+        // at the end of a line.
+        let settled = match self.written.rfind('[') {
+            Some(open) if is_reference(&self.written[open + 1..]) => &self.written[..open],
+            _ => self.written.as_str(),
+        };
+        let shown = without_references(settled.trim_end());
+        let shown = crate::capture::truncate_chars(&shown, MAX_ANSWER_CHARS);
+        // Always the case, but if it weren't, nothing more is shown rather
+        // than something that doesn't follow on.
+        let Some(new) = shown.strip_prefix(self.sent.as_str()) else {
+            return;
+        };
+        if new.is_empty() {
+            return;
+        }
+        let new = new.to_string();
+        self.chars += new.chars().count();
+        self.sent.push_str(&new);
         self.first.get_or_insert_with(|| self.started.elapsed());
-        (self.send)(text);
+        (self.send)(new);
     }
+}
+
+/// Whether `text` after a "[" can still be, or be the start of, an entry
+/// reference such as "3", "1, 4" or "2-5".
+fn is_reference(text: &str) -> bool {
+    text.chars()
+        .all(|c| c.is_ascii_digit() || matches!(c, ',' | '-' | '–' | ' '))
 }
 
 /// The captured blocks for the model, most stable first, so that a
@@ -1748,7 +1777,7 @@ mod tests {
         assert!(streamed.first.is_some());
         drop(streamed);
         // What was shown as it was written is the answer itself.
-        assert_eq!(shown.trim_end(), reply.answer.trim());
+        assert_eq!(shown, without_references(&reply.answer));
         assert!(reply.answer.to_lowercase().contains("offert"));
         assert!(reply.sources.contains(&1));
     }
@@ -1823,6 +1852,44 @@ mod tests {
     }
 
     #[test]
+    fn the_streamed_text_reads_as_the_validated_answer_will() {
+        // Entry references and spaces at line ends go, as `without_references`
+        // takes them out of the validated answer, so nothing jumps when it
+        // takes the streamed text's place.
+        let answer = "Du mailade Anna [1] och Bo [2-3].\n- Rad två  \n- [x] tre";
+        let pieces = [
+            "{\"answer\": \"Du mailade Anna [",
+            "1",
+            "] och Bo [2-",
+            "3].\\n- Rad två  ",
+            "\\n- [",
+            "x] tre\"}",
+        ];
+        let mut sent: Vec<String> = Vec::new();
+        let mut streamed = Streamed::new(Instant::now(), |text| sent.push(text));
+        for piece in pieces {
+            streamed.push(piece);
+        }
+        drop(streamed);
+        assert_eq!(sent.concat(), without_references(answer));
+        assert_eq!(
+            sent.concat(),
+            "Du mailade Anna och Bo.\n- Rad två\n- [x] tre"
+        );
+        assert!(sent.iter().all(|s| !s.contains("[1") && !s.contains("[2")));
+        // Cut anywhere, it comes out the same.
+        let reply = format!("{{\"answer\": \"{}\"}}", answer.replace('\n', "\\n"));
+        for (i, _) in reply.char_indices() {
+            let mut shown = String::new();
+            let mut streamed = Streamed::new(Instant::now(), |text| shown.push_str(&text));
+            streamed.push(&reply[..i]);
+            streamed.push(&reply[i..]);
+            drop(streamed);
+            assert_eq!(shown, without_references(answer), "cut at {i}");
+        }
+    }
+
+    #[test]
     fn a_streamed_answer_stops_at_the_longest_answer() {
         let mut shown = String::new();
         let mut streamed = Streamed::new(Instant::now(), |text| shown.push_str(&text));
@@ -1878,18 +1945,21 @@ mod tests {
         // GUARDRAILS §5: only Ask may show model output before it is
         // validated. The journal, the memory, page facts and the writing
         // assistant validate first, so they never ask for a stream.
-        let allowed = ["ask.rs", "client.rs", "structured.rs"];
-        let mut dirs = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let allowed = [
+            src.join("ask.rs"),
+            src.join("models").join("client.rs"),
+            src.join("models").join("structured.rs"),
+        ];
+        let mut checked = 0;
+        let mut dirs = vec![src.clone()];
         while let Some(dir) = dirs.pop() {
             for entry in std::fs::read_dir(dir).unwrap() {
                 let path = entry.unwrap().path();
                 if path.is_dir() {
                     dirs.push(path);
-                } else if path.extension().is_some_and(|e| e == "rs")
-                    && path
-                        .file_name()
-                        .is_some_and(|n| !allowed.iter().any(|a| n == *a))
-                {
+                } else if path.extension().is_some_and(|e| e == "rs") && !allowed.contains(&path) {
+                    checked += 1;
                     let source = std::fs::read_to_string(&path).unwrap();
                     for name in ["ask_streaming", "chat_stream"] {
                         assert!(!source.contains(name), "{} uses {name}", path.display());
@@ -1897,6 +1967,8 @@ mod tests {
                 }
             }
         }
+        // The journal, memory, facts and writing assistant were among them.
+        assert!(checked > 20);
     }
 
     #[test]
