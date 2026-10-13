@@ -46,8 +46,8 @@ what was decided.
 3. **An app lock.** Lax's window asks for Touch ID or the login password
    when it opens, again after 5 minutes away, and before settings changes,
    forgets and exports. Forgets and exports ask every time. Settings ask
-   once, then stay open while the user is active in Lax's window, as ADR
-   0012 records. Capture and the writing assistant keep working in the
+   once, then stay open while the user is active in Lax's window and ask
+   again after 5 minutes away, as ADR 0012 records. Capture and the writing assistant keep working in the
    background. This is [ADR 0012](0012-app-lock.md).
 
 What this changes here:
