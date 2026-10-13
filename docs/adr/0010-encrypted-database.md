@@ -19,15 +19,19 @@ into this database, so they are encrypted with it.
 password before Lax's window shows anything. That lock guards the window.
 It doesn't encrypt anything, and it doesn't change who can read the key.
 
-The maintainer wants encryption before release 0.1, in the self-built app
+The maintainer wants encryption before release 0.1, in the self-built app,
+and has answered every open question that doesn't wait for something else
 (see "Maintainer's answers"). A short spike must still show how the
 Keychain behaves with Lax's ad-hoc signed builds (see "Before deciding").
+That spike hasn't been run yet. **This ADR stays Proposed until its results
+are in.**
 
 ## Maintainer's answers (2026-10-13)
 
-The maintainer decided three things. The nine open questions below stay as
-they were written, so the reasoning can be followed. This section says which
-of them the decisions answer.
+The maintainer decided three things first, and later the same evening
+answered the open questions. The nine open questions below keep the
+reasoning as it was written, with each answer added. This section says
+what was decided.
 
 1. **Encrypt now, before release 0.1**, in the app people build themselves
    (`npm run build:app`, ad-hoc signed). SQLCipher, with the key in the
@@ -40,9 +44,11 @@ of them the decisions answer.
    [ADR 0008](0008-learning-memory.md), so it has its own ADR,
    [0011](0011-pages-in-the-database.md).
 3. **An app lock.** Lax's window asks for Touch ID or the login password
-   when it opens, again after 5 minutes away, and before every settings
-   change, forget or export. Capture and the writing assistant keep working
-   in the background. This is [ADR 0012](0012-app-lock.md).
+   when it opens, again after 5 minutes away, and before settings changes,
+   forgets and exports. Forgets and exports ask every time. Settings ask
+   once, then stay open while the user is active in Lax's window, as ADR
+   0012 records. Capture and the writing assistant keep working in the
+   background. This is [ADR 0012](0012-app-lock.md).
 
 What this changes here:
 
@@ -62,15 +68,20 @@ The open questions:
 
 | # | Question | Where it stands |
 |---|---|---|
-| 1 | On for everyone, no off switch | Open. Decision 1 assumes it, but doesn't say so |
-| 2 | No recovery key | Open, and weightier: with ADR 0011, a lost key also loses the pages, including the user's own notes. Page export (ADR 0011) is the user's way to keep a copy |
+| 1 | On for everyone, no off switch | **Answered: yes.** No setting turns encryption off |
+| 2 | No recovery key | **Answered: yes, for 0.x**, as recommended. Weighed with ADR 0011 in mind: a lost key also loses the pages, including the user's own notes. Page export (ADR 0011) is the user's way to keep a copy |
 | 3 | Login keychain now, data protection keychain once signed | **Answered: yes** (decision 1) |
-| 4 | Access class after the move | Open. Now also: with `userPresence` on the key, Lax can't open the database after a restart until the user confirms with Touch ID or the login password, so capture waits for that. Whether that class and `userPresence` go together is to verify. To be decided with the signed build |
-| 5 | Keychain prompts after rebuilds | Open. Depends on the spike |
-| 6 | Incremental vacuum | Open |
-| 7 | `cipher_memory_security` off | Open |
-| 8 | Convert automatically at startup | Open |
-| 9 | A plaintext export | Partly taken up by ADR 0011, which proposes an export of the pages. An export of anything else stays open |
+| 4 | Access class after the move | Open. To be decided with the signed build. Now also: with `userPresence` on the key, Lax can't open the database after a restart until the user confirms with Touch ID or the login password, so capture waits for that. Whether that class and `userPresence` go together is to verify |
+| 5 | Keychain prompts after rebuilds | Open. Depends on the Keychain spike, which hasn't been run yet |
+| 6 | Incremental vacuum | **Answered: yes**, as recommended |
+| 7 | `cipher_memory_security` off | **Answered: yes, keep it off**, as recommended |
+| 8 | Convert automatically at startup, after a one-time notice | **Answered: yes** |
+| 9 | A plaintext export | **Answered: as recommended.** The pages' export is in ADR 0011. An export of anything else waits for its own decision |
+
+**Status.** Questions 4 and 5 are still open, and question 5 can only be
+answered by the spike. So this ADR stays **Proposed** until the spike's
+results are in and written into "Before deciding". Question 4 doesn't hold
+it back: it belongs to the signed build.
 
 ## Context
 
@@ -144,39 +155,53 @@ certificate doesn't help, encryption waits for the signed `.dmg`. Since
 the maintainer has decided to encrypt before 0.1 (see "Maintainer's
 answers"), that case goes back to him before rollout step 3 instead.
 
+The spike hasn't been run yet. Until its results are here, this ADR stays
+Proposed.
+
 ## Open questions for the maintainer
 
-The Decision below assumes the recommended answers.
+The Decision below follows the answers. Questions 4 and 5 are still open.
 
 1. **On for everyone, with no off switch?** Recommended: yes. Users
-   without FileVault gain the most.
+   without FileVault gain the most. **Answered: yes.**
 2. **No recovery key, with the key visible in Keychain Access?**
-   Recommended: yes, for 0.x. See "No recovery key".
+   Recommended: yes, for 0.x. See "No recovery key". **Answered: yes, for
+   0.x.**
 3. **Login keychain now, data protection keychain once Lax is signed?**
-   Recommended: yes.
+   Recommended: yes. **Answered: yes.**
 4. **Which access class after the move?** Recommended:
    `kSecAttrAccessibleAfterFirstUnlock`, not synced, **without**
    `ThisDeviceOnly`. `ThisDeviceOnly` items never reach a new Mac, so every
-   move to a new Mac would end in "Start over".
+   move to a new Mac would end in "Start over". **Open:** decided with the
+   signed build.
 5. **Keychain prompts after rebuilds, if the spike shows them?**
    Recommended: acceptable only if a self-signed certificate removes them
    for people who build often; otherwise wait for the signed build.
+   **Open:** depends on the spike, which hasn't been run yet.
 6. **Incremental vacuum instead of VACUUM?** Recommended: yes.
    `temp_store = FILE` during VACUUM would allow plaintext temporary files.
+   **Answered: yes.**
 7. **Keep `cipher_memory_security` off?** Recommended: yes. It guards
    against reading Lax's memory, which encryption doesn't claim to stop.
+   **Answered: yes.**
 8. **Convert automatically at startup, after a one-time notice?**
    Recommended: yes. Asking first would leave most databases plaintext.
+   **Answered: yes.**
 9. **A plaintext export?** Recommended: not now. The user guide explains
    the `sqlcipher` tool; an export that writes plaintext needs its own
-   decision.
+   decision. **Answered: as recommended.** The pages' export is in ADR
+   0011. An export of anything else waits for its own decision.
 
 ## Decision
 
 Lax encrypts its database with **SQLCipher** through rusqlite's
 `bundled-sqlcipher` feature, with **CommonCrypto** as the crypto provider.
-The key is random, kept in the **login keychain**, never synced, never
-written anywhere else, and never replaced or deleted by Lax on its own.
+It does so for everyone, and no setting turns it off. Existing databases
+are converted automatically at startup, after a one-time notice. The key
+is random, kept in the **login keychain**, never synced, never written
+anywhere else, and never replaced or deleted by Lax on its own. There is
+no recovery key in 0.x. The only plaintext export is the pages' export of
+ADR 0011.
 
 ### Build
 
@@ -352,8 +377,9 @@ file can still be opened.
   Losing the database loses the journal and entity data. Today the Markdown
   pages survive that. Once ADR 0011 moves them into the database, they
   don't: a lost key loses the pages too, including what the user wrote on
-  them. ADR 0011's page export is the user's own copy. This makes open
-  question 2 weightier than when it was first asked.
+  them. ADR 0011's page export is the user's own copy. This made open
+  question 2 weightier than when it was first asked. The maintainer
+  weighed it and answered: no recovery key, for 0.x.
 - The key is already visible in Keychain Access. The user guide says where,
   and that a copy in a password manager works on another Mac.
 - A recovery key is one more secret that can leak, and one more screen.
