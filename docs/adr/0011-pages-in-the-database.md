@@ -32,9 +32,9 @@ into Lax".
   Lax writes only between its two markers (`<!-- lax:begin <id>: … -->`
   and `<!-- lax:end -->`). `block::update` in `src-tauri/src/pages/block.rs`
   checks, before returning anything to write, that the user's text outside
-  the block is unchanged. Lines the user adds inside Lax's block are moved
-  above it as theirs; lines they delete are kept as rejected facts and never
-  written again (`Store::reject_fact`).
+  the block is unchanged. Lines the user adds or changes inside Lax's block
+  are moved above it as theirs; facts they delete from it are kept as
+  rejected facts and never written again (`Store::reject_fact`).
 - **A block writer that manages blocks inside files.** `pages::sync` in
   `src-tauri/src/pages/mod.rs` scans the folder for page ids in the begin
   markers (so renamed and moved files are found), writes to a temporary file
@@ -85,7 +85,7 @@ model gets "the user's own notes" from the file (`facts::notes_of`).
 - **User edits win, as before.** Lax changes a page's text only through
   `block::update`, so the check that the user's text is unchanged runs
   before every write, whatever the model answered. Lines the user adds in
-  Lax's block become theirs, deleted lines become rejected facts.
+  Lax's block become theirs, and facts they delete become rejected facts.
 - **Writes compare the old text.** Where Lax renamed a temporary file over
   the page only if the file was unchanged, it now runs one `UPDATE pages
   SET text = ?new … WHERE id = ?id AND text = ?read`. If the user saved in
@@ -94,8 +94,8 @@ model gets "the user's own notes" from the file (`facts::notes_of`).
 - **Versions and history stay as they are:** `page_versions`, the sources
   that tie them to episodes, the 20 kept versions of Lax's, "restore" and
   "undo the restore", and About me keeping only its latest version.
-- The page's `path` column is no longer a place on disk. It keeps the name
-  the page would have in an export (`people/anna-example.md`).
+- The page's `path` column is no longer a place on disk. The export names
+  its files from it (`people/anna-example.md`).
 
 ### Editing in the Memory view
 
@@ -107,18 +107,21 @@ model gets "the user's own notes" from the file (`facts::notes_of`).
   text, so rendering the Markdown as HTML would put captured content in the
   DOM as markup. The Memory view keeps the rule the viewer has
   (`viewer::tests::the_web_ui_never_renders_text_as_html`).
+- The editor saves a few seconds after the user stops typing, and when
+  they leave the page, so a lock (ADR 0012) loses at most those seconds.
 - New commands: `page_text` (one page's text) and `save_page` (the page's
   id, the text the editor loaded and the new text). `save_page` refuses a
   text over 1 MB, the cap `MAX_PAGE_BYTES` has today, and refuses if the
   page changed since the editor loaded it; the editor then shows both
   texts so nothing the user wrote is lost. Both commands are listed in
   `build.rs` and `capabilities/default.json`, and both refuse while Lax is
-  locked (ADR 0012). `open_memory_folder` is removed from all three places.
+  locked (ADR 0012). `open_memory_folder` is removed from `lib.rs`,
+  `build.rs` and the capabilities.
 - **While a page is open in the editor, Lax doesn't write it.** The
   background round skips it, so a save rarely finds the page changed.
 - A user who removes the markers detaches the page, as today: Lax stops
   writing to it, and the Memory view offers "Recreate page", which now
-  adds a new, empty block of Lax's below the user's text on the same page,
+  adds a new block of Lax's below the user's text on the same page,
   instead of writing a new file next to the old one.
 - The facts' notes come from the row (`facts::notes_of` reads `text`
   instead of the file). What Ask and the writing assistant read doesn't
@@ -127,14 +130,16 @@ model gets "the user's own notes" from the file (`facts::notes_of`).
 ### Forgetting
 
 - Forgetting a time range or an app works as today: the versions written
-  from forgotten episodes go, and pages that drew on them are rebuilt. The
-  user's text is not touched.
-- Forgetting an entity takes Lax's block out of the page's text in the same
-  transaction as the rest of the forget, so nothing is left to retry. Today
-  the file is deleted only if nothing but its title is left, and otherwise
-  stays as the user's. A row can't stay behind like a file can, where
-  nobody would see it. So the forget dialog shows the user's text on that
-  page and says it is deleted with the page (open question 5).
+  from forgotten episodes go, and the blocks of pages that drew on them are
+  rewritten at once from the episodes that remain, also while paused, as
+  `pages::sync_now` does now. Until then the old block is still in the
+  page's text, as it is in the file today. The user's text is not touched.
+- Forgetting an entity deletes its page, in the same transaction as the
+  rest of the forget, so nothing is left to retry. ADR 0008 says so too,
+  but with files the code takes only Lax's block out and keeps a file that
+  holds anything of the user's. A row can't stay behind like a file can,
+  where nobody would see it. So the forget dialog shows the user's text on
+  that page and says it is deleted with the page (open question 5).
 - "Forget everything the memory noted" deletes all pages, including the
   user's text on them, after the confirmation says so.
 - Deleted page text is handled like all deleted text: `secure_delete`, and
@@ -152,9 +157,9 @@ model gets "the user's own notes" from the file (`facts::notes_of`).
   files, not encrypted. Every program you run can read them, Spotlight may
   index them, and backups and sync copy them. Forgetting someone in Lax
   later doesn't reach this copy." If the chosen folder is inside iCloud
-  Drive or another synced folder (the check `synced` in `pages/mod.rs` does today),
-  the notice also says the copy will leave this Mac, and the user confirms
-  that separately.
+  Drive or another synced folder (the check that `synced` in
+  `pages/mod.rs` does today), the notice also says the copy will leave
+  this Mac, and the user confirms that separately.
 - Export needs Touch ID or the login password at that moment (ADR 0012).
 - Lax writes a new folder, `Lax pages <date>` (`0700`), inside the chosen
   one, with the layout the pages have today (`people/`, `organisations/`,
@@ -186,8 +191,8 @@ the conversion is done, they stay in `~/Lax` and Lax works as today.
    the page's `text`, unchanged. Edits the user made in Lax's block are
    adopted at the next round, as they would be today.
 4. **Check each page:** read the file again and compare it, byte for byte,
-   with the row read back from the database. A file that changed in
-   between is read again. A file that can't be read, isn't UTF-8 or is
+   with the row as written, read back inside the transaction of step 5. A
+   file that changed in between is read again. A file that can't be read, isn't UTF-8 or is
    over 1 MB is treated as missing (below), and left where it is.
 5. **Switch over in one transaction:** all the texts, and a setting that
    says pages now live in the database. If Lax stops before the commit,
@@ -362,9 +367,10 @@ The Decision above assumes the recommended answers.
    drops the user's.
 4. **Keep versions of the user's own edits too?** Today only Lax's blocks
    and adopted edits are versioned; the user's text had their editor's
-   undo, Time Machine or git. Recommended: yes, the last 20 saves from the
-   editor, as `by = 'user'` versions. They are the user's text, so a forget
-   of episodes doesn't remove them; forgetting the entity does.
+   undo, Time Machine or git. Recommended: yes, as `by = 'user'` versions,
+   one per time the user opened the page and changed it (not one per
+   save), the last 20 kept. They are the user's text, so a forget of
+   episodes doesn't remove them; forgetting the entity does.
 5. **What happens to the user's text when an entity is forgotten?** Today
    the file stays as theirs. Recommended: it is deleted with the page, and
    the forget dialog shows it first, with "Export it first" next to
@@ -389,10 +395,10 @@ The Decision above assumes the recommended answers.
 
 - The pages are encrypted with the database, from the move on. Programs
   that read files, backup tools without encryption, sync agents and
-  Spotlight no longer see them. Old copies stay in free disk blocks,
+  Spotlight no longer have them. Old copies stay in free disk blocks,
   snapshots and backups until those are gone; FileVault covers the blocks.
-- A forget reaches the pages in the same transaction, with no retries and
-  no file left half-cleaned.
+- Forgetting an entity reaches its page in the same transaction, with no
+  retries and no file left half-cleaned.
 - The block writer's guarantee keeps its code and its tests.
 - A lost database key (ADR 0010) now loses the pages too, including the
   user's own notes. The export is the user's own copy. This makes ADR
@@ -441,7 +447,7 @@ conversion is in.
 1. **The `text` column and the block writer on rows**, with the folder code
    kept for pages that haven't moved. Tests on rows.
 2. **The editor:** `page_text` and `save_page`, behind the app lock, and
-   versions of the user's saves if question 4 says so.
+   versions of the user's edits if question 4 says so.
 3. **The move** and the one-time question, with its tests. The
    maintainer's pages first, with a copy kept by hand.
 4. **Export**, with the notice, the synced-folder check and the lock.
