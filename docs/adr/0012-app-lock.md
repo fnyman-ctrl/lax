@@ -43,10 +43,10 @@ Decision below follows the answers.
   changed for now (question 9); and the window is locked during the setup
   guide too (question 10).
 
-**Status.** This ADR stays **Proposed** until a LocalAuthentication spike
-confirms that `evaluatePolicy` works for Lax's ad-hoc signed app. That
-point was marked "to verify" (see "Implementation sketch"). The spike
-hasn't been run yet.
+**Status.** The LocalAuthentication spike is done (see "The
+LocalAuthentication spike"): `evaluatePolicy` works for an ad-hoc signed
+app like Lax. Its other findings are rules in the Decision now. The ADR is
+ready for the maintainer to accept. It stays **Proposed** until he does.
 
 ## Context
 
@@ -99,8 +99,34 @@ restart. Locked, the window shows only the salmon, "Lax is locked" and an
 policy: Touch ID where the Mac has it, with "Use Password…" to type the
 login password instead, and the login password where it doesn't. Apple's
 policy also accepts an Apple Watch that is set up to approve (to verify).
-The reason shown in the dialog is a fixed string per action ("open Lax",
-"change a setting", "forget the last hour"), never captured content.
+The spike showed this works for an ad-hoc signed app with no entitlements
+and no Dock icon (see "The LocalAuthentication spike").
+
+**The reason** shown in the dialog is a fixed string per action, never
+captured content. macOS puts it into its own sentence, "<App> is trying to
+<reason>." (in Swedish, "<App> försöker att <reason>."), and shows the
+rest of the dialog in the system language. So each reason is a lowercase
+verb phrase that fits that sentence ("open your memory", "change a
+setting", "forget the last hour"), localized to the system language,
+Swedish and English at least.
+
+**A new `LAContext` after every lock.** The spike showed that a second
+`evaluatePolicy` on the same context succeeds at once, without asking. So
+`lock.rs` throws its context away whenever Lax or the window locks, and
+whenever a forget, an export or the first settings change asks, and makes
+a new one for the next request. Reusing a context would silently skip
+the prompt.
+
+**Only when the user asked.** Lax asks only in answer to something the
+user just did in Lax: showing the window, pressing **Unlock**, or making a
+change that asks. It never asks on its own in the background, not even
+when the window locks while it is visible; then it shows the lock screen
+and waits for **Unlock**. The spike showed the dialog appears on top of
+whatever app the user is in, and a prompt over another app teaches people
+to approve prompts they didn't cause.
+
+**Cancel** leaves Lax locked, quietly: the lock screen stays, with no
+error message. Other failures say briefly what happened.
 
 **Away.** The user counts as away when:
 
@@ -272,26 +298,59 @@ ADR 0009's status line then gets "superseded in part by 0012", as
   away rules, the command lists, an
   `Authenticator` trait with the macOS one and a fake for tests, and the
   watcher.
-- `LAContext`: a new context for each request, so an earlier success
-  can't stand in for a later one (whether a used context asks again is to
-  verify), `evaluatePolicy` with
-  `LAPolicyDeviceOwnerAuthentication`, the answer awaited on a channel.
-  Lax activates itself first, so the dialog isn't behind other windows (to
-  verify for an `Accessory` app).
+- `LAContext`: a new context for each request, and the old one dropped
+  whenever Lax or the window locks. A used context doesn't ask again (the
+  spike), so an earlier success must never stand in for a later one.
+  `evaluatePolicy` with `LAPolicyDeviceOwnerAuthentication`, the answer
+  awaited on a channel. The dialog comes to the front by itself, also for
+  an `Accessory` app (the spike), so Lax doesn't need to activate itself
+  first.
+- The reasons: one localized string per action, Swedish and English at
+  least, each a lowercase verb phrase that fits "<App> is trying to
+  <reason>.", chosen by the system language.
+- Errors: `LAError.userCancel` (−2) leaves the lock screen as it is, with
+  no message. Other errors leave Lax locked and say briefly why.
 - Bindings: `objc2-local-authentication`, a new crate from the same
   project as `objc2-app-kit` (MIT, Apache-2.0 or Zlib), rather than a few
   `msg_send!` calls on `objc2` with the framework linked by hand
   (question 8). The notifications need features of `objc2-foundation` and
   `objc2-app-kit` that Lax doesn't turn on yet.
-- **To verify in a spike** on a real Mac, alongside ADR 0010's Keychain
-  spike: that `evaluatePolicy` works for an ad-hoc signed, non-sandboxed
-  app with no entitlements (we expect it to, and know of no entitlement it
-  needs on macOS); that the dialog names Lax and comes to
-  the front; how it behaves on a Mac without Touch ID and with an Apple
-  Watch; whether typing the password at the lock screen resets idle time;
-  which notifications fire on screen lock, sleep and account switch; and
-  that reloading the webview drops what it showed. The spike hasn't been
-  run yet. This ADR stays Proposed until it confirms the first point.
+- **Still to verify:** how the dialog behaves on a Mac without Touch ID
+  and with an Apple Watch; whether typing the password at the lock screen
+  resets idle time; which notifications fire on screen lock, sleep and
+  account switch; and that reloading the webview drops what it showed.
+  None of them was in the spike. They are checked while building.
+
+### The LocalAuthentication spike
+
+The maintainer ran it on 2026-10-13 (`local/touchid-spike`), on an M1 Pro
+with Touch ID, macOS 26, with the system in Swedish. The spike is a small
+AppKit app, "Lax Lock Spike.app", built like Lax: ad-hoc signed
+(`codesign -s -`), no entitlements, not sandboxed, `LSUIElement` and the
+`.accessory` activation policy. It calls `LAContext.evaluatePolicy` with
+`.deviceOwnerAuthentication` and the reason "open your memory".
+
+- **It works.** The system dialog appeared with the fingerprint icon. It
+  named the app by its bundle name and used our reason, in the system
+  language: "Lax Lock Spike försöker att open your memory. Använd Touch ID
+  eller ange ditt lösenord för att fortsätta med Lax Lock Spike.", with
+  "Använd lösenord…" and "Avbryt". So LocalAuthentication works for an
+  ad-hoc signed app with no entitlements and no Dock icon.
+- **The wording.** macOS builds the sentence "<App> is trying to
+  <reason>." around the reason, in the system language. Hence the rule for
+  reasons under "What is locked".
+- **In front.** The dialog came to the front, over the app's own window.
+- **A used context doesn't ask again.** A second `evaluatePolicy` on the
+  same `LAContext` returned success at once, without a dialog. Hence the
+  rule that every lock drops the context.
+- **Over another app.** Started 10 seconds later while the maintainer was
+  in another app, the dialog still appeared, on top of that app. Hence the
+  rule that Lax asks only when the user just did something in Lax.
+- **Cancel** returned `LAError.userCancel` (−2, "Authentication
+  canceled") after 1.9 seconds.
+
+Not tested: an Apple Watch, idle time after the lock screen, and the
+lock, sleep and account-switch notifications (see "Still to verify").
 
 ### Relation to ADR 0010
 
@@ -340,6 +399,16 @@ ADR 0009's status line then gets "superseded in part by 0012", as
   and account switch lock at once; sleep counts, by the wall clock, and a
   clock set back doesn't extend the time; the window locks after 5 minutes
   hidden while the panel stays unlocked; each request uses a new context.
+- `lock::tests::a_lock_drops_the_context`: after an unlock, every way of
+  locking (idle, screen lock, sleep, account switch, the window hidden)
+  drops the `LAContext`, and the next request makes a new one and asks.
+  The fake authenticator counts the contexts and the requests.
+- `lock::tests`: nothing asks without a user action. Locking while the
+  window is visible shows the lock screen and makes no request until
+  **Unlock**. A cancel (`userCancel`) leaves Lax locked with no error
+  message; other errors leave it locked with one.
+- `lock::tests::every_reason_is_localized`: each action's reason exists in
+  Swedish and English, is not empty, and starts with a lowercase letter.
 - `lock::tests` for settings: the first settings change after unlocking
   asks; later ones don't while the window stays unlocked; 5 minutes
   without input, the window hidden for 5 minutes, and a screen lock, sleep
@@ -474,8 +543,9 @@ the answers.
 
 Each PR green on its own, labelled `security-sensitive`.
 
-0. **GUARDRAILS §6**, in its own PR, once this ADR is accepted. Alongside
-   it, the **spike** (not merged), whose results go into this ADR.
+0. **GUARDRAILS §6**, in its own PR, once this ADR is accepted. The
+   **spike** is done (`local/touchid-spike`, not merged); its results are
+   in "The LocalAuthentication spike".
 1. **`lock.rs`** with the state, the away rules, the authenticator trait
    and the fake, and their tests. No change in behaviour.
 2. **The gate** and the command lists, `lock_status`, `unlock`, the lock
