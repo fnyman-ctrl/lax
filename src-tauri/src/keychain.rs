@@ -35,7 +35,7 @@
 // Calls into the Security framework; each one has a SAFETY comment.
 #![allow(unsafe_code)]
 
-use std::fmt::{self, Write as _};
+use std::fmt;
 use std::ptr::{self, NonNull};
 
 use objc2_core_foundation::{CFData, CFDictionary, CFRetained, CFString, CFType, kCFBooleanFalse};
@@ -133,8 +133,11 @@ impl DatabaseKey {
     }
 
     /// Reads the stored form: exactly 64 hex characters, in either case.
-    /// Anything else isn't a key Lax made.
+    /// Spaces and line breaks around them are ignored, since a user who
+    /// copied the key by hand into a new item may have pasted some. Anything
+    /// else isn't a key Lax made.
     fn from_hex(hex: &[u8]) -> Option<Self> {
+        let hex = hex.trim_ascii();
         if hex.len() != HEX_CHARS {
             return None;
         }
@@ -224,14 +227,20 @@ pub fn key_for(source: &impl KeySource, file: DatabaseFile) -> Result<DatabaseKe
 
 /// Makes a key, stores it and reads it back, so Lax never encrypts with a
 /// key the Keychain doesn't hold (ADR 0010, "Converting", step 2).
+///
+/// Never returns [`KeyError::Missing`]: Lax has just tried to make the key,
+/// so a missing one now is something else, and never a reason to try again
+/// with another new key.
 fn create_key(source: &impl KeySource) -> Result<DatabaseKey, KeyError> {
-    let key = DatabaseKey::random()?;
-    let added = source.add_item(key.to_hex().as_bytes())?;
-    // Just added, or found while adding: missing now is something else.
-    let stored = read_key(source).map_err(|error| match error {
+    let not_missing = |error| match error {
         KeyError::Missing => KeyError::Other(None),
         other => other,
-    })?;
+    };
+    let key = DatabaseKey::random()?;
+    let added = source
+        .add_item(key.to_hex().as_bytes())
+        .map_err(not_missing)?;
+    let stored = read_key(source).map_err(not_missing)?;
     match added {
         // Someone stored a key between the lookup and the add: use theirs,
         // never replace it.
@@ -242,6 +251,10 @@ fn create_key(source: &impl KeySource) -> Result<DatabaseKey, KeyError> {
 }
 
 /// The key item in the user's login keychain.
+///
+/// `SecItemAdd` puts it in the user's default keychain, which is the login
+/// keychain unless the user has chosen another default in Keychain Access.
+/// Reads search every keychain in the user's search list.
 pub struct LoginKeychain {
     service: &'static str,
     account: &'static str,
@@ -335,10 +348,10 @@ pub struct BuildHash(Vec<u8>);
 impl BuildHash {
     /// Lowercase hex, for the `key-build` file.
     pub fn to_hex(&self) -> String {
-        self.0.iter().fold(String::new(), |mut hex, byte| {
-            let _ = write!(hex, "{byte:02x}");
-            hex
-        })
+        self.0
+            .iter()
+            .flat_map(|byte| [hex_digit(byte >> 4), hex_digit(byte & 0x0f)])
+            .collect()
     }
 }
 
@@ -536,6 +549,18 @@ mod tests {
         assert!(read_key(&keychain).unwrap().matches(&stored_key()));
     }
 
+    #[test]
+    fn spaces_and_line_breaks_around_a_pasted_key_are_ignored() {
+        for pasted in [
+            [STORED, b"\n"].concat(),
+            [b" ", STORED, b" "].concat(),
+            [b"\t", STORED, b"\r\n"].concat(),
+        ] {
+            let keychain = FakeKeychain::holding(&pasted);
+            assert!(read_key(&keychain).unwrap().matches(&stored_key()));
+        }
+    }
+
     // Failing closed.
 
     #[test]
@@ -642,6 +667,13 @@ mod tests {
                 error
             );
         }
+        // Missing while adding: never a reason to try again with a new key.
+        let keychain = FakeKeychain::default();
+        keychain.add_error.set(Some(KeyError::Missing));
+        assert_eq!(
+            key_for(&keychain, DatabaseFile::NotEncrypted).unwrap_err(),
+            KeyError::Other(None)
+        );
     }
 
     #[test]
@@ -691,9 +723,11 @@ mod tests {
     // This build's code hash. Reads only this process's own signature,
     // never the Keychain.
 
+    // On Apple silicon the linker signs every binary (ad hoc), test binaries
+    // too; on Intel they may be unsigned, and then there is no hash to read.
+    #[cfg(target_arch = "aarch64")]
     #[test]
     fn this_build_has_a_code_hash() {
-        // Test binaries are signed by the linker on Apple silicon (ad hoc).
         let hash = own_build_hash().expect("no code hash");
         assert_eq!(hash.0.len(), 20, "cdhash is 20 bytes");
         assert_eq!(hash.to_hex().len(), 40);
@@ -708,25 +742,29 @@ mod tests {
     ///
     /// No prompt is expected, since the same build writes and reads (ADR
     /// 0010, spike result 1). The test item ("Lax keychain test") is deleted
-    /// at the start and the end.
+    /// at the start and when the test ends, also when it fails.
     #[test]
     #[ignore = "writes to the real login keychain"]
     fn real_login_keychain() {
         const TEST_SERVICE: &str = "io.github.fnyman-ctrl.lax.test";
         const TEST_ACCOUNT: &str = "keychain-test";
-        let delete = || match security_framework::passwords::delete_generic_password(
-            TEST_SERVICE,
-            TEST_ACCOUNT,
-        ) {
-            Ok(()) => {}
-            Err(error) => assert_eq!(error.code(), ERR_SEC_ITEM_NOT_FOUND),
-        };
+        struct DeleteTestItem;
+        impl Drop for DeleteTestItem {
+            fn drop(&mut self) {
+                // Only the test's own item; errors (none there) are fine.
+                let _ = security_framework::passwords::delete_generic_password(
+                    TEST_SERVICE,
+                    TEST_ACCOUNT,
+                );
+            }
+        }
+        drop(DeleteTestItem);
+        let _cleanup = DeleteTestItem;
         let keychain = LoginKeychain {
             service: TEST_SERVICE,
             account: TEST_ACCOUNT,
             label: "Lax keychain test",
         };
-        delete();
 
         assert_eq!(
             key_for(&keychain, DatabaseFile::Encrypted).unwrap_err(),
@@ -742,7 +780,5 @@ mod tests {
             Ok(Added::AlreadyThere)
         );
         assert!(read_key(&keychain).unwrap().matches(&made));
-
-        delete();
     }
 }
