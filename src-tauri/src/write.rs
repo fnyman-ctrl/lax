@@ -307,7 +307,6 @@ pub fn fit_panel(app: AppHandle, height: f64, card: Option<Rect>) -> bool {
     }
     let _ = panel.set_size(tauri::LogicalSize::new(width, height));
     let _ = panel.set_position(position);
-    // After the new size: the glass is placed from the window's height.
     crate::glass::set(&panel, card)
 }
 

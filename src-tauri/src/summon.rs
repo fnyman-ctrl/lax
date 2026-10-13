@@ -247,6 +247,15 @@ pub fn role_code(role: Option<&str>) -> i64 {
     }
 }
 
+/// The roles of fields people type in, which Lax may come to even when
+/// they don't say where their text cursor is (it then uses their first line).
+pub const TYPED_IN: &[&str] = &["AXTextArea", "AXTextField", "AXComboBox", "AXTextView"];
+
+/// Whether `role` is one of [`TYPED_IN`].
+pub fn typed_in(role: Option<&str>) -> bool {
+    role.is_some_and(|role| TYPED_IN.contains(&role))
+}
+
 /// What a draft replaces, as a number for the log: 0 nothing, 1 the
 /// selection, 2 a paragraph, 3 the whole field.
 pub fn replace_code(replace: Replace) -> i64 {
@@ -800,6 +809,22 @@ pub(crate) mod macos {
         pub field: Option<Rect>,
     }
 
+    /// How Lax found the field, as a number for the log: 0 the app named it
+    /// as focused, 1 inside the focused scroll area, 2 in the window, 3 not
+    /// at all (Lax goes by the mouse pointer).
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Way {
+        Focused = 0,
+        InArea = 1,
+        InWindow = 2,
+        Pointer = 3,
+    }
+
+    /// How many levels down Lax looks for the field: inside a focused scroll
+    /// area, and in the whole window (web apps nest deeply).
+    const FIELD_DEPTH_IN_AREA: usize = 6;
+    const FIELD_DEPTH_IN_WINDOW: usize = 30;
+
     /// Where the text cursor is in the app in front, and the instruction in
     /// the field, after the same checks capture makes before reading a
     /// window: the app, the window title and whether a browser window is
@@ -826,13 +851,50 @@ pub(crate) mod macos {
             caret: None,
             field: None,
         };
-        let Some(element) = screen.focused_element(&found.front) else {
+        let Some(focused) = screen.focused_element(&found.front) else {
             return Some(found);
         };
-        let (role, subrole) = element.role_and_subrole();
+        let (role, subrole) = focused.role_and_subrole();
         if is_secure_text_field(role.as_deref().unwrap_or_default(), subrole.as_deref()) {
             return None;
         }
+        // Some apps (Pages, Claude) name a whole scroll area as focused, not
+        // the field the user types in. Then the field inside it, if one says
+        // where its cursor is; otherwise the mouse pointer, not the area's
+        // top left corner.
+        let (element, role, way) = if super::typed_in(role.as_deref()) || focused.has_caret_bounds()
+        {
+            (focused, role, Way::Focused)
+        } else if let Some((field, way)) = focused
+            .field_within(super::TYPED_IN, false, FIELD_DEPTH_IN_AREA)
+            .map(|field| (field, Way::InArea))
+            .or_else(|| {
+                // Not inside it (Claude's composer): the field in the window
+                // that says it has the keyboard focus.
+                let window = screen.focused_window(&found.front)?;
+                window
+                    .field_within(super::TYPED_IN, true, FIELD_DEPTH_IN_WINDOW)
+                    .map(|field| (field, Way::InWindow))
+            })
+        {
+            // A focused password field comes back so that Lax stays away.
+            let (role, subrole) = field.role_and_subrole();
+            if is_secure_text_field(role.as_deref().unwrap_or_default(), subrole.as_deref()) {
+                return None;
+            }
+            (field, role, way)
+        } else {
+            log_field(
+                role.as_deref(),
+                false,
+                false,
+                Way::Pointer,
+                None,
+                &found.call,
+            );
+            return Some(found);
+        };
+        let inner = way != Way::Focused;
         let caret = element.caret();
         // Some apps (Electron apps with several web views, such as Claude)
         // name a field as focused that is hidden: behind another app's
@@ -849,12 +911,17 @@ pub(crate) mod macos {
                 role.as_deref(),
                 element.has_caret_bounds(),
                 true,
+                way,
                 None,
                 &found.call,
             );
             return Some(found);
         }
-        let text = element.field_text(MAX_INSTRUCTION_CHARS);
+        // Inside a scroll area the draft is pasted at the keyboard focus, so
+        // it can replace a selection but not select a paragraph itself.
+        let text = element
+            .field_text(MAX_INSTRUCTION_CHARS)
+            .filter(|text| !inner || matches!(text, FieldText::Selected(_)));
         if let Some(text) = &text {
             (found.call.instruction, found.call.replace) = instruction_in(text);
         }
@@ -862,10 +929,11 @@ pub(crate) mod macos {
             role.as_deref(),
             element.has_caret_bounds(),
             false,
+            way,
             text.as_ref(),
             &found.call,
         );
-        found.call.accessible = true;
+        found.call.accessible = !inner;
         found.caret = caret;
         found.field = element.frame();
         Some(found)
@@ -878,6 +946,7 @@ pub(crate) mod macos {
         role: Option<&str>,
         caret_bounds: bool,
         hidden: bool,
+        way: Way,
         text: Option<&FieldText>,
         call: &Call,
     ) {
@@ -896,6 +965,7 @@ pub(crate) mod macos {
                 Field::Id("role", super::role_code(role)),
                 Field::Flag("caret_bounds", caret_bounds),
                 Field::Flag("hidden", hidden),
+                Field::Id("found", way as i64),
                 Field::Flag("has_text", text.is_some()),
                 Field::Flag("selected", selected),
                 Field::Count("value_chars", value_chars),
@@ -1265,6 +1335,17 @@ mod tests {
             }),
             3
         );
+    }
+
+    #[test]
+    fn a_scroll_area_is_not_a_field_to_type_in() {
+        // Pages and Claude name a scroll area as focused; its top left corner
+        // is not where the user types, so Lax looks inside it instead.
+        assert!(typed_in(Some("AXTextArea")));
+        assert!(typed_in(Some("AXTextView")));
+        assert!(!typed_in(Some("AXScrollArea")));
+        assert!(!typed_in(Some("AXGroup")));
+        assert!(!typed_in(None));
     }
 
     #[test]
