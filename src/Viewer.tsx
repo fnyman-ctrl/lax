@@ -8,6 +8,7 @@ import { Memory } from "./Memory";
 import { Models } from "./Models";
 import { Outbox } from "./Outbox";
 import { usePaged } from "./usePaged";
+import { ThemeSwitch } from "./ThemeSwitch";
 import { Write } from "./Write";
 // The pixel salmon (docs/BRAND.md).
 import laxIcon from "../src-tauri/icons/salmon.svg";
@@ -153,7 +154,10 @@ export function Viewer() {
         <div className="brand">
           <h1>Lax</h1>
         </div>
-        <Status />
+        <div className="end">
+          <Status />
+          <ThemeSwitch />
+        </div>
       </header>
       <nav ref={nav} className="river" aria-label="Sections">
         {SECTIONS.map((section) => (

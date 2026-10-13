@@ -70,8 +70,11 @@
   --radius: 10px;
 }
 
+/* Dark: macOS's choice, unless the user picked light or dark in the window
+   (src/theme.ts). The writing assistant's panel always follows macOS, as
+   its glass does. */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: var(--djupvatten);
     --surface: #163843;
     --fg: var(--alvsten);
@@ -89,6 +92,30 @@
     --warning-bg: #3d3214;
     --warning-fg: #ffe28a;
   }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: var(--djupvatten);
+  --surface: #163843;
+  --fg: var(--alvsten);
+  --muted: #9db4bb;
+  --line: #2c4c56;
+  --accent: #7cc4c4;
+  --accent-fg: var(--djupvatten);
+  --accent-hover: #9ad4d4;
+  --link: #7cc4c4;
+  --running: #7cc4c4;
+  --paused: #e8c766;
+  --error: #ff8a80;
+  --mark-bg: #6b2f36;
+  --mark-fg: #ffffff;
+  --warning-bg: #3d3214;
+  --warning-fg: #ffe28a;
+  }
+
+:root[data-theme="light"] {
+  color-scheme: light;
 }
 
 body {
@@ -1366,4 +1393,51 @@ button.link {
 
 .setup-nav {
   margin-top: 1.25rem;
+}
+
+/* Light, dark or as macOS: three small buttons by the capture status. */
+.theme-switch {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.theme-switch button {
+  display: inline-grid;
+  place-items: center;
+  width: 1.7rem;
+  height: 1.7rem;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.theme-switch button:hover {
+  color: var(--fg);
+}
+
+.theme-switch button[aria-pressed="true"] {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--line) 55%, transparent);
+}
+
+.theme-switch svg {
+  width: 0.95rem;
+  height: 0.95rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.viewer-header .end {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
 }
