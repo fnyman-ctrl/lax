@@ -154,19 +154,15 @@ pub(crate) fn messages(
     request: Option<Request<'_>>,
     captured: &[Captured<'_>],
 ) -> [ChatMessage; 2] {
-    let blocks = captured
-        .iter()
-        .map(Captured::delimited)
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    let content = match request {
-        Some(Request::First(request)) => format!("Request from the user:\n{request}\n\n{blocks}"),
-        Some(Request::Last(request)) if blocks.is_empty() => {
-            format!("Request from the user:\n{request}")
+    let mut parts: Vec<String> = captured.iter().map(Captured::delimited).collect();
+    match request {
+        Some(Request::First(request)) => {
+            parts.insert(0, format!("Request from the user:\n{request}"));
         }
-        Some(Request::Last(request)) => format!("{blocks}\n\nRequest from the user:\n{request}"),
-        None => blocks,
-    };
+        Some(Request::Last(request)) => parts.push(format!("Request from the user:\n{request}")),
+        None => {}
+    }
+    let content = parts.join("\n\n");
     [
         ChatMessage {
             role: Role::System,

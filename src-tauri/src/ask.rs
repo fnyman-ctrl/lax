@@ -1585,29 +1585,44 @@ mod tests {
     #[test]
     fn questions_and_follow_ups_share_the_start_of_the_prompt() {
         let store = sample();
-        let mut found = gather(&store, "Vad gjorde jag med Anna?", None, &now()).unwrap();
-        found.known = vec![
+        let known = vec![
             "What the memory knows about the user:\n- Jobbar med lanseringar.".to_string(),
             "What the memory knows about Anna (person):\n- Leder Q3-lanseringen.".to_string(),
         ];
-        let prompt = |question: &str, earlier: &[Earlier], now: &DateTime<FixedOffset>| {
-            let texts = blocks(&found, earlier, &stockholm());
+        let prompt = |found: &Found, question: &str, earlier: &[Earlier], minutes: i64| {
+            let texts = blocks(found, earlier, &stockholm());
             let captured: Vec<Captured> = texts.iter().map(|t| Captured(t.as_str())).collect();
+            let now = now() + TimeDelta::minutes(minutes);
             structured::messages(
                 TASK,
                 SHAPE,
-                Some(structured::Request::Last(&request(question, now))),
+                Some(structured::Request::Last(&request(question, &now))),
                 &captured,
             )
         };
-        let [system, first] = prompt("Vad gjorde jag med Anna?", &[], &now());
-        let earlier = [Earlier {
-            question: "Vad gjorde jag med Anna?".to_string(),
-            answer: "Du mailade henne om offerten.".to_string(),
-        }];
-        let later = now() + TimeDelta::minutes(3);
-        let [same_system, second] = prompt("Och vad sa hon om leveransen?", &earlier, &later);
-        let [_, third] = prompt("Vad mer?", &earlier, &later);
+        let turn = |question: &str, answer: &str| Earlier {
+            question: question.to_string(),
+            answer: answer.to_string(),
+        };
+
+        // A question, then follow-ups with no words of their own, which
+        // gather what the question before them did.
+        let asked = "Vad gjorde jag med Anna?";
+        let mut found = gather(&store, asked, None, &now()).unwrap();
+        found.known = known.clone();
+        let [system, first] = prompt(&found, asked, &[], 0);
+        let mut follow_up = gather_after(&store, "Och vad mer?", &[asked], None, &now()).unwrap();
+        follow_up.known = known.clone();
+        let ids = |found: &Found| found.episodes.iter().map(|e| e.id).collect::<Vec<_>>();
+        assert_eq!(ids(&follow_up), ids(&found));
+        let earlier = [turn(asked, "Du mailade henne om offerten.")];
+        let [same_system, second] = prompt(&follow_up, "Och vad mer?", &earlier, 3);
+        let longer = [
+            turn(asked, "Du mailade henne om offerten."),
+            turn("Och vad mer?", "Du ringde henne."),
+        ];
+        let [_, third] = prompt(&follow_up, "Vad sa hon?", &longer, 5);
+        let [_, other] = prompt(&follow_up, "Och sen då?", &longer, 5);
 
         // The system message is the same, byte for byte: no date or count.
         assert_eq!(system.content, same_system.content);
@@ -1618,25 +1633,29 @@ mod tests {
         assert!(stable.contains("Ringde Anna om leveransen."));
         assert!(second.content.starts_with(stable));
         assert!(third.content.starts_with(stable));
+        // The conversation grows at its end, so a later follow-up also
+        // starts with the one before it, up to that one's request.
+        let before = &second.content[..second.content.find("Request from the user:").unwrap()];
+        assert!(
+            third
+                .content
+                .starts_with(before.trim_end_matches("\n</captured>\n\n"))
+        );
         // Two different questions after the same conversation differ only at
         // the very end, in the question.
-        let shared = second
+        let shared = third
             .content
             .char_indices()
-            .zip(third.content.chars())
+            .zip(other.content.chars())
             .find(|((_, a), b)| a != b)
             .map(|((i, _), _)| i)
             .unwrap();
-        assert!(second.content[..shared].ends_with("\n\nQuestion: "));
+        assert!(third.content[..shared].ends_with("\n\nQuestion: "));
         // The conversation comes after the entries, and the request last.
         let conversation = second.content.find("The conversation so far").unwrap();
         assert!(conversation > second.content.find("Ringde Anna").unwrap());
         assert!(second.content.find("Request from the user:").unwrap() > conversation);
-        assert!(
-            second
-                .content
-                .ends_with("Question: Och vad sa hon om leveransen?")
-        );
+        assert!(second.content.ends_with("Question: Och vad mer?"));
     }
 
     #[test]
