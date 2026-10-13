@@ -141,10 +141,16 @@ They send only fixed, synthetic text.
 
 ### Checks
 
+The window has tests too (`src/*.test.tsx`, Vitest in a simulated DOM with
+the Tauri bridge mocked): they cover what the user does in Ask, the writing
+assistant's panel, Write and the first start. A component that decides what
+the user sees or sends gets a test.
+
 CI runs these on every pull request. Run them locally before pushing:
 
 ```bash
 npm run typecheck
+npm test           # the window's components, with Vitest
 cd src-tauri
 cargo fmt --check
 cargo clippy --all-targets --locked -- -D warnings

@@ -32,6 +32,7 @@ jobs:
       - name: Check for known vulnerabilities
         run: npm audit --audit-level=high
       - run: npm run typecheck
+      - run: npm test
       - run: npm run build
 
   rust:
