@@ -91,6 +91,11 @@ previous one, so they can be built, tested and improved independently.
   it is based on. With an embedding model chosen, episodes get vectors in the
   background (`src-tauri/src/vectors.rs`), and Ask also finds entries close in
   meaning to the question.
+- The prompt starts with what changes least: the instructions, what the memory
+  knows about the user, then about the people and projects named, the journal
+  entries, the conversation so far, and last the question with today's date.
+  A server that keeps a prompt cache, as LM Studio does, then reads only
+  the new end of a follow-up's prompt.
 
 ## Write
 

@@ -900,17 +900,7 @@ pub async fn ask_memory(
         return Err("The chat model's address isn't valid. Check it under Models.".to_string());
     };
     let started = std::time::Instant::now();
-    let texts: Vec<String> = conversation(&earlier)
-        .into_iter()
-        .chain(found.known.iter().cloned())
-        .chain(
-            found
-                .episodes
-                .iter()
-                .enumerate()
-                .map(|(i, e)| entry_text(i + 1, e, &Local)),
-        )
-        .collect();
+    let texts = blocks(&found, &earlier, &Local);
     let request = request(&question, &now);
     let asked = answer(endpoint, &choice.model, &request, &texts);
     let Some(reply) = app.state::<Pause>().unless_paused(asked).await else {
@@ -987,16 +977,33 @@ async fn answer(
         .map_err(StructuredError::Model)?
         .without_reasoning();
     let captured: Vec<Captured> = texts.iter().map(|t| Captured(t.as_str())).collect();
-    structured::ask_for(
-        &client,
-        model,
-        TASK,
-        SHAPE,
-        Some(request),
-        &captured,
-        MAX_TOKENS,
-    )
-    .await
+    structured::ask_for_last(&client, model, TASK, SHAPE, request, &captured, MAX_TOKENS).await
+}
+
+/// The captured blocks for the model, most stable first, so that a
+/// server's prompt cache can reuse the start of the prompt for the next
+/// question: what the memory knows about the user (the same for every
+/// question), what it knows about the entities named, the journal entries,
+/// and the conversation so far, which grows with every turn. The question
+/// and today's date and time go after all of them, as the request
+/// ([`structured::ask_for_last`]).
+fn blocks<Tz: TimeZone>(found: &Found, earlier: &[Earlier], tz: &Tz) -> Vec<String>
+where
+    Tz::Offset: std::fmt::Display,
+{
+    found
+        .known
+        .iter()
+        .cloned()
+        .chain(
+            found
+                .episodes
+                .iter()
+                .enumerate()
+                .map(|(i, e)| entry_text(i + 1, e, tz)),
+        )
+        .chain(conversation(earlier))
+        .collect()
 }
 
 fn with_store<T>(app: &AppHandle, work: impl FnOnce(&Store) -> T) -> Option<T> {
@@ -1573,6 +1580,63 @@ mod tests {
         let her = gather_after(&store, "Vad sa hon?", &["Vad gör Anna?"], None, &now()).unwrap();
         assert!(!her.recent_only);
         assert!(summaries(&her).contains(&"Ringde Anna om leveransen."));
+    }
+
+    #[test]
+    fn questions_and_follow_ups_share_the_start_of_the_prompt() {
+        let store = sample();
+        let mut found = gather(&store, "Vad gjorde jag med Anna?", None, &now()).unwrap();
+        found.known = vec![
+            "What the memory knows about the user:\n- Jobbar med lanseringar.".to_string(),
+            "What the memory knows about Anna (person):\n- Leder Q3-lanseringen.".to_string(),
+        ];
+        let prompt = |question: &str, earlier: &[Earlier], now: &DateTime<FixedOffset>| {
+            let texts = blocks(&found, earlier, &stockholm());
+            let captured: Vec<Captured> = texts.iter().map(|t| Captured(t.as_str())).collect();
+            structured::messages(
+                TASK,
+                SHAPE,
+                Some(structured::Request::Last(&request(question, now))),
+                &captured,
+            )
+        };
+        let [system, first] = prompt("Vad gjorde jag med Anna?", &[], &now());
+        let earlier = [Earlier {
+            question: "Vad gjorde jag med Anna?".to_string(),
+            answer: "Du mailade henne om offerten.".to_string(),
+        }];
+        let later = now() + TimeDelta::minutes(3);
+        let [same_system, second] = prompt("Och vad sa hon om leveransen?", &earlier, &later);
+        let [_, third] = prompt("Vad mer?", &earlier, &later);
+
+        // The system message is the same, byte for byte: no date or count.
+        assert_eq!(system.content, same_system.content);
+        // The first question's prompt up to its request is the start of the
+        // follow-ups' prompts: the memory, then the entries.
+        let stable = &first.content[..first.content.find("Request from the user:").unwrap()];
+        assert!(stable.starts_with("<captured>\nWhat the memory knows about the user:"));
+        assert!(stable.contains("Ringde Anna om leveransen."));
+        assert!(second.content.starts_with(stable));
+        assert!(third.content.starts_with(stable));
+        // Two different questions after the same conversation differ only at
+        // the very end, in the question.
+        let shared = second
+            .content
+            .char_indices()
+            .zip(third.content.chars())
+            .find(|((_, a), b)| a != b)
+            .map(|((i, _), _)| i)
+            .unwrap();
+        assert!(second.content[..shared].ends_with("\n\nQuestion: "));
+        // The conversation comes after the entries, and the request last.
+        let conversation = second.content.find("The conversation so far").unwrap();
+        assert!(conversation > second.content.find("Ringde Anna").unwrap());
+        assert!(second.content.find("Request from the user:").unwrap() > conversation);
+        assert!(
+            second
+                .content
+                .ends_with("Question: Och vad sa hon om leveransen?")
+        );
     }
 
     #[test]
