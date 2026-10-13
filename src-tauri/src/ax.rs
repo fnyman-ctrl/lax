@@ -627,18 +627,64 @@ impl Element {
     }
 
     fn caret_bounds(&self) -> Option<Rect> {
-        let range = self.copy(&self.names.selected_text_range)?;
-        if CFGetTypeID(Some(&range)) != AXValueGetTypeID() {
+        let range_value = self.copy(&self.names.selected_text_range)?;
+        if CFGetTypeID(Some(&range_value)) != AXValueGetTypeID() {
             return None;
         }
+        let frame = self.frame();
+        // Some apps answer an empty selection with an empty rectangle at 0,0,
+        // and Chromium (Claude, Slack) with one at the screen's bottom left:
+        // a cursor must have a height and sit in or next to its field.
+        let usable = |rect: &Rect| {
+            rect.height > 0.0
+                && (rect.x != 0.0 || rect.y != 0.0)
+                && frame.is_none_or(|frame| near(&frame, rect))
+        };
+        if let Some(rect) = self.bounds_for(&range_value).filter(usable) {
+            return Some(rect);
+        }
+        // Chromium can't say where a cursor after the last character is, but
+        // it can say where that character is: the cursor is at its right edge.
+        let mut range = CFRange::new(0, 0);
+        // SAFETY: `range_value` is an AXValue; `range` is a CFRange, the type
+        // asked for, so the framework writes a value of the right size.
+        let ok = unsafe {
+            AXValueGetValue(
+                &range_value,
+                AX_VALUE_CF_RANGE,
+                (&raw mut range).cast::<c_void>(),
+            )
+        };
+        if ok == 0 || range.length != 0 || range.location <= 0 {
+            return None;
+        }
+        let before = CFRange::new(range.location - 1, 1);
+        // SAFETY: `before` is a CFRange, matching the type passed; returns a
+        // new value or null.
+        let before = unsafe {
+            owned(AXValueCreate(
+                AX_VALUE_CF_RANGE,
+                (&raw const before).cast::<c_void>(),
+            ))
+        }?;
+        let rect = self.bounds_for(&before).filter(usable)?;
+        Some(Rect {
+            x: rect.x + rect.width,
+            width: 0.0,
+            ..rect
+        })
+    }
+
+    /// Where the text in `range` (an AXValue range) is on screen.
+    fn bounds_for(&self, range: &CFType) -> Option<Rect> {
         let mut value: *const CFType = ptr::null();
-        // SAFETY: valid element, attribute, parameter (the AXValue range the
-        // app gave) and out pointer.
+        // SAFETY: valid element, attribute, parameter (an AXValue range) and
+        // out pointer.
         let error = unsafe {
             AXUIElementCopyParameterizedAttributeValue(
                 &self.element,
                 &self.names.bounds_for_range,
-                &range,
+                range,
                 &mut value,
             )
         };
@@ -647,9 +693,7 @@ impl Element {
         }
         // SAFETY: on success the value is a new reference we own.
         let bounds = unsafe { owned(value) }?;
-        let rect: Rect = ax_value(&bounds, AX_VALUE_CG_RECT)?;
-        // Some apps answer an empty selection with an empty rectangle at 0,0.
-        (rect.height > 0.0 && (rect.x != 0.0 || rect.y != 0.0)).then_some(rect)
+        ax_value(&bounds, AX_VALUE_CG_RECT)
     }
 
     /// The text the user selected in a field, at most `max_chars`
@@ -900,9 +944,36 @@ impl Node for Element {
     }
 }
 
+/// Whether a cursor at `caret` is in its field's `frame`, or just next to
+/// it (a cursor can sit on the frame's edge).
+fn near(frame: &Rect, caret: &Rect) -> bool {
+    const SLACK: f64 = 40.0;
+    let (x, y) = (caret.x, caret.y + caret.height / 2.0);
+    x >= frame.x - SLACK
+        && x <= frame.x + frame.width + SLACK
+        && y >= frame.y - SLACK
+        && y <= frame.y + frame.height + SLACK
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cursor_must_be_by_its_field() {
+        let rect = |x, y, width, height| Rect {
+            x,
+            y,
+            width,
+            height,
+        };
+        // Claude's composer, and the cursor Chromium reported for it.
+        let field = rect(1305.0, 1174.0, 672.0, 20.0);
+        assert!(!near(&field, &rect(0.0, 1329.0, 0.0, 18.0)));
+        assert!(near(&field, &rect(1492.0, 1175.0, 0.0, 18.0)));
+        // On the edge, at the end of a full line.
+        assert!(near(&field, &rect(1978.0, 1175.0, 0.0, 18.0)));
+    }
 
     #[test]
     fn idle_time_and_power_source_can_be_read() {
