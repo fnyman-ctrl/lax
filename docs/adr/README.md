@@ -19,5 +19,6 @@ chat logs.
 | [0006](0006-sqlite-with-rusqlite.md) | SQLite through rusqlite, with SQLite compiled in | Accepted |
 | [0007](0007-http-client-for-model-calls.md) | reqwest with macOS TLS for model calls | Accepted |
 | [0008](0008-learning-memory.md) | How the memory learns, and how user edits are protected | Accepted; superseded in part by [0011](0011-pages-in-the-database.md) |
-| [0009](0009-writing-assistant.md) | A writing assistant called with the Option key | Proposed |
+| [0009](0009-writing-assistant.md) | A writing assistant called with the Option key | Accepted |
+| [0010](0010-encrypted-database.md) | Encrypt the database with SQLCipher, keyed from the Keychain | Accepted |
 | [0011](0011-pages-in-the-database.md) | Keep the memory pages in the encrypted database | Accepted |
