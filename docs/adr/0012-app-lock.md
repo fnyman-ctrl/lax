@@ -296,10 +296,11 @@ ADR 0009's status line then gets "superseded in part by 0012", as
 ### Relation to ADR 0010
 
 - **The lock gates the window. The database key is separate.** Lax reads
-  the key from the login keychain once, at start, normally without a
-  prompt (ADR 0010), and keeps the database open while it runs, because
-  capture writes to it. So, locked or not, the key is in Lax's memory and the database is
-  open. The lock encrypts nothing, and doesn't stop another program from
+  the key from the login keychain once, at start, without a prompt except
+  once after each update, which Lax announces with its own note first
+  (ADR 0010's Keychain spike), and keeps the database open while it runs,
+  because capture writes to it. So, locked or not, the key is in Lax's
+  memory and the database is open. The lock encrypts nothing, and doesn't stop another program from
   asking the keychain for the key (the Keychain prompt in ADR 0010's
   malware row).
 - **Later, with the signed `.dmg`:** the key can move to the data
