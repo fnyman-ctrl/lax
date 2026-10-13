@@ -60,7 +60,8 @@ const MAX_ANSWER_CHARS: usize = 4000;
 const TASK: &str = "Answer the user's question using only the captured blocks: what the \
 memory knows about the user and about people, organisations and projects, and journal entries. \
 Each journal entry starts with its number in brackets, then when it happened and in which apps. \
-Answer briefly and directly, in the language of the question. For several things, use short \
+Answer briefly and directly, in the language of the question, and only about what the question \
+asks: leave out entries about other things. For several things, use short \
 lines starting with \"- \". Put the numbers of the journal entries the answer is based on in \
 sources, as a list of numbers such as [1, 4] (what the memory knows has no number). Don't put \
 entry numbers in the answer. If the blocks don't answer the question, say so plainly; don't \
@@ -241,7 +242,12 @@ where
         Some((from, to)) => {
             let mut in_range = store.episodes_between(from, to, 500)?;
             in_range.reverse(); // Latest first, so the budget keeps the end of the time.
-            if entities.is_empty() && search.is_empty() && near.is_empty() {
+            if !entities.is_empty() || !search.is_empty() {
+                // A time and a subject ("Vitas the last two days"): only what
+                // is about the subject, found by name or word, then by
+                // meaning; not everything else from that time.
+                in_turns([mentioning, matching, near])
+            } else if near.is_empty() {
                 in_range
             } else {
                 let wanted: HashSet<i64> = mentioning
@@ -420,7 +426,12 @@ fn search_words(asked: &[String]) -> Vec<String> {
     let mut seen = HashSet::new();
     asked
         .iter()
-        .filter(|w| w.chars().count() >= 3 || w.chars().any(|c| c.is_ascii_digit()))
+        // Short words are left out, but not "q3"; a bare small number ("2
+        // dagarna") is a count, not a subject.
+        .filter(|w| {
+            w.chars().count() >= 3
+                || (w.chars().any(|c| c.is_ascii_digit()) && !w.chars().all(|c| c.is_ascii_digit()))
+        })
         .filter(|w| !STOP_WORDS.contains(&w.as_str()) && !is_time_word(w))
         .filter(|w| seen.insert(w.as_str()))
         .take(12)
@@ -491,6 +502,10 @@ const STOP_WORDS: &[&str] = &[
     "berätta",
     "sammanfatta",
     "lax",
+    "hitta",
+    "hittar",
+    "hittade",
+    "info",
     // Follow-up words: "och vad mer?", "vad sa hon?"
     "mer",
     "annat",
@@ -551,6 +566,10 @@ const STOP_WORDS: &[&str] = &[
     "summarise",
     "can",
     "you",
+    "find",
+    "anything",
+    "something",
+    "information",
     // Follow-up words: "and what else?", "what did she say?"
     "else",
     "more",
@@ -569,6 +588,26 @@ const STOP_WORDS: &[&str] = &[
 
 /// Month names are left in: "Jan" and "Maj" are names too, and a month
 /// name alone doesn't narrow the time.
+/// A small count, in digits or words, Swedish or English: "2", "två", "two".
+fn count_word(word: &str) -> Option<i64> {
+    if let Ok(n) = word.parse::<i64>() {
+        return Some(n);
+    }
+    let n = match word {
+        "en" | "ett" | "one" => 1,
+        "två" | "two" => 2,
+        "tre" | "three" => 3,
+        "fyra" | "four" => 4,
+        "fem" | "five" => 5,
+        "sex" | "six" => 6,
+        "sju" | "seven" => 7,
+        "tio" | "ten" => 10,
+        "fjorton" | "fourteen" => 14,
+        _ => return None,
+    };
+    Some(n)
+}
+
 fn is_time_word(word: &str) -> bool {
     TIME_WORDS.contains(&word) || weekday(word).is_some()
 }
@@ -590,6 +629,14 @@ const TIME_WORDS: &[&str] = &[
     "här",
     "månaden",
     "månad",
+    "senaste",
+    "dagarna",
+    "dagar",
+    "dygnen",
+    "dygn",
+    "days",
+    "past",
+    "few",
     "today",
     "yesterday",
     "morning",
@@ -650,6 +697,24 @@ fn time_range<Tz: TimeZone>(
             && let Some(next) = first.checked_add_months(Months::new(1))
         {
             found.push((first, next));
+        }
+    }
+    // "De senaste 2 dagarna", "senaste tre dagarna", "the last 3 days",
+    // "past two days": today and the days before it. "Senaste dagarna" and
+    // "the last few days" without a number mean three.
+    for (i, word) in asked.iter().enumerate() {
+        if !matches!(word.as_str(), "senaste" | "last" | "past") {
+            continue;
+        }
+        let next = asked.get(i + 1).map(String::as_str);
+        let (count, unit) = match next.and_then(count_word) {
+            Some(count) => (count, asked.get(i + 2).map(String::as_str)),
+            None if next == Some("few") => (3, asked.get(i + 2).map(String::as_str)),
+            None => (3, next),
+        };
+        if matches!(unit, Some("dagarna" | "dagar" | "dygnen" | "dygn" | "days")) {
+            let count = count.clamp(1, 90);
+            found.push(span(today - TimeDelta::days(count - 1), count));
         }
     }
     // Dates: 2026-10-07, "7 oktober", "7 okt", "October 7".
@@ -1119,6 +1184,53 @@ mod tests {
 
     fn on(date: &str, days: i64) -> Option<(String, i64)> {
         Some((format!("{date} 00:00"), days))
+    }
+
+    #[test]
+    fn the_last_few_days() {
+        let range = |q: &str| day(time_range(q, &now()));
+        // Today, Sunday the 11th, and the day before.
+        assert_eq!(range("Vitas senaste 2 dagarna?"), on("2026-10-10", 2));
+        assert_eq!(range("de senaste tre dagarna"), on("2026-10-09", 3));
+        assert_eq!(range("the last 3 days"), on("2026-10-09", 3));
+        assert_eq!(range("past two days"), on("2026-10-10", 2));
+        assert_eq!(range("de senaste dagarna"), on("2026-10-09", 3));
+        assert_eq!(range("the last few days"), on("2026-10-09", 3));
+        // "Senaste" alone, or a count of something else, is no time.
+        assert_eq!(range("senaste mejlet från Anna"), None);
+        assert_eq!(range("the last 3 mails"), None);
+    }
+
+    #[test]
+    fn filler_words_are_not_searched_for() {
+        assert_eq!(
+            search_words(&words("Kan du hitta något om Vitas senaste 2 dagarna?")),
+            ["vitas"]
+        );
+        assert_eq!(
+            search_words(&words(
+                "Can you find anything about Vitas in the last 2 days?"
+            )),
+            ["vitas"]
+        );
+    }
+
+    #[test]
+    fn a_time_and_a_subject_give_only_the_subject() {
+        let found = gather(
+            &sample(),
+            "Vad gjorde jag med Anna i tisdags?",
+            None,
+            &now(),
+        )
+        .unwrap();
+        // Tuesday also has "Läste nyheter.", which isn't about Anna.
+        assert_eq!(summaries(&found), ["Mailade Anna om Q3-offerten."]);
+        let found = gather(&sample(), "Vad gjorde jag i tisdags?", None, &now()).unwrap();
+        assert_eq!(
+            summaries(&found),
+            ["Mailade Anna om Q3-offerten.", "Läste nyheter."]
+        );
     }
 
     #[test]
