@@ -24,6 +24,8 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
+          # No cache in a release build: nothing from an earlier run gets in.
+          package-manager-cache: false
 
       - name: Install Rust toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
