@@ -128,7 +128,7 @@ mod macos {
     use tauri::{AppHandle, Manager};
 
     use super::{BACK_IN_FRONT, Failed, How, still_there, written};
-    use crate::ax::AxScreen;
+    use crate::ax::{AxScreen, MenuShortcut};
     use crate::capture::{App, Node};
     use crate::exclusions::{Current, Decision, is_secure_text_field};
     use crate::pause::Pause;
@@ -150,7 +150,9 @@ mod macos {
     const HID_EVENT_TAP: u32 = 0;
     const COMMAND: u64 = 1 << 20;
     /// Key codes of A and V (`kVK_ANSI_A`, `kVK_ANSI_V`): ⌘A and ⌘V, the only
-    /// keys Lax ever sends. Never Return.
+    /// keys Lax ever sends, when the app has no menu item for them. They
+    /// are physical keys, so on some layouts (Dvorak) they are other
+    /// letters; the menu items don't have that problem. Never Return.
     const KEY_A: u16 = 0x00;
     const KEY_V: u16 = 0x09;
 
@@ -224,7 +226,7 @@ mod macos {
         // selected otherwise. If a paragraph couldn't be selected, the draft
         // goes in at the cursor and the instruction stays for the user.
         let whole = matches!(call.replace, Replace::Paragraph { whole: true, .. });
-        paste(text, whole && !selected);
+        paste(&screen, &front, text, whole && !selected);
         Ok(How::Pasted)
     }
 
@@ -238,8 +240,9 @@ mod macos {
 
     /// Pastes `text` with ⌘V, after ⌘A if `select_all`, through the
     /// clipboard, which is put back as it was unless something else was
-    /// copied meanwhile.
-    fn paste(text: &str, select_all: bool) {
+    /// copied meanwhile. The app's own menu items are chosen where it has
+    /// them, so the keyboard layout doesn't matter; key codes otherwise.
+    fn paste(screen: &AxScreen, front: &App, text: &str, select_all: bool) {
         autoreleasepool(|_| {
             let board = NSPasteboard::generalPasteboard();
             let saved = save(&board);
@@ -262,10 +265,14 @@ mod macos {
             board.writeObjects(&items);
             let ours = board.changeCount();
             if select_all {
-                command_key(KEY_A);
+                if !screen.choose_menu_item(front, MenuShortcut::SelectAll) {
+                    command_key(KEY_A);
+                }
                 thread::sleep(Duration::from_millis(60));
             }
-            command_key(KEY_V);
+            if !screen.choose_menu_item(front, MenuShortcut::Paste) {
+                command_key(KEY_V);
+            }
             thread::sleep(PASTE_READ);
             if board.changeCount() == ours {
                 restore(&board, saved);

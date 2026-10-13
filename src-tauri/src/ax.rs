@@ -79,6 +79,7 @@ unsafe extern "C" {
         value: &CFType,
     ) -> AXError;
     fn AXUIElementSetMessagingTimeout(element: &CFType, timeout_seconds: f32) -> AXError;
+    fn AXUIElementPerformAction(element: &CFType, action: &CFString) -> AXError;
     // On success, `element` holds a new reference the caller owns.
     fn AXUIElementCopyElementAtPosition(
         application: &CFType,
@@ -227,6 +228,11 @@ struct Names {
     focused_element: CFRetained<CFString>,
     selected_text: CFRetained<CFString>,
     parent: CFRetained<CFString>,
+    menu_bar: CFRetained<CFString>,
+    menu_item_cmd_char: CFRetained<CFString>,
+    menu_item_cmd_modifiers: CFRetained<CFString>,
+    enabled: CFRetained<CFString>,
+    press: CFRetained<CFString>,
     selected_text_range: CFRetained<CFString>,
     bounds_for_range: CFRetained<CFString>,
     position: CFRetained<CFString>,
@@ -254,6 +260,11 @@ impl Names {
             focused_element: name("AXFocusedUIElement"),
             selected_text: name("AXSelectedText"),
             parent: name("AXParent"),
+            menu_bar: name("AXMenuBar"),
+            menu_item_cmd_char: name("AXMenuItemCmdChar"),
+            menu_item_cmd_modifiers: name("AXMenuItemCmdModifiers"),
+            enabled: name("AXEnabled"),
+            press: name("AXPress"),
             selected_text_range: name("AXSelectedTextRange"),
             bounds_for_range: name("AXBoundsForRange"),
             position: name("AXPosition"),
@@ -325,6 +336,30 @@ pub enum FieldText {
     All { value: String, caret: Option<usize> },
 }
 
+/// The only menu shortcuts Lax ever chooses, for the writing assistant's
+/// paste: ⌘A (only when the instruction was the whole field) and ⌘V.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuShortcut {
+    SelectAll,
+    Paste,
+}
+
+impl MenuShortcut {
+    /// Whether a menu item with this command character and modifiers
+    /// (`AXMenuItemCmdModifiers`: 0 means ⌘ and nothing else) is this one.
+    pub fn matches(self, key: Option<&str>, modifiers: Option<i64>) -> bool {
+        let want = match self {
+            MenuShortcut::SelectAll => "A",
+            MenuShortcut::Paste => "V",
+        };
+        modifiers == Some(0) && key.is_some_and(|key| key.eq_ignore_ascii_case(want))
+    }
+}
+
+/// Menus and items per menu looked through for a shortcut.
+const MAX_MENUS: usize = 16;
+const MAX_MENU_ITEMS: usize = 80;
+
 /// How far up from the element at a point to look for the focused field.
 const MAX_HIT_DEPTH: usize = 12;
 
@@ -342,6 +377,44 @@ impl AxScreen {
             names: self.names.clone(),
         };
         application.element(&self.names.focused_element)
+    }
+
+    /// Chooses `shortcut` from `app`'s own menus (Edit → Paste for ⌘V), the
+    /// way a click on the menu item would: whatever the keyboard layout or
+    /// the app's language. `false` if the app has no enabled menu item with
+    /// that shortcut, or it couldn't be chosen. Only ⌘A and ⌘V can be
+    /// chosen (GUARDRAILS §5).
+    pub fn choose_menu_item(&self, app: &App, shortcut: MenuShortcut) -> bool {
+        // SAFETY: any pid is accepted; returns a new element or null.
+        let Some(application) = (unsafe { owned(AXUIElementCreateApplication(app.pid)) }) else {
+            return false;
+        };
+        let application = Element {
+            element: application,
+            names: self.names.clone(),
+        };
+        let Some(bar) = application.element(&self.names.menu_bar) else {
+            return false;
+        };
+        for title in bar.children(MAX_MENUS) {
+            for menu in title.children(1) {
+                for item in menu.children(MAX_MENU_ITEMS) {
+                    let key = item.string(&self.names.menu_item_cmd_char);
+                    let modifiers = item.number(&self.names.menu_item_cmd_modifiers);
+                    if !shortcut.matches(key.as_deref(), modifiers) {
+                        continue;
+                    }
+                    if item.flag(&self.names.enabled) == Some(false) {
+                        return false;
+                    }
+                    // SAFETY: valid element and action name.
+                    let error =
+                        unsafe { AXUIElementPerformAction(&item.element, &self.names.press) };
+                    return error == AX_SUCCESS;
+                }
+            }
+        }
+        false
     }
 
     /// Whether `element` is what `app` shows at `x`, `y` (in points): the
@@ -440,6 +513,14 @@ impl Element {
     fn string(&self, attribute: &CFString) -> Option<String> {
         let value = self.copy(attribute)?.downcast::<CFString>().ok()?;
         Some(value.to_string())
+    }
+
+    fn number(&self, attribute: &CFString) -> Option<i64> {
+        self.copy(attribute)?.downcast::<CFNumber>().ok()?.as_i64()
+    }
+
+    fn flag(&self, attribute: &CFString) -> Option<bool> {
+        Some(self.copy(attribute)?.downcast::<CFBoolean>().ok()?.value())
     }
 
     fn element(&self, attribute: &CFString) -> Option<Element> {
@@ -779,5 +860,20 @@ mod tests {
         if let Some(pid) = window_owner_at(400.0, 400.0) {
             assert!(pid > 0);
         }
+    }
+
+    #[test]
+    fn only_cmd_a_and_cmd_v_menu_items_are_chosen() {
+        let paste = MenuShortcut::Paste;
+        assert!(paste.matches(Some("V"), Some(0)));
+        assert!(paste.matches(Some("v"), Some(0)));
+        // ⇧⌘V (Paste and Match Style) or ⌥⌘V are other items.
+        assert!(!paste.matches(Some("V"), Some(1)));
+        assert!(!paste.matches(Some("V"), Some(2)));
+        assert!(!paste.matches(Some("V"), None));
+        assert!(!paste.matches(Some("C"), Some(0)));
+        assert!(!paste.matches(None, Some(0)));
+        assert!(MenuShortcut::SelectAll.matches(Some("A"), Some(0)));
+        assert!(!MenuShortcut::SelectAll.matches(Some("V"), Some(0)));
     }
 }
