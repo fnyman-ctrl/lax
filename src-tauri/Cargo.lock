@@ -1733,12 +1733,14 @@ dependencies = [
  "regex",
  "reqwest",
  "rusqlite",
+ "security-framework",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
  "tokio",
  "url",
+ "zeroize",
 ]
 
 [[package]]

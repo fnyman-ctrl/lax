@@ -22,3 +22,4 @@ chat logs.
 | [0009](0009-writing-assistant.md) | A writing assistant called with the Option key | Accepted |
 | [0010](0010-encrypted-database.md) | Encrypt the database with SQLCipher, keyed from the Keychain | Accepted |
 | [0011](0011-pages-in-the-database.md) | Keep the memory pages in the encrypted database | Accepted |
+| [0012](0012-app-lock.md) | Lock Lax's window with Touch ID or the login password | Accepted |

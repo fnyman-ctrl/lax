@@ -99,7 +99,12 @@ The rules are in [GUARDRAILS.md](GUARDRAILS.md), with the test behind each in
 
 - **"Lax couldn't reach the model."** The model server isn't running. Start it
   (in LM Studio: the Developer tab, or `~/.lmstudio/bin/lms server start`).
-- **Nothing is captured after an update.** Turn Lax on again under Accessibility.
+- **Ask and drafts take 15–30 seconds.** In LM Studio, turn off "Only Keep Last
+  JIT Loaded Model" under Developer → Server Settings, so the chat and embedding
+  models stay loaded together. [MODELS.md](MODELS.md) has the numbers.
+- **Nothing is captured after an update.** A Lax you built yourself counts as a
+  new app after every build: under Accessibility, remove Lax with − and add it
+  again with +, even if its switch looks on.
 - **The salmon doesn't come.** Check that the writing assistant is on under
   **Write**, that the app isn't excluded, and that Lax isn't paused. It never
   comes to password fields.
