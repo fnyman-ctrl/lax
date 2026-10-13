@@ -98,6 +98,11 @@ previous one, so they can be built, tested and improved independently.
   from the first part that changed: for a follow-up that finds the same
   entries ("and what else?"), only the conversation's new turn and the
   question. Other entries, or another person named, change it earlier.
+- The answer is shown as the model writes it: the reply streams from the
+  server, the text of its `answer` field goes to the window as plain text
+  (`src-tauri/src/models/partial.rs`), and when the reply is complete it is
+  validated as always and replaces what was shown, or the error does
+  (GUARDRAILS §5).
 
 ## Write
 

@@ -117,27 +117,6 @@ pub async fn ask_for<T: DeserializeOwned + Validate>(
     run(client, model, &messages, max_tokens).await
 }
 
-/// Like [`ask_for`], with the request placed after the captured blocks.
-///
-/// The prompt then starts with what stays the same from one request to the
-/// next (the rules, the task, then the blocks in the order given), and a
-/// server that keeps a prompt cache can reuse it instead of reading it
-/// again. Callers put their most stable blocks first. The same rules for
-/// `request` apply: the user's own words and facts from Lax, never
-/// captured text.
-pub async fn ask_for_last<T: DeserializeOwned + Validate>(
-    client: &ModelClient,
-    model: &str,
-    task: &'static str,
-    shape: &'static str,
-    request: &str,
-    captured: &[Captured<'_>],
-    max_tokens: u32,
-) -> Result<T, StructuredError> {
-    let messages = messages(task, shape, Some(Request::Last(request)), captured);
-    run(client, model, &messages, max_tokens).await
-}
-
 /// Where the user's request goes, relative to the captured blocks.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Request<'a> {
@@ -186,7 +165,44 @@ async fn run<T: DeserializeOwned + Validate>(
         .chat(model, messages, Some(max_tokens))
         .await
         .map_err(StructuredError::Model)?;
-    let parsed = parse::<T>(&reply);
+    checked(&reply)
+}
+
+/// Like [`ask_for`], with the request placed after the captured blocks and
+/// the reply streamed.
+///
+/// The prompt starts with what stays the same from one request to the next
+/// (the rules, the task, then the blocks in the order given), so a server
+/// that keeps a prompt cache can reuse it instead of reading it again.
+/// Callers put their most stable blocks first. The same rules for `request`
+/// apply: the user's own words and facts from Lax, never captured text.
+///
+/// `on_text` gets each piece of the model's raw output as it is written.
+/// The pieces are not validated and may only be shown as GUARDRAILS §5
+/// allows for Ask: as plain text, taken back if the reply fails. The whole
+/// reply is validated as always.
+#[allow(clippy::too_many_arguments)] // Those of `ask_for`, and where the text goes.
+pub async fn ask_streaming<T: DeserializeOwned + Validate>(
+    client: &ModelClient,
+    model: &str,
+    task: &'static str,
+    shape: &'static str,
+    request: &str,
+    captured: &[Captured<'_>],
+    max_tokens: u32,
+    on_text: impl FnMut(&str),
+) -> Result<T, StructuredError> {
+    let messages = messages(task, shape, Some(Request::Last(request)), captured);
+    let reply = client
+        .chat_stream(model, &messages, Some(max_tokens), on_text)
+        .await
+        .map_err(StructuredError::Model)?;
+    checked(&reply)
+}
+
+/// [`parse`], logging a discard without content.
+fn checked<T: DeserializeOwned + Validate>(reply: &str) -> Result<T, StructuredError> {
+    let parsed = parse::<T>(reply);
     if let Err(error) = &parsed {
         logging::warn(
             "model.output_discarded",

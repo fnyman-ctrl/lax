@@ -3,6 +3,8 @@
 
 mod client;
 mod endpoint;
+pub(crate) mod partial;
+mod sse;
 pub(crate) mod structured;
 
 use std::future::Future;
