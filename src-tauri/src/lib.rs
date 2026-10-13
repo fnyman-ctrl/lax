@@ -42,6 +42,7 @@ pub fn run() {
     tauri::Builder::default()
         .manage(pause::Pause::default())
         .manage(models::ModelTurn::default())
+        .manage(models::ModelHealth::default())
         .manage(capture::Heartbeat::default())
         .manage(exclusions::Current::default())
         .manage(summon::Summoned::default())

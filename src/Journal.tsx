@@ -3,7 +3,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { usePaged } from "./usePaged";
 
 // Shapes returned by src-tauri/src/journal.rs.
-type JournalStatus = { enabled: boolean; model: string | null; waiting: number };
+type JournalStatus = {
+  enabled: boolean;
+  model: string | null;
+  waiting: number;
+  modelDownSince: number | null;
+};
 type Episode = {
   id: number;
   startedAt: number;
@@ -66,6 +71,20 @@ export function Journal({ onShowModels }: { onShowModels: () => void }) {
 
   return (
     <section className="journal">
+      {status.enabled && status.modelDownSince !== null && status.waiting > 0 && (
+        <div className="warning" role="status">
+          <p>
+            <strong>Lax can't reach the model server</strong> (since{" "}
+            {new Date(status.modelDownSince).toLocaleTimeString(undefined, {
+              hour: "2-digit",
+              minute: "2-digit",
+            })}
+            ), so new entries wait. Start it again: in LM Studio, the Developer tab, or{" "}
+            <code>~/.lmstudio/bin/lms server start</code>; in Ollama, open the app. Lax tries
+            again every ten minutes.
+          </p>
+        </div>
+      )}
       <div className="card journal-status">
         {status.enabled ? (
           <>

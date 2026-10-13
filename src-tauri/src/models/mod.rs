@@ -20,6 +20,39 @@ pub use client::{ChatMessage, ModelClient, ModelError, Role};
 /// The user comes first. While a question waits or is answered, background
 /// work doesn't start, and work already running is dropped (and done again
 /// in a later round), so the user never waits for the journal.
+/// Whether the chat model's server could be reached the last time Lax
+/// tried, so the window can say why entries are waiting. Only in memory.
+#[derive(Default)]
+pub struct ModelHealth {
+    /// When it was first found unreachable since it last answered, in
+    /// milliseconds since 1970; 0 while it answers (or hasn't been tried).
+    down_since: std::sync::atomic::AtomicI64,
+}
+
+impl ModelHealth {
+    /// The server couldn't be reached at `now_ms`.
+    pub fn down(&self, now_ms: i64) {
+        let _ = self.down_since.compare_exchange(
+            0,
+            now_ms.max(1),
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    /// The server answered.
+    pub fn up(&self) {
+        self.down_since
+            .store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Since when it has been unreachable, if it is.
+    pub fn down_since(&self) -> Option<i64> {
+        let since = self.down_since.load(std::sync::atomic::Ordering::Relaxed);
+        (since != 0).then_some(since)
+    }
+}
+
 #[derive(Default)]
 pub struct ModelTurn {
     lock: tokio::sync::Mutex<()>,
@@ -122,5 +155,17 @@ mod tests {
         assert_eq!(turn.background(&pause, async { 1 }).await, None);
         drop(held);
         assert_eq!(turn.background(&pause, async { 1 }).await, Some(1));
+    }
+
+    #[test]
+    fn health_remembers_when_the_server_went_away() {
+        let health = ModelHealth::default();
+        assert_eq!(health.down_since(), None);
+        health.down(1_000);
+        // Later failures keep the first time.
+        health.down(5_000);
+        assert_eq!(health.down_since(), Some(1_000));
+        health.up();
+        assert_eq!(health.down_since(), None);
     }
 }

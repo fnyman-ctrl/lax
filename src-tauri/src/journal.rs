@@ -21,7 +21,7 @@ use tauri::{AppHandle, Manager};
 use crate::logging::{self, ErrorKind, Field};
 use crate::memory;
 use crate::models::structured::{self, Captured, StructuredError, Validate};
-use crate::models::{Endpoint, ModelClient, ModelError, ModelTurn};
+use crate::models::{Endpoint, ModelClient, ModelError, ModelHealth, ModelTurn};
 use crate::pause::Pause;
 use crate::store::{Capture, ModelTask, NewEpisode, Store};
 
@@ -164,6 +164,7 @@ async fn round(app: &AppHandle, setbacks: &mut Setbacks) -> Result<(), ()> {
         }
         match summary {
             Ok(summary) => {
+                app.state::<ModelHealth>().up();
                 let stored = with_store(app, |store| {
                     store.record_episode(
                         &NewEpisode {
@@ -201,8 +202,12 @@ async fn round(app: &AppHandle, setbacks: &mut Setbacks) -> Result<(), ()> {
                     ],
                 );
                 if unavailable {
+                    app.state::<ModelHealth>()
+                        .down(Utc::now().timestamp_millis());
                     return Err(());
                 }
+                // It answered, if badly.
+                app.state::<ModelHealth>().up();
                 setbacks.bad_answer(&work.block_ids);
                 // Try again next round rather than at once, so a hard block
                 // doesn't keep the Mac busy with back-to-back attempts.
@@ -391,6 +396,9 @@ pub struct JournalStatus {
     pub model: Option<String>,
     /// Captures waiting to be summarized.
     pub waiting: usize,
+    /// Since when the model's server couldn't be reached, in milliseconds
+    /// since 1970, if it can't.
+    pub model_down_since: Option<i64>,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -409,6 +417,7 @@ fn status(store: &Store) -> crate::store::Result<JournalStatus> {
         enabled: store.journal_enabled()?,
         model: store.model_choice(ModelTask::Chat)?.map(|c| c.model),
         waiting: store.unsummarized_count()?,
+        model_down_since: None,
     })
 }
 
@@ -421,9 +430,11 @@ fn command<T>(
 
 #[tauri::command(async)]
 pub fn journal_status(app: AppHandle) -> Result<JournalStatus, String> {
-    command(&app, |store| {
+    let mut status = command(&app, |store| {
         status(store).map_err(|_| "Lax couldn't read the journal.".to_string())
-    })
+    })?;
+    status.model_down_since = app.state::<ModelHealth>().down_since();
+    Ok(status)
 }
 
 /// Turns the journal on or off. It can only be turned on with a chat model

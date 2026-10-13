@@ -23,7 +23,7 @@ use tauri::{AppHandle, Manager};
 use crate::journal::EpisodeItem;
 use crate::logging::{self, ErrorKind, Field};
 use crate::models::structured::{self, Captured, StructuredError, Validate};
-use crate::models::{Endpoint, ModelClient, ModelTurn};
+use crate::models::{Endpoint, ModelClient, ModelHealth, ModelTurn};
 use crate::pause::Pause;
 use crate::store::{EntityKind, Episode, ModelTask, Store};
 
@@ -926,6 +926,13 @@ pub async fn ask_memory(
         }
         Ok(reply)
     });
+    // Whether the server answered, for the journal's status.
+    match &reply {
+        Err(error) if error.model_unavailable() => app
+            .state::<ModelHealth>()
+            .down(Utc::now().timestamp_millis()),
+        _ => app.state::<ModelHealth>().up(),
+    }
     match reply {
         Ok(reply) => {
             let mut cited: Vec<usize> = reply.sources.iter().map(|&n| n as usize - 1).collect();
