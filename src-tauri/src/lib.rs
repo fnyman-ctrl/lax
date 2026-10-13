@@ -12,6 +12,9 @@ mod forget;
 mod glass;
 mod insert;
 mod journal;
+#[cfg(target_os = "macos")]
+#[allow(dead_code)] // Nothing uses the key until the store does (ADR 0010, rollout step 3).
+mod keychain;
 #[allow(dead_code)] // Some levels and fields have no user yet.
 mod logging;
 mod memory;

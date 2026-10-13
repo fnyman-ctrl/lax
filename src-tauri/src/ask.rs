@@ -31,11 +31,15 @@ use crate::store::{EntityKind, Episode, ModelTask, Store};
 /// fits a small local model's context and is answered within the timeout.
 const MAX_ENTRIES: usize = 40;
 /// Smaller than the journal's blocks: the user waits while the model reads
-/// it, and finding by meaning picks fewer, better entries.
-const MAX_CHARS: usize = 8_000;
-/// Most entries taken from each way of finding them.
+/// it, and finding by meaning picks fewer, better entries. From 8,000 to
+/// 5,000 took about 1,000 prompt tokens, and 2 seconds before the first
+/// word, off a question on an M1 Pro (#124).
+const MAX_CHARS: usize = 5_000;
+/// Most entries taken from each way of finding them. A count of candidates,
+/// not a size: the budget above decides how many of them are given.
 const PER_SOURCE: usize = 40;
-/// Entries found by meaning.
+/// Entries found by meaning. They take turns with those found by name and
+/// by word, so some of them are given even when the others are many.
 const NEAREST: usize = 12;
 
 /// The question as a vector, for finding entries by meaning.
@@ -177,7 +181,10 @@ fn gather<Tz: TimeZone>(
     question: &str,
     meaning: Option<&Meaning>,
     now: &DateTime<Tz>,
-) -> crate::store::Result<Found> {
+) -> crate::store::Result<Found>
+where
+    Tz::Offset: std::fmt::Display,
+{
     gather_after(store, question, &[], meaning, now)
 }
 
@@ -192,7 +199,10 @@ fn gather_after<Tz: TimeZone>(
     earlier: &[&str],
     meaning: Option<&Meaning>,
     now: &DateTime<Tz>,
-) -> crate::store::Result<Found> {
+) -> crate::store::Result<Found>
+where
+    Tz::Offset: std::fmt::Display,
+{
     let asked = words(question);
     let before = earlier.last().map(|q| words(q)).unwrap_or_default();
     let names = store.entity_names()?;
@@ -246,7 +256,7 @@ fn gather_after<Tz: TimeZone>(
             }
         }
         None => {
-            let both: Vec<Episode> = mentioning.into_iter().chain(matching).chain(near).collect();
+            let both = in_turns([mentioning, matching, near]);
             if both.is_empty() {
                 recent_only = true;
                 store.episodes(None, RECENT)?
@@ -256,10 +266,13 @@ fn gather_after<Tz: TimeZone>(
         }
     };
 
-    // What the memory knows comes first, and counts against the budget.
+    // What the memory knows comes first, and counts against the budget, but
+    // for at most half of it: entries always have room.
     let known = known(store, &entities)?;
     let mut seen = HashSet::new();
-    let mut chars: usize = known.iter().map(|k| k.chars().count()).sum();
+    let known_chars: usize = known.iter().map(|k| k.chars().count()).sum();
+    let mut chars = known_chars.min(MAX_CHARS / 2);
+    let tz = now.timezone();
     let mut episodes = Vec::new();
     for episode in candidates {
         if episodes.len() >= MAX_ENTRIES {
@@ -268,9 +281,11 @@ fn gather_after<Tz: TimeZone>(
         if !seen.insert(episode.id) {
             continue;
         }
-        let length = episode.summary.chars().count() + 60;
+        // As the model will see it, with its number, time and apps.
+        let length = entry_text(MAX_ENTRIES, &episode, &tz).chars().count();
         if chars + length > MAX_CHARS {
-            break;
+            // A shorter one further down may still fit.
+            continue;
         }
         chars += length;
         episodes.push(episode);
@@ -282,6 +297,20 @@ fn gather_after<Tz: TimeZone>(
         recent_only,
         timed: range.is_some(),
     })
+}
+
+/// The lists in turns: the first of each, then the second of each, and so
+/// on, so the budget cuts from all of them alike.
+fn in_turns<const N: usize>(lists: [Vec<Episode>; N]) -> Vec<Episode> {
+    let mut lists = lists.map(Vec::into_iter);
+    let mut out = Vec::new();
+    loop {
+        let before = out.len();
+        out.extend(lists.iter_mut().filter_map(Iterator::next));
+        if out.len() == before {
+            return out;
+        }
+    }
 }
 
 /// What the memory knows that bears on `text` (the writing assistant's
@@ -900,17 +929,7 @@ pub async fn ask_memory(
         return Err("The chat model's address isn't valid. Check it under Models.".to_string());
     };
     let started = std::time::Instant::now();
-    let texts: Vec<String> = conversation(&earlier)
-        .into_iter()
-        .chain(found.known.iter().cloned())
-        .chain(
-            found
-                .episodes
-                .iter()
-                .enumerate()
-                .map(|(i, e)| entry_text(i + 1, e, &Local)),
-        )
-        .collect();
+    let texts = blocks(&found, &earlier, &Local);
     let request = request(&question, &now);
     let asked = answer(endpoint, &choice.model, &request, &texts);
     let Some(reply) = app.state::<Pause>().unless_paused(asked).await else {
@@ -987,16 +1006,33 @@ async fn answer(
         .map_err(StructuredError::Model)?
         .without_reasoning();
     let captured: Vec<Captured> = texts.iter().map(|t| Captured(t.as_str())).collect();
-    structured::ask_for(
-        &client,
-        model,
-        TASK,
-        SHAPE,
-        Some(request),
-        &captured,
-        MAX_TOKENS,
-    )
-    .await
+    structured::ask_for_last(&client, model, TASK, SHAPE, request, &captured, MAX_TOKENS).await
+}
+
+/// The captured blocks for the model, most stable first, so that a
+/// server's prompt cache can reuse the start of the prompt for the next
+/// question: what the memory knows about the user (the same for every
+/// question), what it knows about the entities named, the journal entries,
+/// and the conversation so far, which grows with every turn. The question
+/// and today's date and time go after all of them, as the request
+/// ([`structured::ask_for_last`]).
+fn blocks<Tz: TimeZone>(found: &Found, earlier: &[Earlier], tz: &Tz) -> Vec<String>
+where
+    Tz::Offset: std::fmt::Display,
+{
+    found
+        .known
+        .iter()
+        .cloned()
+        .chain(
+            found
+                .episodes
+                .iter()
+                .enumerate()
+                .map(|(i, e)| entry_text(i + 1, e, tz)),
+        )
+        .chain(conversation(earlier))
+        .collect()
 }
 
 fn with_store<T>(app: &AppHandle, work: impl FnOnce(&Store) -> T) -> Option<T> {
@@ -1319,7 +1355,7 @@ mod tests {
         let entries: usize = found
             .episodes
             .iter()
-            .map(|e| e.summary.chars().count() + 60)
+            .map(|e| entry_text(MAX_ENTRIES, e, &stockholm()).chars().count())
             .sum();
         assert!(known + entries <= MAX_CHARS);
         let _ = std::fs::remove_dir_all(folder);
@@ -1390,15 +1426,120 @@ mod tests {
             episode(&mut store, at(10, hour), &long);
         }
         let found = gather(&store, "Vad gjorde jag igår?", None, &now()).unwrap();
+        // Counted as the model sees them, with number, time and apps.
         let chars: usize = found
             .episodes
             .iter()
-            .map(|e| e.summary.chars().count())
+            .enumerate()
+            .map(|(i, e)| entry_text(i + 1, e, &stockholm()).chars().count())
             .sum();
         assert!(chars <= MAX_CHARS);
         assert!(found.episodes.len() < 24);
         // The end of the day is kept.
         assert_eq!(found.episodes.last().unwrap().started_at, at(10, 23));
+    }
+
+    #[test]
+    fn what_the_memory_knows_leaves_room_for_entries() {
+        let mut store = sample();
+        let anna = store.entity_names().unwrap()[0].0;
+        store.keep_entity(anna).unwrap();
+        let folder = std::env::temp_dir().join(format!(
+            "lax-ask-room-test-{}",
+            crate::pages::block::new_id().unwrap()
+        ));
+        crate::pages::prepare_folder(&folder).unwrap();
+        store.set_memory_enabled(true).unwrap();
+        crate::pages::sync(
+            &mut store,
+            &folder,
+            &mut crate::pages::ScanCache::new(),
+            at(11, 12),
+            &stockholm(),
+        )
+        .unwrap();
+        let sources: Vec<i64> = store
+            .episodes(None, 10)
+            .unwrap()
+            .iter()
+            .map(|e| e.id)
+            .collect();
+        // Two full pages: as many facts as the memory writes, as long as
+        // they may be: without the cap, no entry would fit after them.
+        let facts: Vec<String> = (0..12)
+            .map(|i| format!("Fakta {i:02}: {}", "x".repeat(190)))
+            .collect();
+        for page in [
+            store.page_of(anna).unwrap().unwrap().id,
+            store.about_me_page().unwrap().unwrap().id,
+        ] {
+            store
+                .set_facts(&page, &facts, &sources, at(11, 12))
+                .unwrap();
+        }
+        let found = gather(&store, "Vad gjorde jag med Anna igår?", None, &now()).unwrap();
+        let known: usize = found.known.iter().map(|k| k.chars().count()).sum();
+        assert!(known + 60 > MAX_CHARS, "{known}");
+        // Yesterday's entry about Anna is still given.
+        assert_eq!(summaries(&found), ["Ringde Anna om leveransen."]);
+        let _ = std::fs::remove_dir_all(folder);
+    }
+
+    #[test]
+    fn entries_found_by_meaning_take_turns_with_the_others() {
+        let mut store = Store::open_in_memory().unwrap();
+        // Many entries with the word, more than the budget holds…
+        for hour in 0..20 {
+            episode(
+                &mut store,
+                at(2, hour),
+                &format!("Lanseringen {}", "x ".repeat(150)),
+            );
+        }
+        // …and one that is about it only in meaning.
+        // As long as the others, so it can't just squeeze in at the end.
+        let close = episode(
+            &mut store,
+            at(1, 9),
+            &format!("Planerade releasen med Bo. {}", "y ".repeat(150)),
+        );
+        let all = store.episodes(None, 30).unwrap();
+        let vectors: Vec<(i64, Vec<f32>)> = all
+            .iter()
+            .map(|e| {
+                (
+                    e.id,
+                    if e.id == close {
+                        vec![1.0, 0.0]
+                    } else {
+                        vec![0.0, 1.0]
+                    },
+                )
+            })
+            .collect();
+        store.set_vectors("m", &vectors).unwrap();
+        let meaning = Meaning {
+            model: "m".to_string(),
+            vector: vec![1.0, 0.0],
+        };
+        let found = gather(&store, "Hur går lanseringen?", Some(&meaning), &now()).unwrap();
+        assert!(found.episodes.len() < 21);
+        assert!(
+            summaries(&found)
+                .iter()
+                .any(|s| s.starts_with("Planerade releasen"))
+        );
+    }
+
+    #[test]
+    fn lists_take_turns() {
+        let store = sample();
+        let all = store.episodes(None, 10).unwrap();
+        let ids = |list: &[Episode]| list.iter().map(|e| e.id).collect::<Vec<_>>();
+        let (a, b) = (all[..3].to_vec(), all[3..].to_vec());
+        let mixed = in_turns([a.clone(), b.clone(), Vec::new()]);
+        assert_eq!(ids(&mixed), [a[0].id, b[0].id, a[1].id, a[2].id]);
+        assert!(in_turns::<2>([Vec::new(), Vec::new()]).is_empty());
     }
 
     #[test]
@@ -1573,6 +1714,82 @@ mod tests {
         let her = gather_after(&store, "Vad sa hon?", &["Vad gör Anna?"], None, &now()).unwrap();
         assert!(!her.recent_only);
         assert!(summaries(&her).contains(&"Ringde Anna om leveransen."));
+    }
+
+    #[test]
+    fn questions_and_follow_ups_share_the_start_of_the_prompt() {
+        let store = sample();
+        let known = vec![
+            "What the memory knows about the user:\n- Jobbar med lanseringar.".to_string(),
+            "What the memory knows about Anna (person):\n- Leder Q3-lanseringen.".to_string(),
+        ];
+        let prompt = |found: &Found, question: &str, earlier: &[Earlier], minutes: i64| {
+            let texts = blocks(found, earlier, &stockholm());
+            let captured: Vec<Captured> = texts.iter().map(|t| Captured(t.as_str())).collect();
+            let now = now() + TimeDelta::minutes(minutes);
+            structured::messages(
+                TASK,
+                SHAPE,
+                Some(structured::Request::Last(&request(question, &now))),
+                &captured,
+            )
+        };
+        let turn = |question: &str, answer: &str| Earlier {
+            question: question.to_string(),
+            answer: answer.to_string(),
+        };
+
+        // A question, then follow-ups with no words of their own, which
+        // gather what the question before them did.
+        let asked = "Vad gjorde jag med Anna?";
+        let mut found = gather(&store, asked, None, &now()).unwrap();
+        found.known = known.clone();
+        let [system, first] = prompt(&found, asked, &[], 0);
+        let mut follow_up = gather_after(&store, "Och vad mer?", &[asked], None, &now()).unwrap();
+        follow_up.known = known.clone();
+        let ids = |found: &Found| found.episodes.iter().map(|e| e.id).collect::<Vec<_>>();
+        assert_eq!(ids(&follow_up), ids(&found));
+        let earlier = [turn(asked, "Du mailade henne om offerten.")];
+        let [same_system, second] = prompt(&follow_up, "Och vad mer?", &earlier, 3);
+        let longer = [
+            turn(asked, "Du mailade henne om offerten."),
+            turn("Och vad mer?", "Du ringde henne."),
+        ];
+        let [_, third] = prompt(&follow_up, "Vad sa hon?", &longer, 5);
+        let [_, other] = prompt(&follow_up, "Och sen då?", &longer, 5);
+
+        // The system message is the same, byte for byte: no date or count.
+        assert_eq!(system.content, same_system.content);
+        // The first question's prompt up to its request is the start of the
+        // follow-ups' prompts: the memory, then the entries.
+        let stable = &first.content[..first.content.find("Request from the user:").unwrap()];
+        assert!(stable.starts_with("<captured>\nWhat the memory knows about the user:"));
+        assert!(stable.contains("Ringde Anna om leveransen."));
+        assert!(second.content.starts_with(stable));
+        assert!(third.content.starts_with(stable));
+        // The conversation grows at its end, so a later follow-up also
+        // starts with the one before it, up to that one's request.
+        let before = &second.content[..second.content.find("Request from the user:").unwrap()];
+        assert!(
+            third
+                .content
+                .starts_with(before.trim_end_matches("\n</captured>\n\n"))
+        );
+        // Two different questions after the same conversation differ only at
+        // the very end, in the question.
+        let shared = third
+            .content
+            .char_indices()
+            .zip(other.content.chars())
+            .find(|((_, a), b)| a != b)
+            .map(|((i, _), _)| i)
+            .unwrap();
+        assert!(third.content[..shared].ends_with("\n\nQuestion: "));
+        // The conversation comes after the entries, and the request last.
+        let conversation = second.content.find("The conversation so far").unwrap();
+        assert!(conversation > second.content.find("Ringde Anna").unwrap());
+        assert!(second.content.find("Request from the user:").unwrap() > conversation);
+        assert!(second.content.ends_with("Question: Och vad mer?"));
     }
 
     #[test]
