@@ -1310,3 +1310,60 @@ button.link {
     display: none;
   }
 }
+
+/* The first-start guide (src/Setup.tsx). */
+.setup-head {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.setup-head img {
+  width: 76px;
+  height: 44px;
+  flex: none;
+  image-rendering: pixelated;
+}
+
+.setup-head h1 {
+  margin: 0;
+  font-size: 1.7rem;
+  letter-spacing: -0.025em;
+}
+
+.setup-head p {
+  margin: 0.2rem 0 0;
+}
+
+.setup-advice details {
+  margin-top: 0.5rem;
+}
+
+.setup-advice summary {
+  cursor: pointer;
+  color: var(--link);
+}
+
+.setup-features {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.setup-features label {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-start;
+  cursor: pointer;
+}
+
+.setup-features input {
+  margin-top: 0.3rem;
+}
+
+.setup-nav {
+  margin-top: 1.25rem;
+}

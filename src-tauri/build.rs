@@ -43,6 +43,8 @@ fn main() {
             "merge_entities",
             "dont_learn_list",
             "allow_learning",
+            "setup_status",
+            "finish_setup",
             "writing_status",
             "set_writing_enabled",
             "set_writing_key",

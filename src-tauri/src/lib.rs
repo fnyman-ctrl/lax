@@ -23,6 +23,7 @@ mod pages;
 mod pause;
 #[allow(dead_code)] // RemoteRedactor is used by remote providers (#16).
 mod redact;
+mod setup;
 mod site;
 #[allow(dead_code)] // Plain search and setting the capture interval await the settings window.
 mod store;
@@ -91,6 +92,8 @@ pub fn run() {
             memory::merge_entities,
             memory::dont_learn_list,
             memory::allow_learning,
+            setup::setup_status,
+            setup::finish_setup,
             summon::writing_status,
             summon::set_writing_enabled,
             summon::set_writing_key,

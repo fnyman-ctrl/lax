@@ -45,6 +45,8 @@
     "allow-merge-entities",
     "allow-dont-learn-list",
     "allow-allow-learning",
+    "allow-setup-status",
+    "allow-finish-setup",
     "allow-writing-status",
     "allow-set-writing-enabled",
     "allow-set-writing-key",

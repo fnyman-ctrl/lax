@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { Setup } from "./Setup";
 import { Viewer } from "./Viewer";
 // The pixel salmon (docs/BRAND.md).
 import laxIcon from "../src-tauri/icons/salmon.svg";
@@ -16,6 +17,16 @@ function App() {
   // Without the permission, onboarding is shown, but what was captured
   // before can still be seen.
   const [showViewer, setShowViewer] = useState(false);
+  // The first-start guide, once access is granted; null while unknown.
+  const [setup, setSetup] = useState<{ needed: boolean; memoryGb: number } | null>(null);
+
+  useEffect(() => {
+    if (granted === true && setup === null) {
+      invoke<{ needed: boolean; memoryGb: number }>("setup_status").then(setSetup, () =>
+        setSetup({ needed: false, memoryGb: 0 }),
+      );
+    }
+  }, [granted, setup]);
 
   const refresh = useCallback(() => {
     invoke<boolean>("accessibility_status").then(setGranted, () => setGranted("unknown"));
@@ -37,6 +48,12 @@ function App() {
   let content;
   if (granted === "unknown") {
     content = <CheckFailed />;
+  } else if (granted && setup === null) {
+    return null;
+  } else if (granted && setup?.needed) {
+    content = (
+      <Setup memoryGb={setup.memoryGb} onDone={() => setSetup({ ...setup, needed: false })} />
+    );
   } else if (granted || showViewer) {
     content = <Viewer />;
   } else {

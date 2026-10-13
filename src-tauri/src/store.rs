@@ -71,6 +71,7 @@ const JOURNAL_KEY: &str = "journal_enabled";
 pub const SUMMARIZED_KEPT_DAYS: i64 = 30;
 const WRITING_KEY: &str = "writing_enabled";
 const WRITING_CALL_KEY: &str = "writing_key";
+const SETUP_KEY: &str = "setup_finished";
 /// How long the outbox log is kept unless the user chooses otherwise.
 pub const DEFAULT_OUTBOX_RETENTION_DAYS: u32 = 90;
 const PAUSE_KEY: &str = "paused_until";
@@ -397,6 +398,15 @@ impl Store {
 
     pub fn set_writing_enabled(&self, enabled: bool) -> Result<()> {
         self.set_setting(WRITING_KEY, if enabled { "on" } else { "off" })
+    }
+
+    /// Whether the user finished the first-start guide.
+    pub fn setup_finished(&self) -> Result<bool> {
+        Ok(self.setting(SETUP_KEY)?.as_deref() == Some("yes"))
+    }
+
+    pub fn set_setup_finished(&self) -> Result<()> {
+        self.set_setting(SETUP_KEY, "yes")
     }
 
     /// The name of the key the user double-taps to call the writing
