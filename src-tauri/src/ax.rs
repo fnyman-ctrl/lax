@@ -19,7 +19,7 @@ use objc2::rc::autoreleasepool;
 use objc2_app_kit::NSWorkspace;
 use objc2_core_foundation::{
     CFArray, CFBoolean, CFDictionary, CFGetTypeID, CFIndex, CFNumber, CFRange, CFRetained,
-    CFString, CFType, CFTypeID, CFURL, kCFBooleanTrue,
+    CFString, CFType, CFTypeID, CFURL, kCFBooleanFalse, kCFBooleanTrue,
 };
 
 use crate::capture::{App, Node, Screen, truncate_chars};
@@ -229,6 +229,7 @@ struct Names {
     focused_window: CFRetained<CFString>,
     focused: CFRetained<CFString>,
     manual_accessibility: CFRetained<CFString>,
+    enhanced_user_interface: CFRetained<CFString>,
     visible_character_range: CFRetained<CFString>,
     string_for_range: CFRetained<CFString>,
     focused_element: CFRetained<CFString>,
@@ -262,6 +263,7 @@ impl Names {
             focused_window: name("AXFocusedWindow"),
             focused: name("AXFocused"),
             manual_accessibility: name("AXManualAccessibility"),
+            enhanced_user_interface: name("AXEnhancedUserInterface"),
             visible_character_range: name("AXVisibleCharacterRange"),
             string_for_range: name("AXStringForRange"),
             focused_element: name("AXFocusedUIElement"),
@@ -323,6 +325,34 @@ pub struct AxScreen {
     names: Rc<Names>,
     /// Processes already asked to expose their accessibility tree.
     prepared: HashSet<i32>,
+}
+
+/// An app asked for its full accessibility tree by [`AxScreen::wake`]; the
+/// request is taken back when this is dropped, since some apps (Chromium)
+/// change how they behave while it stands.
+pub struct Awake(Element);
+
+impl Drop for Awake {
+    fn drop(&mut self) {
+        self.0
+            .set_flag(&self.0.names.enhanced_user_interface, false);
+    }
+}
+
+impl AxScreen {
+    /// Asks `app` for its full accessibility tree, as VoiceOver does, until
+    /// the returned guard is dropped. Pages shows only an empty scroll area
+    /// for its document until something asks; it then builds the tree and
+    /// keeps it, although it answers the request with an error.
+    pub fn wake(&self, app: &App) -> Option<Awake> {
+        // SAFETY: any pid is accepted; returns a new element or null.
+        let element = Element {
+            element: unsafe { owned(AXUIElementCreateApplication(app.pid)) }?,
+            names: self.names.clone(),
+        };
+        element.set_flag(&self.names.enhanced_user_interface, true);
+        Some(Awake(element))
+    }
 }
 
 impl Default for AxScreen {
@@ -543,14 +573,18 @@ impl Element {
     }
 
     fn set_true(&self, attribute: &CFString) {
-        // SAFETY: reading a static the framework provides.
-        let Some(yes) = (unsafe { kCFBooleanTrue }) else {
+        self.set_flag(attribute, true);
+    }
+
+    fn set_flag(&self, attribute: &CFString, on: bool) {
+        // SAFETY: reading statics the framework provides.
+        let Some(value) = (unsafe { if on { kCFBooleanTrue } else { kCFBooleanFalse } }) else {
             return;
         };
-        let yes: &CFBoolean = yes;
+        let value: &CFBoolean = value;
         // SAFETY: valid element, attribute and value. A failure (the app
         // doesn't support it) is ignored.
-        unsafe { AXUIElementSetAttributeValue(&self.element, attribute, yes.as_ref()) };
+        unsafe { AXUIElementSetAttributeValue(&self.element, attribute, value.as_ref()) };
     }
 
     /// Where the text cursor is, or the element's first line where the app
