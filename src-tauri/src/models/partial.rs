@@ -16,10 +16,14 @@ use super::structured::is_invisible;
 
 /// Longest key read; a longer one is never the field.
 const MAX_KEY_CHARS: usize = 64;
+/// Most bytes before the object: room for a code fence and white space.
+const MAX_BEFORE: usize = 32;
 
 #[derive(Debug)]
 pub(crate) struct FieldText {
     field: &'static str,
+    /// What came before the object.
+    before: String,
     /// Inside the top-level object (`{` seen).
     started: bool,
     /// The object ended, or the text wasn't the JSON asked for: nothing more
@@ -73,6 +77,7 @@ impl FieldText {
     pub(crate) fn new(field: &'static str) -> Self {
         FieldText {
             field,
+            before: String::new(),
             started: false,
             stopped: false,
             depth: 0,
@@ -99,12 +104,17 @@ impl FieldText {
             match self.string {
                 Some(kind) => self.in_string(kind, c, &mut out),
                 None if !self.started => {
-                    // Anything before the object, such as a code fence, is
-                    // passed over; validation decides whether it may be there.
-                    if c == '{' {
+                    // Only a code fence may come before the object, as
+                    // validation allows; prose means the reply will be
+                    // refused, so nothing of it is shown.
+                    if c == '{' && matches!(self.before.trim(), "" | "```" | "```json") {
                         self.started = true;
                         self.depth = 1;
                         self.expect = Expect::Key;
+                    } else if c == '{' || self.before.len() >= MAX_BEFORE {
+                        self.stop();
+                    } else {
+                        self.before.push(c);
                     }
                 }
                 None => self.outside_strings(c),
@@ -388,11 +398,19 @@ mod tests {
     }
 
     #[test]
-    fn prose_before_the_object_is_passed_over() {
-        // Validation refuses such a reply; this only decides what shows
-        // while it streams, and the streamed text is then taken back.
-        assert_eq!(read_cut_anywhere(r#"Sure! {"answer": "Hej"}"#), "Hej");
+    fn only_a_code_fence_may_come_before_the_object() {
+        // Validation refuses anything else, so nothing of it is shown.
+        assert_eq!(read_cut_anywhere(r#"Sure! {"answer": "Hej"}"#), "");
+        assert_eq!(read_cut_anywhere(r#"x{"answer": "Hej"}"#), "");
         assert_eq!(read_cut_anywhere("No JSON at all"), "");
+        assert_eq!(
+            read_cut_anywhere(&format!("{}{{\"answer\": \"Hej\"}}", " ".repeat(40))),
+            ""
+        );
+        for before in ["", "  \n", "```", "```json\n", "\n```json\n  "] {
+            let reply = format!("{before}{{\"answer\": \"Hej\"}}");
+            assert_eq!(read_cut_anywhere(&reply), "Hej", "{reply:?}");
+        }
     }
 
     #[test]
