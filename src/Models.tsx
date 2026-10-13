@@ -156,6 +156,13 @@ export function Models() {
           <h3>
             {server.name} <span className="muted">· {server.baseUrl}</span>
           </h3>
+          {/lm studio/i.test(server.name) && (
+            <p className="muted">
+              Keep both models loaded: in LM Studio, Developer → Server Settings, turn off
+              "Only Keep Last JIT Loaded Model". Otherwise LM Studio reloads the chat model
+              after every search, and each answer takes 15–30 s instead of a few.
+            </p>
+          )}
           {server.models.length === 0 ? (
             <p className="muted">It's running, but has no models. Download one in {server.name}.</p>
           ) : (
