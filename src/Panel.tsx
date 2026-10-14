@@ -9,6 +9,13 @@ type Draft = { draft: string; pages: string[]; readWindow: boolean };
 
 /** When the card has finished opening: `.panel-card`'s unfold in styles.css. */
 const CARD_OPENS_MS = 600;
+/** How long the salmon takes to leave: `.panel.leaving` in styles.css. */
+const LEAVE_MS = 170;
+
+/** How the salmon leaves: swims away on Escape, dives into the text on Enter. */
+type Leaving = "away" | "dive";
+
+const stillMotion = () => window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
 
 type Stage =
   | { kind: "ask" }
@@ -30,6 +37,7 @@ export function Panel() {
   const [call, setCall] = useState<PanelCall | null>(null);
   const [instruction, setInstruction] = useState("");
   const [stage, setStage] = useState<Stage>({ kind: "ask" });
+  const [leaving, setLeaving] = useState<Leaving | null>(null);
   const card = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
   const draftInput = useRef<HTMLTextAreaElement>(null);
@@ -45,6 +53,7 @@ export function Panel() {
           return;
         }
         shown.current = c?.id ?? null;
+        setLeaving(null);
         setVisit((v) => v + 1);
         setStage({ kind: "ask" });
         setCall(c);
@@ -54,10 +63,36 @@ export function Panel() {
     );
   }, []);
 
+  // The salmon leaves, then `then` runs: the card and the glass go first, so
+  // nothing is left hanging while the window closes. If the window stays
+  // (a draft that couldn't be inserted), everything comes back.
+  // One leave at a time: a second Enter or Escape meanwhile does nothing, so
+  // a draft is never inserted twice.
+  const going = useRef(false);
+  const leave = useRef<(how: Leaving, then: () => Promise<unknown>) => void>(() => {});
+  leave.current = (how, then) => {
+    if (going.current) {
+      return;
+    }
+    going.current = true;
+    const done = () => {
+      going.current = false;
+      setLeaving(null);
+    };
+    if (stillMotion()) {
+      void then().finally(done);
+      return;
+    }
+    setLeaving(how);
+    opened.current = false;
+    fit();
+    window.setTimeout(() => void then().finally(done), LEAVE_MS);
+  };
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        invoke("close_panel").catch(() => {});
+        leave.current("away", () => invoke("close_panel").catch(() => {}));
       }
     };
     window.addEventListener("keydown", onKey);
@@ -120,13 +155,23 @@ export function Panel() {
     if (!text.trim()) {
       return;
     }
-    invoke("insert_draft", { text }).catch((e) =>
-      setStage((s) => (s.kind === "draft" ? { ...s, error: String(e) } : s)),
+    leave.current("dive", () =>
+      invoke("insert_draft", { text }).catch((e) => {
+        // The panel stays, with the draft: the card and its glass come back.
+        opened.current = true;
+        fit();
+        setStage((s) => (s.kind === "draft" ? { ...s, error: String(e) } : s));
+      }),
     );
   };
 
   return (
-    <main className={glass ? "panel glass" : "panel"} key={visit}>
+    <main
+      className={["panel", glass && "glass", leaving && `leaving ${leaving}`]
+        .filter(Boolean)
+        .join(" ")}
+      key={visit}
+    >
       <div className={stage.kind === "writing" ? "swim working" : "swim"}>
         <img className="salmon" src={salmon} alt="" />
         <span className="air one" />

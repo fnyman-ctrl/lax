@@ -1431,6 +1431,45 @@ button.link {
   }
 }
 
+/* Leaving: on Escape the salmon turns and swims off to the left; on Enter
+   it dives into the text, just before the draft goes in. The card folds
+   away in both. Panel.tsx waits LEAVE_MS for it. */
+.panel.leaving .panel-card {
+  animation: fold 150ms ease-in forwards;
+}
+
+.panel.leaving.away .swim {
+  animation: swim-away 170ms ease-in forwards;
+}
+
+.panel.leaving.dive .swim {
+  animation: dive 170ms ease-in forwards;
+}
+
+@keyframes fold {
+  to {
+    opacity: 0;
+    transform: scale(0.92) translateY(-4px);
+  }
+}
+
+@keyframes swim-away {
+  from {
+    transform: scaleX(-1);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-90px, 2px) scaleX(-1);
+  }
+}
+
+@keyframes dive {
+  to {
+    opacity: 0;
+    transform: translate(16px, 5px) scale(0.5);
+  }
+}
+
 @keyframes unfold {
   from {
     opacity: 0;
