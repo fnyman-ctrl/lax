@@ -130,7 +130,7 @@ mod tests {
     use crate::store::cosine;
 
     /// Against a real embedding model: `LAX_LIVE_MODEL_URL`,
-    /// `LAX_LIVE_EMBEDDING_MODEL` (e.g. text-embedding-nomic-embed-text-v1.5).
+    /// `LAX_LIVE_EMBEDDING_MODEL` (e.g. text-embedding-bge-m3).
     #[tokio::test]
     #[ignore = "needs a local model server: LAX_LIVE_MODEL_URL, LAX_LIVE_EMBEDDING_MODEL"]
     async fn live_vectors_find_by_meaning() {

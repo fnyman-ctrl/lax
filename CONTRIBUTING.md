@@ -122,7 +122,7 @@ PATH):
 ```bash
 lms server start
 lms load google/gemma-4-e4b
-lms load text-embedding-nomic-embed-text-v1.5
+lms load text-embedding-bge-m3
 ```
 
 Then choose the models under **Models** in the Lax window. A few tests talk to
@@ -132,7 +132,7 @@ such a server and are skipped by default; run them with:
 cd src-tauri
 LAX_LIVE_MODEL_URL=http://localhost:1234/v1 \
 LAX_LIVE_CHAT_MODEL=google/gemma-4-e4b \
-LAX_LIVE_EMBEDDING_MODEL=text-embedding-nomic-embed-text-v1.5 \
+LAX_LIVE_EMBEDDING_MODEL=text-embedding-bge-m3 \
 LAX_LIVE_EXPECT_SERVER="LM Studio" \
 cargo test --locked -- --ignored
 ```

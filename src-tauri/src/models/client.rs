@@ -923,7 +923,7 @@ mod tests {
     /// ```sh
     /// LAX_LIVE_MODEL_URL=http://localhost:1234/v1 \
     /// LAX_LIVE_CHAT_MODEL=google/gemma-4-e4b \
-    /// LAX_LIVE_EMBEDDING_MODEL=text-embedding-nomic-embed-text-v1.5 \
+    /// LAX_LIVE_EMBEDDING_MODEL=text-embedding-bge-m3 \
     /// cargo test live_local_server -- --ignored
     /// ```
     ///

@@ -19,7 +19,7 @@ const TASKS: { task: Task; title: string; hint: string; recommended: string }[] 
     task: "embeddings",
     title: "Embedding model",
     hint: "Matches names and topics, so the same project is recognised under different words.",
-    recommended: "nomic-embed-text",
+    recommended: "bge-m3",
   },
 ];
 
@@ -145,7 +145,7 @@ export function Models() {
             </li>
             <li>
               Download a chat model (we recommend Gemma 4 E4B) and an embedding model
-              (nomic-embed-text).
+              (bge-m3).
             </li>
             <li>Start its local server, then look again.</li>
           </ol>

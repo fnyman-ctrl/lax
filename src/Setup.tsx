@@ -39,13 +39,13 @@ const FEATURES: {
 /** Model advice for a Mac with this much memory (docs/MODELS.md). */
 function advice(memoryGb: number): string {
   if (memoryGb === 0) {
-    return "Gemma 4 E4B for writing and nomic-embed-text for matching work well on most Macs.";
+    return "Gemma 4 E4B for writing and bge-m3 for matching work well on most Macs.";
   }
   if (memoryGb < 16) {
-    return `This Mac has ${memoryGb} GB of memory. A small chat model, 2–4 billion parameters (such as Gemma 4 E2B), leaves room for your other apps. Add nomic-embed-text for matching.`;
+    return `This Mac has ${memoryGb} GB of memory. A small chat model, 2–4 billion parameters (such as Gemma 4 E2B), leaves room for your other apps. Add bge-m3 for matching.`;
   }
   if (memoryGb < 32) {
-    return `This Mac has ${memoryGb} GB of memory. Gemma 4 E4B (about 7 GB) for writing and nomic-embed-text for matching are tested on 16 GB and quick.`;
+    return `This Mac has ${memoryGb} GB of memory. Gemma 4 E4B (about 7 GB) for writing and bge-m3 for matching are tested on 16 GB and quick.`;
   }
   return `This Mac has ${memoryGb} GB of memory. Gemma 4 E4B is quick; a larger model such as Qwen 3.5 9B writes better journal entries if you don't mind the wait.`;
 }
