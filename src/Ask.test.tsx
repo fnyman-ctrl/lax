@@ -66,7 +66,7 @@ describe("Ask", () => {
 
   test("the answer is followed as it streams, unless the user scrolled up", async () => {
     const question = pending();
-    const scrolled = vi.spyOn(Element.prototype, "scrollIntoView");
+    const scrolled = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
     const page = document.documentElement;
     const setPage = (top: number) => {
       Object.defineProperty(page, "scrollHeight", { configurable: true, value: 2000 });
@@ -77,20 +77,38 @@ describe("Ask", () => {
     render(<Ask onShowJournal={() => {}} />);
     await act(async () => ask("What did I do yesterday?"));
 
-    // At the end of the page: each piece keeps the answer in view.
+    // At the end of the page: each piece keeps the window at its end, below
+    // the question box, not just at the answer's last line.
     setPage(1500);
     scrolled.mockClear();
     await act(async () => channel().onmessage("You wrote "));
-    expect(scrolled).toHaveBeenCalled();
+    expect(scrolled).toHaveBeenCalledWith({ top: 2000, behavior: "auto" });
 
-    // Scrolled up to read: the page is left where it is.
+    // Scrolled up to read: the window is left where it is.
     setPage(200);
     scrolled.mockClear();
-    await act(async () => channel().onmessage("the quote."));
+    await act(async () => channel().onmessage("the quote"));
     expect(scrolled).not.toHaveBeenCalled();
+
+    // A turn of the wheel upward stops following at once, before the
+    // window reports the scroll, even this close to the end.
+    setPage(1490);
+    window.dispatchEvent(new WheelEvent("wheel", { deltaY: -10 }));
+    scrolled.mockClear();
+    await act(async () => channel().onmessage(" Then"));
+    expect(scrolled).not.toHaveBeenCalled();
+    setPage(200);
+
+    // Back down at the end: followed again.
+    setPage(1490);
+    await act(async () => channel().onmessage("."));
+    expect(scrolled).toHaveBeenCalled();
 
     await act(async () => question.answer(answer("You wrote the quote.")));
     scrolled.mockRestore();
+    for (const key of ["scrollHeight", "clientHeight", "scrollTop"]) {
+      delete (page as unknown as Record<string, unknown>)[key];
+    }
   });
 
   test("the salmon thinks while the answer comes, and a failed question comes back", async () => {

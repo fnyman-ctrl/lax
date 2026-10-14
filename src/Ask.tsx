@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Channel, invoke } from "@tauri-apps/api/core";
 // The pixel salmon (docs/BRAND.md).
 import salmon from "../src-tauri/icons/salmon.svg";
@@ -44,31 +44,58 @@ export function Ask({ onShowJournal }: { onShowJournal: () => void }) {
   const [error, setError] = useState<string | null>(null);
   // Oldest first.
   const [turns, setTurns] = useState<Turn[]>([]);
-  const end = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
   // The user is at the end of the conversation, not reading further up.
   const following = useRef(true);
 
-  // Keep the latest message in view.
+  // The window scrolls, not the conversation. Its end is below the question
+  // box and the note under it: scrolling only to the conversation's last
+  // message would move the window up when the user is already at the end.
+  const toEnd = (behavior: ScrollBehavior = "auto") => {
+    const page = document.scrollingElement ?? document.documentElement;
+    window.scrollTo({ top: page.scrollHeight, behavior });
+  };
+  // A new question, or an error: show it.
   useEffect(() => {
-    end.current?.scrollIntoView({ block: "end", behavior: "smooth" });
-  }, [turns, asking, error]);
-  // While the answer is written, follow it, unless the user has scrolled up
-  // to read something else. The window scrolls, not the conversation, so
-  // that is where the user's scrolling is read from.
-  useEffect(() => {
-    const onScroll = () => {
-      const page = document.scrollingElement ?? document.documentElement;
-      following.current = page.scrollHeight - page.scrollTop - page.clientHeight < 48;
-    };
-    window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
-  }, []);
-  useEffect(() => {
-    if (streamed !== "" && following.current) {
-      end.current?.scrollIntoView({ block: "end" });
+    toEnd("smooth");
+  }, [asking, error]);
+  // The checked answer, and each piece while it is written: follow it,
+  // unless the user has scrolled up to read something else.
+  // Before the window is drawn, so a new line never shows under the
+  // question box first.
+  useLayoutEffect(() => {
+    if (following.current) {
+      toEnd(streamed === "" ? "smooth" : "auto");
     }
-  }, [streamed]);
+  }, [turns, streamed]);
+  // Scrolling up, however little, leaves the end; scrolling back down to it
+  // follows again. The wheel is read as it turns: a piece of the answer can
+  // arrive before the scroll it caused is reported, and would scroll the
+  // window back down.
+  useEffect(() => {
+    const page = document.scrollingElement ?? document.documentElement;
+    let last = page.scrollTop;
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY < 0) {
+        following.current = false;
+      }
+    };
+    const onScroll = () => {
+      const top = page.scrollTop;
+      if (top < last) {
+        following.current = false;
+      } else if (page.scrollHeight - top - page.clientHeight < 48) {
+        following.current = true;
+      }
+      last = top;
+    };
+    window.addEventListener("wheel", onWheel, { passive: true });
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      window.removeEventListener("wheel", onWheel);
+      window.removeEventListener("scroll", onScroll);
+    };
+  }, []);
 
   const ask = (text: string) => {
     const q = text.trim();
@@ -211,7 +238,6 @@ export function Ask({ onShowJournal }: { onShowJournal: () => void }) {
             {error}
           </p>
         )}
-        <div ref={end} />
       </div>
 
       <form
