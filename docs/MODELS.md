@@ -25,7 +25,9 @@ loads all 6 GB of it again for the answer. Turn that setting off under
 **Developer → Server Settings**, or load both models yourself with
 `lms load`.
 
-Measured on 2026-10-13 on the same M1 Pro:
+Measured on 2026-10-13 on the same M1 Pro, with nomic-embed-text v1.5 as the
+embedding model. bge-m3 takes about 6 s to load instead of under 1 s, so with
+the setting on, a search is slower still:
 
 | | Setting on | Both models loaded |
 |---|---|---|

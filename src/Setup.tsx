@@ -42,7 +42,7 @@ function advice(memoryGb: number): string {
     return "Gemma 4 E4B for writing and bge-m3 for matching work well on most Macs.";
   }
   if (memoryGb < 16) {
-    return `This Mac has ${memoryGb} GB of memory. A small chat model, 2–4 billion parameters (such as Gemma 4 E2B), leaves room for your other apps. Add bge-m3 for matching.`;
+    return `This Mac has ${memoryGb} GB of memory. A small chat model, 2–4 billion parameters (such as Gemma 4 E2B), leaves room for your other apps. Add bge-m3 for matching (about 0.6 GB), or nomic-embed-text (under 0.1 GB) if memory is tight.`;
   }
   if (memoryGb < 32) {
     return `This Mac has ${memoryGb} GB of memory. Gemma 4 E4B (about 7 GB) for writing and bge-m3 for matching are tested on 16 GB and quick.`;
