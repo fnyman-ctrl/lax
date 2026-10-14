@@ -23,7 +23,8 @@ The first version. Everything runs on your Mac; nothing leaves it.
   days after it's summarized, and at 90 days at the latest.
 - **Encrypted database:** everything Lax keeps in its database is encrypted with
   a random key that only your login keychain holds. A new database is encrypted
-  from the start; an existing one is converted once, after a notice. The
+  from the start; an existing one is converted once, after a notice (if the disk
+  is too full, Lax says so and tries again at the next start). The
   conversion is one-way: an older version of Lax can't open the encrypted
   database. Backups and snapshots made before the conversion still hold the old,
   unencrypted file. The memory pages in `~/Lax` are not part of the database
