@@ -64,6 +64,35 @@ describe("Ask", () => {
     expect(await screen.findByText("You called Anna Example.")).toBeTruthy();
   });
 
+  test("the answer is followed as it streams, unless the user scrolled up", async () => {
+    const question = pending();
+    const scrolled = vi.spyOn(Element.prototype, "scrollIntoView");
+    const page = document.documentElement;
+    const setPage = (top: number) => {
+      Object.defineProperty(page, "scrollHeight", { configurable: true, value: 2000 });
+      Object.defineProperty(page, "clientHeight", { configurable: true, value: 500 });
+      Object.defineProperty(page, "scrollTop", { configurable: true, value: top });
+      window.dispatchEvent(new Event("scroll"));
+    };
+    render(<Ask onShowJournal={() => {}} />);
+    await act(async () => ask("What did I do yesterday?"));
+
+    // At the end of the page: each piece keeps the answer in view.
+    setPage(1500);
+    scrolled.mockClear();
+    await act(async () => channel().onmessage("You wrote "));
+    expect(scrolled).toHaveBeenCalled();
+
+    // Scrolled up to read: the page is left where it is.
+    setPage(200);
+    scrolled.mockClear();
+    await act(async () => channel().onmessage("the quote."));
+    expect(scrolled).not.toHaveBeenCalled();
+
+    await act(async () => question.answer(answer("You wrote the quote.")));
+    scrolled.mockRestore();
+  });
+
   test("the salmon thinks while the answer comes, and a failed question comes back", async () => {
     const question = pending();
     render(<Ask onShowJournal={() => {}} />);
