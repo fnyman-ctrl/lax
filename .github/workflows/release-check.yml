@@ -55,4 +55,20 @@ jobs:
           test -x "$app/Contents/MacOS/lax"
           codesign --verify --deep --strict "$app"
           codesign -dv "$app" 2>&1 | grep -q "Identifier=io.github.fnyman-ctrl.lax"
+          # SQLCipher is built on Apple's CommonCrypto, not OpenSSL, with
+          # its own logging compiled out, and its licence ships with the app
+          # (ADR 0010).
+          if otool -L "$app/Contents/MacOS/lax" | grep -Eq "libcrypto|libssl"; then
+            echo "Lax.app links OpenSSL; SQLCipher must use CommonCrypto"
+            exit 1
+          fi
+          if strings "$app/Contents/MacOS/lax" | grep -q "sqlcipher_set_log"; then
+            echo "SQLCipher's own logging is compiled in"
+            exit 1
+          fi
+          if nm -u "$app/Contents/MacOS/lax" | grep -q "os_log"; then
+            echo "Lax.app can write to the unified log, outside logging.rs"
+            exit 1
+          fi
+          test -f "$app/Contents/Resources/licenses/SQLCipher.txt"
           du -sh "$app"

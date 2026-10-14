@@ -2,7 +2,9 @@
 //!
 //! Everything lives in one data folder that only the user can open (`0700`).
 //! The database is SQLite with an FTS5 index, so it can be inspected without
-//! Lax. See docs/adr/0006-sqlite-with-rusqlite.md.
+//! Lax. See docs/adr/0006-sqlite-with-rusqlite.md. Lax is built with
+//! SQLCipher's SQLite, but databases have no key yet, so they are still
+//! plaintext (docs/adr/0010-encrypted-database.md, rollout step 2).
 //!
 //! The store redacts titles and text itself before writing them, so a caller
 //! can't store a secret by forgetting to redact (GUARDRAILS §4).
@@ -258,6 +260,11 @@ impl Store {
     fn init(mut conn: Connection) -> Result<Self> {
         // Overwrite deleted content instead of leaving it in free pages.
         conn.pragma_update(None, "secure_delete", "ON")?;
+        // SQLCipher's build keeps temporary data in memory unless told
+        // otherwise, so VACUUM in `scrub` would build its copy of the whole
+        // database in RAM. While the database is plaintext, temporary files
+        // hold nothing it doesn't, so they stay files, as before (ADR 0010).
+        conn.pragma_update(None, "temp_store", "FILE")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         migrate(&mut conn)?;
         repair(&conn)?;
@@ -1367,6 +1374,77 @@ mod tests {
         let tmp = TempDir::new();
         Store::open(&tmp.0).unwrap();
         assert_eq!(mode(&tmp.0.join(DATABASE_FILE)), 0o600);
+    }
+
+    /// SQLCipher encrypts with Apple's CommonCrypto. It would switch to
+    /// OpenSSL without a word if `OPENSSL_DIR` or `OPENSSL_LIB_DIR` and
+    /// `OPENSSL_INCLUDE_DIR` were set at build time (ADR 0010).
+    #[test]
+    fn cipher_provider_is_commoncrypto() {
+        let tmp = TempDir::new();
+        prepare_data_dir(&tmp.0).unwrap();
+        let path = tmp.0.join("keyed.sqlite");
+        let conn = Connection::open(&path).unwrap();
+        // A fixed test key in the raw form, which skips key derivation.
+        conn.execute_batch(&format!(
+            "PRAGMA key = \"x'{}'\"; CREATE TABLE t (x TEXT); INSERT INTO t VALUES ('hello');",
+            "ab".repeat(32)
+        ))
+        .unwrap();
+        let provider: String = conn
+            .query_row("PRAGMA cipher_provider", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(provider, "commoncrypto");
+        drop(conn);
+        let bytes = fs::read(&path).unwrap();
+        assert!(!bytes.starts_with(b"SQLite format 3\0"));
+    }
+
+    #[test]
+    fn the_database_is_plaintext_until_it_has_a_key() {
+        let tmp = TempDir::new();
+        let store = Store::open(&tmp.0).unwrap();
+        // SQLCipher 4 is linked in, its defaults are the ones ADR 0010 names...
+        let version: String = store
+            .conn
+            .query_row("PRAGMA cipher_version", [], |r| r.get(0))
+            .unwrap();
+        assert!(version.starts_with("4."), "{version}");
+        // ...but without a key it encrypts nothing.
+        let provider: Option<String> = store
+            .conn
+            .query_row("PRAGMA cipher_provider", [], |r| r.get(0))
+            .optional()
+            .unwrap();
+        assert_eq!(provider, None);
+        store.insert(&capture("Inbox", "hello")).unwrap();
+        drop(store);
+        let bytes = fs::read(tmp.0.join(DATABASE_FILE)).unwrap();
+        assert!(bytes.starts_with(b"SQLite format 3\0"));
+    }
+
+    /// SQLCipher's build would keep temporary data in memory, and VACUUM
+    /// would then copy the whole database into RAM.
+    #[test]
+    fn temporary_data_goes_to_files_while_the_database_is_plaintext() {
+        let tmp = TempDir::new();
+        let store = Store::open(&tmp.0).unwrap();
+        let temp_store: i64 = store
+            .conn
+            .pragma_query_value(None, "temp_store", |r| r.get(0))
+            .unwrap();
+        assert_eq!(temp_store, 1, "temp_store should be FILE");
+    }
+
+    /// SQLCipher's logging is compiled out (`SQLCIPHER_OMIT_LOG` in
+    /// `.cargo/config.toml`), so it refuses every log target, even "off".
+    #[test]
+    fn sqlcipher_cannot_log() {
+        let conn = Connection::open_in_memory().unwrap();
+        let status: String = conn
+            .query_row("PRAGMA cipher_log = off", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(status, "1", "SQLCipher was built with its logging");
     }
 
     #[test]

@@ -26,8 +26,10 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # Pattern matching for secret redaction. Already in the dependency tree through Tauri.
 regex = "1"
 # Local storage. SQLite is compiled in, so the version and FTS5 are known.
-# See docs/adr/0006-sqlite-with-rusqlite.md.
-rusqlite = { version = "0.40", features = ["bundled"] }
+# See docs/adr/0006-sqlite-with-rusqlite.md. It is SQLCipher's SQLite, built
+# on Apple's CommonCrypto, not OpenSSL (ADR 0010); its own logging is
+# compiled out in .cargo/config.toml.
+rusqlite = { version = "0.40", features = ["bundled-sqlcipher"] }
 # Parsing browser addresses so only the host is kept. Already in the
 # dependency tree through Tauri.
 url = "2"

@@ -153,3 +153,8 @@ and the license keeps the code that way too.
 
 Parts derived from [Handy](https://github.com/cjpais/Handy) remain under their
 original MIT license, with the copyright notice kept in those files.
+
+Lax is built with [SQLCipher](https://www.zetetic.net/sqlcipher/) by Zetetic
+LLC, under a BSD-style license. Its notice is in
+[`src-tauri/licenses/SQLCipher.txt`](src-tauri/licenses/SQLCipher.txt) and in
+every Lax.app.
