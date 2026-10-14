@@ -139,6 +139,8 @@ export function Viewer() {
   // going, beats its tail while it swims, and turns back to face right.
   const [swim, setSwim] = useState<"left" | "right" | null>(null);
   const lastAt = useRef<number | null>(null);
+  // A ring on the water where it arrives; the key restarts it.
+  const [ripple, setRipple] = useState(0);
   useEffect(() => {
     const from = lastAt.current;
     lastAt.current = fishAt;
@@ -195,9 +197,11 @@ export function Viewer() {
             onTransitionEnd={(event) => {
               if (event.propertyName === "transform" && event.target === event.currentTarget) {
                 setSwim(null);
+                setRipple((r) => r + 1);
               }
             }}
           >
+            {ripple > 0 && <span key={ripple} className="ripple" />}
             <span className={swim === "left" ? "heading left" : "heading"}>
               <img src={laxIcon} alt="" className={swim ? "fish swimming" : "fish"} />
             </span>

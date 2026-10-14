@@ -479,6 +479,32 @@ select {
   animation: wiggle 120ms ease-in-out infinite alternate;
 }
 
+/* A ring spreading on the water where the salmon arrives. */
+.river-salmon .ripple {
+  position: absolute;
+  left: 50%;
+  bottom: 1px;
+  width: 44px;
+  height: 6px;
+  margin-left: -22px;
+  border: 1px solid var(--accent);
+  border-radius: 50%;
+  opacity: 0;
+  pointer-events: none;
+  animation: ripple 700ms ease-out both;
+}
+
+@keyframes ripple {
+  from {
+    opacity: 0.55;
+    transform: scale(0.3, 0.6);
+  }
+  to {
+    opacity: 0;
+    transform: none;
+  }
+}
+
 @keyframes float {
   from {
     transform: translateY(0);
@@ -522,6 +548,9 @@ select {
   .river-salmon .fish,
   .river-salmon .fish.swimming {
     animation: none;
+  }
+  .river-salmon .ripple {
+    display: none;
   }
 }
 
@@ -988,6 +1017,24 @@ mark {
   display: flex;
   align-items: center;
   gap: 0.6rem;
+  /* Water slowly rising and falling behind the salmon while it thinks. */
+  background-image: linear-gradient(
+    to top,
+    color-mix(in srgb, var(--accent) 18%, transparent) 50%,
+    transparent 50%
+  );
+  background-size: 100% 200%;
+  background-position: 0 0;
+  animation: tide 2.6s ease-in-out infinite alternate;
+}
+
+@keyframes tide {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 0 70%;
+  }
 }
 
 .bubble.thinking .chat-salmon {
@@ -1098,6 +1145,7 @@ button.link {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .bubble.thinking,
   .chat-salmon.working,
   .dots span,
   .bubble.writing .answer::after {
