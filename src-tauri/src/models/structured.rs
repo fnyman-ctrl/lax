@@ -117,6 +117,21 @@ pub async fn ask_for<T: DeserializeOwned + Validate>(
     run(client, model, &messages, max_tokens).await
 }
 
+/// Like [`ask_for`], with the request after the captured blocks: for a
+/// request about them, such as a reply to the message in a window.
+pub async fn ask_after<T: DeserializeOwned + Validate>(
+    client: &ModelClient,
+    model: &str,
+    task: &'static str,
+    shape: &'static str,
+    request: &str,
+    captured: &[Captured<'_>],
+    max_tokens: u32,
+) -> Result<T, StructuredError> {
+    let messages = messages(task, shape, Some(Request::Last(request)), captured);
+    run(client, model, &messages, max_tokens).await
+}
+
 /// Where the user's request goes, relative to the captured blocks.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Request<'a> {

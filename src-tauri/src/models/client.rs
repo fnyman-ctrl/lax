@@ -106,6 +106,8 @@ pub struct ModelClient {
     /// user waits on: reasoning makes a small local model about ten times
     /// slower.
     reasoning: bool,
+    /// Sent with chat requests when set; otherwise the server's default.
+    temperature: Option<f32>,
 }
 
 impl ModelClient {
@@ -131,6 +133,7 @@ impl ModelClient {
             backoff: BACKOFF,
             retries: true,
             reasoning: true,
+            temperature: None,
         })
     }
 
@@ -223,6 +226,7 @@ impl ModelClient {
             max_tokens,
             reasoning_effort: (!self.reasoning).then_some("none"),
             stream,
+            temperature: self.temperature,
         }
     }
 
@@ -355,6 +359,13 @@ impl ModelClient {
         self
     }
 
+    /// The same client, asking for this sampling temperature: low for text
+    /// that must follow rules, such as a draft.
+    pub fn with_temperature(mut self, temperature: f32) -> Self {
+        self.temperature = Some(temperature);
+        self
+    }
+
     /// The same client without retries, for quick checks such as looking
     /// for servers that may not be running.
     pub fn without_retries(mut self) -> Self {
@@ -402,6 +413,8 @@ struct ChatRequest<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     reasoning_effort: Option<&'static str>,
     stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
 }
 
 #[derive(Deserialize)]
@@ -733,6 +746,25 @@ mod tests {
         assert_eq!(sent["stream"], false);
         // Models may reason unless told not to.
         assert!(sent.get("reasoning_effort").is_none());
+        // The server's own temperature unless one is asked for.
+        assert!(sent.get("temperature").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_temperature_is_sent_when_asked_for() {
+        let server = MockServer::start(vec![(
+            200,
+            r#"{"choices":[{"message":{"role":"assistant","content":"Hej"}}]}"#,
+        )]);
+        server
+            .client()
+            .with_temperature(0.1)
+            .chat("gemma", &[user("Say hello")], Some(20))
+            .await
+            .unwrap();
+        let sent: serde_json::Value = serde_json::from_str(&server.requests()[0].1).unwrap();
+        let temperature = sent["temperature"].as_f64().unwrap();
+        assert!((temperature - 0.1).abs() < 1e-6);
     }
 
     #[tokio::test]
