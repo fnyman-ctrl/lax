@@ -29,9 +29,9 @@ language of the request. A language the request names always wins. \
 Form: a reply to an email is a whole email, with a greeting, the text and a sign-off the way \
 the user signs (from the memory or their earlier messages in the window; if neither says, no \
 name and no placeholder for one). A chat message has no greeting or sign-off. A list, note or rewritten paragraph is only \
-that text. When the request holds a text and says what to do with it (shorten, rephrase, fix, \
-translate), answer with only that text, changed as asked, and nothing from the window around \
-it; shorter means clearly shorter, about half. Keep it as short as the request allows, in the \
+that text. When a block holds the text the user selected, the request says what to do with it (shorten, \
+rephrase, fix, translate, continue): answer with only that text, changed as asked, and nothing \
+from the window around it; shorter means clearly shorter, about half. Keep it as short as the request allows, in the \
 user's usual tone. \
 Don't make up facts about the user's work or life, such as dates, amounts, names or promises, \
 that aren't in the request or the context; leave a short placeholder in brackets instead, like \
@@ -134,17 +134,19 @@ pub(crate) fn participants(window: &str) -> Vec<String> {
 /// Short, common words that tell Swedish and English apart.
 const SWEDISH_WORDS: &[&str] = &[
     "och", "att", "det", "är", "för", "med", "på", "jag", "inte", "som", "en", "ett", "vi", "du",
-    "har", "kan", "till", "av", "om", "den", "vill", "eller", "när", "så",
+    "har", "kan", "till", "av", "om", "den", "vill", "eller", "när", "så", "hej", "tack", "mig",
+    "min", "kunde", "skulle", "ni", "er",
 ];
 const ENGLISH_WORDS: &[&str] = &[
     "the", "and", "to", "of", "is", "for", "with", "you", "we", "your", "are", "this", "that",
-    "have", "be", "on", "in", "will", "our", "it", "at", "or", "if", "can",
+    "have", "be", "on", "in", "will", "our", "it", "at", "or", "if", "can", "hi", "thanks",
+    "could", "would", "please", "my", "me", "i",
 ];
 
 /// The language of a window's sentences, Swedish or English, if one clearly
-/// leads: lines of at least six words only, so a webmail's menus, buttons and
-/// labels (often in the other language) don't count. `None` if neither leads
-/// by two to one, or there is too little to tell.
+/// leads: lines of at least five words only, so a webmail's menus, buttons
+/// and labels (often in the other language) don't count. `None` if neither
+/// leads by two to one, or there is too little to tell.
 pub(crate) fn window_language(window: &str) -> Option<&'static str> {
     let (mut swedish, mut english) = (0usize, 0usize);
     for line in window.lines() {
@@ -153,7 +155,7 @@ pub(crate) fn window_language(window: &str) -> Option<&'static str> {
             .filter(|w| !w.is_empty())
             .map(str::to_lowercase)
             .collect();
-        if words.len() < 6 {
+        if words.len() < 5 {
             continue;
         }
         for word in &words {
@@ -161,7 +163,7 @@ pub(crate) fn window_language(window: &str) -> Option<&'static str> {
             english += usize::from(ENGLISH_WORDS.contains(&word.as_str()));
         }
     }
-    if swedish + english < 8 {
+    if swedish + english < 4 {
         None
     } else if english >= 2 * swedish {
         Some("English")
@@ -169,6 +171,23 @@ pub(crate) fn window_language(window: &str) -> Option<&'static str> {
         Some("Swedish")
     } else {
         None
+    }
+}
+
+/// The request sent with the user's instruction: with the language to write
+/// in said as an instruction, since a small model follows the request's
+/// language over the rule in the task. Not when the user named a language.
+fn request_for(instruction: &str, language: Option<&str>, selected: bool) -> String {
+    match language {
+        Some(language) if !names_a_language(instruction) => {
+            let of = if selected {
+                "the selected text"
+            } else {
+                "the message in the window"
+            };
+            format!("{instruction}\n\nWrite it in {language}, the language of {of}.")
+        }
+        _ => instruction.to_string(),
     }
 }
 
@@ -206,6 +225,8 @@ pub struct PanelCall {
     id: u64,
     app: String,
     instruction: String,
+    /// Characters of selected text the draft will change; 0 without one.
+    selected: usize,
 }
 
 /// The call the panel was opened for, if it is still open.
@@ -215,6 +236,7 @@ pub fn panel_call(app: AppHandle) -> Option<PanelCall> {
         id: call.id,
         app: call.app_name,
         instruction: call.instruction,
+        selected: call.selection.as_deref().map_or(0, |s| s.chars().count()),
     })
 }
 
@@ -292,26 +314,38 @@ pub async fn write_draft(app: AppHandle, instruction: String) -> Result<Draft, S
     };
     // The window's language, from its sentences, so a reply follows the
     // message rather than a webmail's menus or the request's language.
-    let language = call.context.as_deref().and_then(window_language);
+    // The language to write in: the selection's when text is selected,
+    // otherwise the window's.
+    let language = call
+        .selection
+        .as_deref()
+        .or(call.context.as_deref())
+        .and_then(window_language);
     let mut texts = known;
-    let read_window = call.context.is_some();
-    if let Some(context) = call.context {
+    // With a selection, the window isn't needed, and a small model would
+    // take sentences from around the selection into the changed text.
+    let context = if call.selection.is_some() {
+        None
+    } else {
+        call.context
+    };
+    let read_window = context.is_some();
+    if let Some(context) = context {
         texts.push(format!(
             "The window the user is writing in ({}):\n{context}",
             call.app_name
         ));
     }
+    // Last, right before the request: the text the request is about. It is
+    // captured text like the window's, never part of the request.
+    let selected = call.selection.is_some();
+    if let Some(selection) = call.selection {
+        texts.push(format!(
+            "The text the user selected, to change as the request says:\n{selection}"
+        ));
+    }
     let started = std::time::Instant::now();
-    // Said as an instruction: a small model follows the request's language
-    // over the rule in the task. Not when the user named a language.
-    let request = match language {
-        Some(language) if !names_a_language(&instruction) => {
-            format!(
-                "{instruction}\n\nWrite it in {language}, the language of the message in the window."
-            )
-        }
-        _ => instruction.clone(),
-    };
+    let request = request_for(&instruction, language, selected);
     let asked = draft(endpoint, &choice.model, &request, &texts);
     let Some(reply) = app.state::<Pause>().unless_paused(asked).await else {
         return Err("Lax was paused, so nothing was written.".to_string());
@@ -468,6 +502,19 @@ mod tests {
         let swedish = "Hej Sam!\nHär kommer offerten för nya webbplatsen, och vi kan leverera vecka 46.\n\
             Hör av dig senast på fredag om ni vill gå vidare med det här.\nVänliga hälsningar";
         assert_eq!(window_language(swedish), Some("Swedish"));
+        // A short mail is enough.
+        assert_eq!(
+            window_language("Hi Sam, could we go through the design tomorrow at 10?\nThanks, Bo"),
+            Some("English")
+        );
+        assert_eq!(
+            request_for("svara att det passar bra", Some("English"), false),
+            "svara att det passar bra\n\nWrite it in English, the language of the message in the window."
+        );
+        assert_eq!(
+            request_for("svara på svenska", Some("English"), false),
+            "svara på svenska"
+        );
         // Too little, or mixed: no hint.
         assert_eq!(window_language("Inkorg\nSkickat\nSvara"), None);
         assert_eq!(
@@ -522,7 +569,11 @@ mod tests {
         let reply: Reply = draft(
             Endpoint::parse(&env("LAX_LIVE_MODEL_URL")).unwrap(),
             &env("LAX_LIVE_CHAT_MODEL"),
-            "svara att det passar bra",
+            &request_for(
+                "svara att det passar bra",
+                window_language(&texts[0]),
+                false,
+            ),
             &texts,
         )
         .await

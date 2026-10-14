@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import salmon from "../src-tauri/icons/salmon.svg";
 
 // Shapes returned by src-tauri/src/write.rs.
-type PanelCall = { id: number; app: string; instruction: string };
+type PanelCall = { id: number; app: string; instruction: string; selected: number };
 type Draft = { draft: string; pages: string[]; readWindow: boolean };
 
 /** When the card has finished opening: `.panel-card`'s unfold in styles.css. */
@@ -26,7 +26,8 @@ type Stage =
 /**
  * The writing assistant's panel (ADR 0009), shown when the user double-taps
  * ⌥ Option. The salmon swims in to the text cursor, then the card opens with
- * the instruction from the field. Enter writes a draft with the model on this
+ * the instruction from the field, or empty when text is selected: then the
+ * user says what to do with the selection. Enter writes a draft with the model on this
  * Mac; the user can edit it, and Enter puts it into the field in place of the
  * instruction. Escape closes the panel and gives focus back to the app.
  * Nothing is saved; the draft is shown as text only.
@@ -186,7 +187,9 @@ export function Panel() {
               value={instruction}
               maxLength={2000}
               rows={Math.min(4, Math.max(1, Math.ceil(instruction.length / 38)))}
-              placeholder="What should Lax write?"
+              placeholder={
+                call?.selected ? "What should Lax do with the selected text?" : "What should Lax write?"
+              }
               aria-label="What Lax should write"
               onChange={(event) => setInstruction(event.target.value)}
               onKeyDown={(event) => {
@@ -202,7 +205,9 @@ export function Panel() {
               </p>
             ) : (
               <p className="muted">
-                Enter writes{call?.app ? ` for ${call.app}` : ""} · Esc closes
+                {call?.selected
+                  ? `Changes the ${call.selected} characters you selected · Esc closes`
+                  : `Enter writes${call?.app ? ` for ${call.app}` : ""} · Esc closes`}
               </p>
             )}
           </>

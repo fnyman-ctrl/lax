@@ -57,6 +57,16 @@ describe("the writing assistant's panel", () => {
     expect(mocked.mock.calls.filter(([c]) => c === "insert_draft")).toHaveLength(1);
   });
 
+  test("with text selected, the panel opens empty and says what it changes", async () => {
+    mocked.mockImplementation(async (command: string) =>
+      command === "panel_call" ? { id: 9, app: "Pages", instruction: "", selected: 428 } : null,
+    );
+    render(<Panel />);
+    const box = await screen.findByPlaceholderText("What should Lax do with the selected text?");
+    expect((box as HTMLTextAreaElement).value).toBe("");
+    expect(screen.getByText(/Changes the 428 characters you selected/)).toBeTruthy();
+  });
+
   test("Escape closes the panel", async () => {
     app();
     render(<Panel />);

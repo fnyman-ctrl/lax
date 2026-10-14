@@ -213,8 +213,13 @@ pub struct Call {
     pub id: u64,
     pub pid: i32,
     pub app_name: String,
-    /// The text selected in the field, or what is in it. Secrets redacted.
+    /// The instruction in the field (the paragraph at the cursor), or empty
+    /// when text is selected: then the user types what to do with it.
+    /// Secrets redacted.
     pub instruction: String,
+    /// The text selected in the field, to change as the user says. Secrets
+    /// redacted.
+    pub selection: Option<String>,
     /// The window's title and text, read under capture's rules. Secrets
     /// redacted. `None` until read, or if there was nothing to read.
     pub context: Option<String>,
@@ -329,7 +334,9 @@ pub fn paragraph_at(text: &str, caret: usize) -> (String, usize, usize) {
 #[cfg(target_os = "macos")]
 pub fn instruction_in(text: &FieldText) -> (String, Replace) {
     let (instruction, replace) = match text {
-        FieldText::Selected(selected) => (instruction_from(selected), Replace::Selection),
+        // The selection is the text to change, not the instruction: the
+        // panel opens empty for that (`selection_in`).
+        FieldText::Selected(_) => return (String::new(), Replace::Selection),
         FieldText::All { value, caret } => {
             let total = value.encode_utf16().count();
             let (paragraph, start, len) = match caret {
@@ -348,6 +355,27 @@ pub fn instruction_in(text: &FieldText) -> (String, Replace) {
     }
     (instruction, replace)
 }
+
+/// The text the user selected, to change as they say: at most
+/// [`MAX_SELECTION_CHARS`], secrets redacted. `None` without a selection.
+#[cfg(target_os = "macos")]
+pub fn selection_in(text: &FieldText) -> Option<String> {
+    match text {
+        FieldText::Selected(selected) => {
+            let selected = selected.trim();
+            (!selected.is_empty()).then(|| {
+                crate::redact::redact(&crate::capture::truncate_chars(
+                    selected,
+                    MAX_SELECTION_CHARS,
+                ))
+            })
+        }
+        FieldText::All { .. } => None,
+    }
+}
+
+/// Characters of a selection taken along: as long as a draft may be.
+pub const MAX_SELECTION_CHARS: usize = 4000;
 
 impl Summoned {
     pub fn call(&self) -> Option<Call> {
@@ -744,7 +772,7 @@ pub(crate) mod macos {
 
     use super::{
         Call, CallKey, Input, Listener, MAX_CONTEXT_CHARS, MAX_INSTRUCTION_CHARS, Rect, come, held,
-        instruction_in,
+        instruction_in, selection_in,
     };
     use crate::ax::{AxScreen, Element, FieldText, window_owner_at};
     use crate::capture::{App, Capturer, Limits, Node, Outcome, Screen, admit, truncate_chars};
@@ -976,6 +1004,7 @@ pub(crate) mod macos {
             .filter(|text| !inner || matches!(text, FieldText::Selected(_)));
         if let Some(text) = &text {
             (found.call.instruction, found.call.replace) = instruction_in(text);
+            found.call.selection = selection_in(text);
         }
         log_field(
             role.as_deref(),
@@ -1337,11 +1366,16 @@ mod tests {
                 whole: true
             }
         );
-        // A selection wins.
+        // A selection is the text to change: the panel opens empty for the
+        // instruction, and the selection, however long, goes along.
+        let long = "Ett långt stycke. ".repeat(40);
+        let selected = FieldText::Selected(long.clone());
         assert_eq!(
-            instruction_in(&FieldText::Selected("gör den kortare".to_string())),
-            ("gör den kortare".to_string(), Replace::Selection)
+            instruction_in(&selected),
+            (String::new(), Replace::Selection)
         );
+        assert_eq!(selection_in(&selected).as_deref(), Some(long.trim()));
+        assert_eq!(selection_in(&all("svara Anna", Some(10))), None);
         // On an empty line, nothing: the user types in the panel.
         assert_eq!(
             instruction_in(&all("Rubrik\n", Some(7))),
