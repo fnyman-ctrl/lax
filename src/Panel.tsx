@@ -129,8 +129,8 @@ export function Panel() {
     <main className={glass ? "panel glass" : "panel"} key={visit}>
       <div className={stage.kind === "writing" ? "swim working" : "swim"}>
         <img className="salmon" src={salmon} alt="" />
-        <span className="bubble one" />
-        <span className="bubble two" />
+        <span className="air one" />
+        <span className="air two" />
       </div>
       <div className="panel-card" ref={card}>
         {stage.kind === "ask" || stage.kind === "error" ? (

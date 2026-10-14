@@ -135,6 +135,17 @@ export function Viewer() {
   // The salmon swims along the river to the chosen section.
   const nav = useRef<HTMLElement>(null);
   const [fishAt, setFishAt] = useState<number | null>(null);
+  // Which way it swims, and whether it's on its way: it faces where it's
+  // going, beats its tail while it swims, and turns back to face right.
+  const [swim, setSwim] = useState<"left" | "right" | null>(null);
+  const lastAt = useRef<number | null>(null);
+  useEffect(() => {
+    const from = lastAt.current;
+    lastAt.current = fishAt;
+    if (from !== null && fishAt !== null && Math.abs(fishAt - from) > 1) {
+      setSwim(fishAt < from ? "left" : "right");
+    }
+  }, [fishAt]);
   useLayoutEffect(() => {
     const place = () => {
       const button = nav.current?.querySelector<HTMLElement>('[aria-current="page"]');
@@ -178,12 +189,19 @@ export function Viewer() {
           <path d="M0 4 Q 25 0 50 4 T 100 4 T 150 4 T 200 4 T 250 4 T 300 4 T 350 4 T 400 4" />
         </svg>
         {fishAt !== null && (
-          <img
-            src={laxIcon}
-            alt=""
+          <span
             className="river-salmon"
             style={{ transform: `translateX(${fishAt - 19}px)` }}
-          />
+            onTransitionEnd={(event) => {
+              if (event.propertyName === "transform" && event.target === event.currentTarget) {
+                setSwim(null);
+              }
+            }}
+          >
+            <span className={swim === "left" ? "heading left" : "heading"}>
+              <img src={laxIcon} alt="" className={swim ? "fish swimming" : "fish"} />
+            </span>
+          </span>
         )}
       </nav>
 
