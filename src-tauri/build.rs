@@ -1,4 +1,19 @@
+// Build scripts talk to cargo through stdout.
+#[allow(clippy::print_stdout)]
 fn main() {
+    // SQLCipher's own logging is compiled out by LIBSQLITE3_FLAGS in
+    // .cargo/config.toml (ADR 0010). Cargo reads that file only when it runs
+    // in src-tauri or below, so refuse to build Lax without the flags rather
+    // than build a SQLCipher that can log.
+    println!("cargo:rerun-if-env-changed=LIBSQLITE3_FLAGS");
+    let flags = std::env::var("LIBSQLITE3_FLAGS").unwrap_or_default();
+    for flag in ["-DSQLCIPHER_OMIT_LOG", "-DSQLCIPHER_OMIT_LOG_DEVICE"] {
+        assert!(
+            flags.split_whitespace().any(|f| f == flag),
+            "LIBSQLITE3_FLAGS lacks {flag}: run cargo in src-tauri, where it reads .cargo/config.toml"
+        );
+    }
+
     // App commands must be listed here and allowed explicitly in
     // capabilities/, so the web UI can only call what a window is granted.
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(

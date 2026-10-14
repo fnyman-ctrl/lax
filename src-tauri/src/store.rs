@@ -263,7 +263,9 @@ impl Store {
         // SQLCipher's build keeps temporary data in memory unless told
         // otherwise, so VACUUM in `scrub` would build its copy of the whole
         // database in RAM. While the database is plaintext, temporary files
-        // hold nothing it doesn't, so they stay files, as before (ADR 0010).
+        // hold nothing it doesn't, so they stay files, as before. An
+        // encrypted database must use MEMORY instead, because SQLCipher
+        // doesn't encrypt temporary files (ADR 0010, rollout step 3).
         conn.pragma_update(None, "temp_store", "FILE")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         migrate(&mut conn)?;
@@ -1377,12 +1379,15 @@ mod tests {
     }
 
     /// SQLCipher encrypts with Apple's CommonCrypto. It would switch to
-    /// OpenSSL without a word if `OPENSSL_DIR` or `OPENSSL_LIB_DIR` and
-    /// `OPENSSL_INCLUDE_DIR` were set at build time (ADR 0010).
+    /// OpenSSL without a word if `OPENSSL_DIR`, or `OPENSSL_LIB_DIR` and
+    /// `OPENSSL_INCLUDE_DIR`, were set at build time, also with a target
+    /// prefix (`AARCH64_APPLE_DARWIN_OPENSSL_DIR`). Its build script doesn't
+    /// rerun when they change, so a stale `target/` keeps OpenSSL until
+    /// `cargo clean -p libsqlite3-sys` (ADR 0010).
     #[test]
     fn cipher_provider_is_commoncrypto() {
         let tmp = TempDir::new();
-        prepare_data_dir(&tmp.0).unwrap();
+        fs::create_dir_all(&tmp.0).unwrap();
         let path = tmp.0.join("keyed.sqlite");
         let conn = Connection::open(&path).unwrap();
         // A fixed test key in the raw form, which skips key derivation.

@@ -57,16 +57,23 @@ jobs:
           codesign -dv "$app" 2>&1 | grep -q "Identifier=io.github.fnyman-ctrl.lax"
           # SQLCipher is built on Apple's CommonCrypto, not OpenSSL, with
           # its own logging compiled out, and its licence ships with the app
-          # (ADR 0010).
-          if otool -L "$app/Contents/MacOS/lax" | grep -Eq "libcrypto|libssl"; then
+          # (ADR 0010). grep without -q reads all its input, so the check
+          # holds with pipefail too.
+          bin="$app/Contents/MacOS/lax"
+          if ! nm -u "$bin" | grep -x "_CCCryptorCreate" >/dev/null; then
+            echo "Lax.app doesn't use CommonCrypto; SQLCipher must"
+            exit 1
+          fi
+          if otool -L "$bin" | grep -E "libcrypto|libssl" >/dev/null; then
             echo "Lax.app links OpenSSL; SQLCipher must use CommonCrypto"
             exit 1
           fi
-          if strings "$app/Contents/MacOS/lax" | grep -q "sqlcipher_set_log"; then
+          # A message only SQLCipher's logging has.
+          if strings "$bin" | grep "sqlcipher_set_log" >/dev/null; then
             echo "SQLCipher's own logging is compiled in"
             exit 1
           fi
-          if nm -u "$app/Contents/MacOS/lax" | grep -q "os_log"; then
+          if nm -u "$bin" | grep "os_log" >/dev/null; then
             echo "Lax.app can write to the unified log, outside logging.rs"
             exit 1
           fi

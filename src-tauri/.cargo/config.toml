@@ -1,9 +1,12 @@
 [env]
 # SQLCipher's own logging would go to the macOS unified log, outside
-# src/logging.rs (GUARDRAILS §6). Compiled out, so it can never log: a pragma
+# src/logging.rs (GUARDRAILS §6), so it is compiled out (ADR 0010). A pragma
 # can't do it reliably, because the log target is set process-wide at the
-# first open. SQLCIPHER_OMIT_LOG removes its log messages;
-# SQLCIPHER_OMIT_LOG_DEVICE also removes the unified log as a target, which
-# `PRAGMA cipher_profile` could otherwise send every statement to. Forced, so
-# a LIBSQLITE3_FLAGS in the environment can't replace it. ADR 0010.
+# first open. SQLCIPHER_OMIT_LOG removes its log messages, and
+# SQLCIPHER_OMIT_LOG_DEVICE removes the unified log as a target, which
+# `PRAGMA cipher_profile = device` could otherwise send every statement to.
+# (cipher_profile can still write to a file or stderr if asked; Lax never
+# asks.) Forced, so a LIBSQLITE3_FLAGS in the environment can't replace it.
+# Cargo reads this file only when it runs in src-tauri or below; build.rs
+# refuses to build without these flags.
 LIBSQLITE3_FLAGS = { value = "-DSQLCIPHER_OMIT_LOG -DSQLCIPHER_OMIT_LOG_DEVICE", force = true }
