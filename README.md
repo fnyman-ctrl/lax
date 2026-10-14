@@ -98,6 +98,30 @@ the keyboard, and nothing runs in the background on battery.
 Later: meeting transcription (Whisper), time tracking, and a local MCP server so
 other local tools can use your memory.
 
+## How Lax helps in your daily work
+
+- **Standups and time reports.** Open Ask and type "What did I do yesterday?".
+  The answer comes from your journal, with the entries it is based on, so you
+  don't have to piece the day together from memory.
+- **Finding something again.** Ask "Which article about local-first software did
+  I read last week?" and Lax looks through your journal, by words and by
+  meaning, instead of you digging through browser history.
+- **Picking up after a context switch or a holiday.** Open the project's page in
+  `~/Lax`, or ask "What happened with Example AB last week?". You get the short
+  version of where things stood and who was involved.
+- **Replies and messages.** In Slack, mail or a GitHub pull request description,
+  double-tap ⌥ Option and say what to write ("reply to Anna Example and agree to
+  Thursday"). Lax drafts it from the thread on screen and what it knows about
+  you, and you edit it before pressing Enter. It never sends anything.
+- **Editing your own text.** Select a paragraph, double-tap ⌥ Option and ask for
+  it shorter, more formal or in English.
+- **Developers.** Lax reads the text of the active window, so it notes what you
+  worked on: the file you had open, the error you searched for, the pull request
+  you reviewed. Ask about it later ("Which error was I chasing on Tuesday?").
+  Lax does not index or understand your repository. How much text it gets from a
+  code editor or terminal depends on the app. Secrets such as API keys and
+  tokens are masked before anything is stored, and you can exclude any app.
+
 ## Principles
 
 - **Local by default.** Out of the box, all models run on your machine (via
