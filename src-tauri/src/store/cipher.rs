@@ -156,12 +156,7 @@ fn convert(
 ) -> std::result::Result<(), Postponed> {
     let copy = path_with(path, ENCRYPTING_SUFFIX);
     remove_copy(&copy);
-    let size = [path.to_path_buf(), path_with(path, "-wal")]
-        .iter()
-        .filter_map(|file| fs::metadata(file).ok())
-        .map(|meta| meta.len())
-        .sum::<u64>();
-    if available.is_some_and(|free| free < size.saturating_mul(2)) {
+    if !fits(path, available) {
         return Err(Postponed::LowSpace);
     }
     let result = export(path, &copy, key).and_then(|()| check(path, &copy, key));
@@ -226,6 +221,18 @@ fn check(path: &Path, copy: &Path, key: &DatabaseKey) -> rusqlite::Result<()> {
     if version(&plain)? != version(&encrypted)? {
         return Err(rusqlite::Error::InvalidQuery);
     }
+    // The same tables, indexes, triggers and views, with the same SQL: a
+    // lost trigger would quietly break a forget.
+    let schema = |conn: &Connection| -> rusqlite::Result<Vec<(String, String, Option<String>)>> {
+        let mut statement =
+            conn.prepare("SELECT type, name, sql FROM sqlite_schema ORDER BY type, name")?;
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+            .collect()
+    };
+    if schema(&plain)? != schema(&encrypted)? {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
     let tables = |conn: &Connection| -> rusqlite::Result<Vec<String>> {
         let mut statement = conn.prepare(
             "SELECT name FROM sqlite_schema WHERE type = 'table' AND sql NOT LIKE 'CREATE VIRTUAL%' ORDER BY name",
@@ -233,9 +240,6 @@ fn check(path: &Path, copy: &Path, key: &DatabaseKey) -> rusqlite::Result<()> {
         statement.query_map([], |row| row.get(0))?.collect()
     };
     let names = tables(&plain)?;
-    if names != tables(&encrypted)? {
-        return Err(rusqlite::Error::InvalidQuery);
-    }
     for name in names {
         // Names from the database's own schema, quoted.
         let sql = format!("SELECT count(*) FROM \"{}\"", name.replace('"', "\"\""));
@@ -255,6 +259,11 @@ fn check(path: &Path, copy: &Path, key: &DatabaseKey) -> rusqlite::Result<()> {
 fn swap(copy: &Path, path: &Path) -> std::io::Result<()> {
     File::open(copy)?.sync_all()?;
     fs::rename(copy, path)?;
+    // The plaintext database's write-ahead files, if any were left: they
+    // belong to the old file.
+    for suffix in ["-wal", "-shm"] {
+        let _ = fs::remove_file(path_with(path, suffix));
+    }
     if let Some(dir) = path.parent() {
         File::open(dir)?.sync_all()?;
     }
@@ -274,6 +283,21 @@ fn path_with(path: &Path, suffix: &str) -> PathBuf {
 fn remove_copy(copy: &Path) {
     let _ = fs::remove_file(copy);
     let _ = fs::remove_file(path_with(copy, "-journal"));
+}
+
+/// Whether there is room to convert the database in `data_dir` now: free
+/// space of twice its size, or free space that can't be told.
+pub fn conversion_fits(data_dir: &Path) -> bool {
+    fits(&data_dir.join(super::DATABASE_FILE), free_space(data_dir))
+}
+
+fn fits(path: &Path, available: Option<u64>) -> bool {
+    let size = [path.to_path_buf(), path_with(path, "-wal")]
+        .iter()
+        .filter_map(|file| fs::metadata(file).ok())
+        .map(|meta| meta.len())
+        .sum::<u64>();
+    available.is_none_or(|free| free >= size.saturating_mul(2))
 }
 
 /// Free bytes on the disk that holds `dir`, for this user. `None` if it
@@ -632,6 +656,50 @@ mod tests {
         // Unknown free space doesn't stop it: the copy is checked anyway.
         assert_eq!(convert(&path, &key, None), Ok(()));
         assert_eq!(file_kind(&path).unwrap(), FileKind::Encrypted);
+    }
+
+    #[test]
+    fn a_copy_that_differs_is_never_put_in_place() {
+        let tmp = TempDir::new();
+        plaintext_database(&tmp.0);
+        let path = tmp.database();
+        let copy = path_with(&path, ENCRYPTING_SUFFIX);
+        let key = keychain::read_key(&FakeKeychain::holding(KEY)).unwrap();
+        export(&path, &copy, &key).unwrap();
+        assert!(check(&path, &copy, &key).is_ok());
+        // A row missing, a trigger missing: each is refused.
+        let encrypted = Connection::open(&copy).unwrap();
+        unlock(&encrypted, &key).unwrap();
+        encrypted
+            .execute(
+                "DELETE FROM captures WHERE rowid = (SELECT max(rowid) FROM captures)",
+                [],
+            )
+            .unwrap();
+        drop(encrypted);
+        assert!(check(&path, &copy, &key).is_err());
+        export_again(&path, &copy, &key);
+        let encrypted = Connection::open(&copy).unwrap();
+        unlock(&encrypted, &key).unwrap();
+        let trigger: String = encrypted
+            .query_row(
+                "SELECT name FROM sqlite_schema WHERE type = 'trigger' LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        encrypted
+            .execute_batch(&format!("DROP TRIGGER \"{trigger}\""))
+            .unwrap();
+        drop(encrypted);
+        assert!(check(&path, &copy, &key).is_err());
+        // And `convert` with such a copy keeps the plaintext database.
+        assert_eq!(file_kind(&path).unwrap(), FileKind::Plaintext);
+    }
+
+    fn export_again(path: &Path, copy: &Path, key: &DatabaseKey) {
+        remove_copy(copy);
+        export(path, copy, key).unwrap();
     }
 
     #[test]

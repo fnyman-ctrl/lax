@@ -30,7 +30,9 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::keychain::{self, ACCOUNT, BuildHash, KeyError, KeySource, LoginKeychain};
 use crate::logging::{self, ErrorKind, Field};
 use crate::pause::{CaptureState, Pause};
-use crate::store::{DATABASE_FILE, FileKind, Opened, Postponed, Store, StoreError, file_kind};
+use crate::store::{
+    DATABASE_FILE, FileKind, Opened, Postponed, Store, StoreError, conversion_fits, file_kind,
+};
 
 /// Tells the window that the database's state changed.
 pub const CHANGED_EVENT: &str = "database-changed";
@@ -238,6 +240,18 @@ fn open(app: &AppHandle, noted: bool) -> State {
         Err(_) => return State::Failed(Failure::Other),
     };
     let build = keychain::own_build_hash();
+    // Too little room to encrypt: open it as before, without the notice
+    // or the key, and try again next start.
+    if kind == FileKind::Plaintext && !conversion_fits(&dir) {
+        logging::info("store.conversion_postponed", &[]);
+        return match Store::open(&dir) {
+            Ok(store) => {
+                opened(app, store);
+                State::Open(Some(Postponed::LowSpace))
+            }
+            Err(error) => State::Failed(failure(&error)),
+        };
+    }
     if !noted {
         // A plaintext database is encrypted once, after a notice that
         // also says what macOS may ask.
