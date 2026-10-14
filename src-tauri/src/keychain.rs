@@ -13,7 +13,9 @@
 //!   cancelled, anything unexpected) fails closed and makes nothing.
 //! - **Never overwritten, never deleted.** [`KeySource::add_item`] only adds:
 //!   if an item is already there it says so and leaves it alone. Nothing
-//!   here updates or deletes a key item.
+//!   here changes a key item's data or deletes one. "Start over" renames
+//!   the item ([`KeySource::rename_item`]) and keeps it, so a database it
+//!   opens can still be opened later.
 //! - **The key stays out of errors and logs.** [`KeyError`] holds a fixed
 //!   kind and at most the Keychain's status code, and [`DatabaseKey`] has no
 //!   `Display` and a `Debug` that hides it.
@@ -30,8 +32,6 @@
 //! per new build before it lets Lax read its key, and Lax compares this hash
 //! with the last one to show its own note before that prompt.
 //!
-//! Nothing calls this module yet (ADR 0010, rollout step 1).
-
 // Calls into the Security framework; each one has a SAFETY comment.
 #![allow(unsafe_code)]
 
@@ -115,7 +115,8 @@ impl DatabaseKey {
         Ok(DatabaseKey(key))
     }
 
-    /// The key's bytes, for SQLCipher.
+    /// The key's bytes. SQLCipher gets the key in its raw hex form.
+    #[cfg(test)]
     pub fn as_bytes(&self) -> &[u8; KEY_BYTES] {
         &self.0
     }
@@ -197,6 +198,11 @@ pub trait KeySource {
     /// Adds a key item holding `data`. Never replaces an existing item: if
     /// there is one, returns [`Added::AlreadyThere`] and leaves it alone.
     fn add_item(&self, data: &[u8]) -> Result<Added, KeyError>;
+
+    /// Gives the key item the account name `account`, keeping its data, so
+    /// the next lookup finds no key. For "Start over" only. [`KeyError::
+    /// Missing`] if there is no item.
+    fn rename_item(&self, account: &str) -> Result<(), KeyError>;
 }
 
 /// What `lax.sqlite` is when Lax asks for its key.
@@ -338,6 +344,46 @@ impl KeySource for LoginKeychain {
             other => Err(KeyError::from_status(other)),
         }
     }
+
+    fn rename_item(&self, account: &str) -> Result<(), KeyError> {
+        let query = self.item_query()?;
+        let Some(account_key) = kSecAttrAccount else {
+            return Err(KeyError::Other(None));
+        };
+        let account = CFString::from_str(account);
+        // Only the account name changes: the data isn't in the update.
+        let keys: [&CFString; 1] = [account_key];
+        let values: [&CFType; 1] = [account.as_ref()];
+        let changes = CFDictionary::<CFString, CFType>::from_slices(&keys, &values);
+        // SAFETY: both are valid dictionaries for the call, which only
+        // reads them.
+        let status = unsafe { SecItemUpdate(query.as_opaque(), changes.as_opaque()) };
+        match status {
+            ERR_SEC_SUCCESS => Ok(()),
+            other => Err(KeyError::from_status(other)),
+        }
+    }
+}
+
+impl LoginKeychain {
+    /// The query that finds this key item: its class, service and account.
+    fn item_query(&self) -> Result<CFRetained<CFDictionary<CFString, CFType>>, KeyError> {
+        let (Some(class_key), Some(generic_class), Some(service_key), Some(account_key)) = (
+            kSecClass,
+            kSecClassGenericPassword,
+            kSecAttrService,
+            kSecAttrAccount,
+        ) else {
+            return Err(KeyError::Other(None));
+        };
+        let service = CFString::from_str(self.service);
+        let account = CFString::from_str(self.account);
+        let keys: [&CFString; 3] = [class_key, service_key, account_key];
+        let values: [&CFType; 3] = [generic_class.as_ref(), service.as_ref(), account.as_ref()];
+        Ok(CFDictionary::<CFString, CFType>::from_slices(
+            &keys, &values,
+        ))
+    }
 }
 
 /// What identifies this build of Lax to the Keychain: its code hash
@@ -346,6 +392,11 @@ impl KeySource for LoginKeychain {
 pub struct BuildHash(Vec<u8>);
 
 impl BuildHash {
+    #[cfg(test)]
+    pub fn from_bytes(bytes: Vec<u8>) -> Self {
+        BuildHash(bytes)
+    }
+
     /// Lowercase hex, for the `key-build` file.
     pub fn to_hex(&self) -> String {
         self.0
@@ -406,6 +457,7 @@ unsafe extern "C" {
 
     // On success with a non-null `result`, a new reference the caller owns.
     fn SecItemAdd(attributes: &CFDictionary, result: *mut *const CFType) -> i32;
+    fn SecItemUpdate(query: &CFDictionary, attributes_to_update: &CFDictionary) -> i32;
     // On success, `code` holds a new code object the caller owns.
     fn SecCodeCopySelf(flags: u32, code: *mut *const CFType) -> i32;
     // On success, `information` holds a new dictionary the caller owns.
@@ -439,6 +491,8 @@ pub mod fake {
         pub stored_instead: RefCell<Option<Vec<u8>>>,
         pub reads: Cell<usize>,
         pub adds: Cell<usize>,
+        /// Items renamed away, with the account they got and their data.
+        pub renamed: RefCell<Vec<(String, Vec<u8>)>>,
     }
 
     impl FakeKeychain {
@@ -483,6 +537,12 @@ pub mod fake {
                     .unwrap_or_else(|| data.to_vec()),
             );
             Ok(Added::New)
+        }
+
+        fn rename_item(&self, account: &str) -> Result<(), KeyError> {
+            let data = self.item.borrow_mut().take().ok_or(KeyError::Missing)?;
+            self.renamed.borrow_mut().push((account.to_string(), data));
+            Ok(())
         }
     }
 }
@@ -748,14 +808,17 @@ mod tests {
     fn real_login_keychain() {
         const TEST_SERVICE: &str = "io.github.fnyman-ctrl.lax.test";
         const TEST_ACCOUNT: &str = "keychain-test";
+        const RENAMED_ACCOUNT: &str = "keychain-test-renamed";
         struct DeleteTestItem;
         impl Drop for DeleteTestItem {
             fn drop(&mut self) {
-                // Only the test's own item; errors (none there) are fine.
-                let _ = security_framework::passwords::delete_generic_password(
-                    TEST_SERVICE,
-                    TEST_ACCOUNT,
-                );
+                // Only the test's own items; errors (none there) are fine.
+                for account in [TEST_ACCOUNT, RENAMED_ACCOUNT] {
+                    let _ = security_framework::passwords::delete_generic_password(
+                        TEST_SERVICE,
+                        account,
+                    );
+                }
             }
         }
         drop(DeleteTestItem);
@@ -780,5 +843,20 @@ mod tests {
             Ok(Added::AlreadyThere)
         );
         assert!(read_key(&keychain).unwrap().matches(&made));
+        // "Start over": the item moves to another name with its data, and
+        // the key's own name is free.
+        keychain.rename_item(RENAMED_ACCOUNT).unwrap();
+        assert_eq!(read_key(&keychain).unwrap_err(), KeyError::Missing);
+        let renamed = LoginKeychain {
+            account: RENAMED_ACCOUNT,
+            ..keychain
+        };
+        assert!(read_key(&renamed).unwrap().matches(&made));
+        let gone = LoginKeychain {
+            service: TEST_SERVICE,
+            account: TEST_ACCOUNT,
+            label: "Lax keychain test",
+        };
+        assert_eq!(gone.rename_item("anything"), Err(KeyError::Missing));
     }
 }

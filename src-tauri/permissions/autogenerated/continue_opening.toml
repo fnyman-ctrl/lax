@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-continue-opening"
+description = "Enables the continue_opening command without any pre-configured scope."
+commands.allow = ["continue_opening"]
+
+[[permission]]
+identifier = "deny-continue-opening"
+description = "Denies the continue_opening command without any pre-configured scope."
+commands.deny = ["continue_opening"]

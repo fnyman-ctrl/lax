@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-start-over"
+description = "Enables the start_over command without any pre-configured scope."
+commands.allow = ["start_over"]
+
+[[permission]]
+identifier = "deny-start-over"
+description = "Denies the start_over command without any pre-configured scope."
+commands.deny = ["start_over"]

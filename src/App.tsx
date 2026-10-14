@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { DatabaseGate } from "./Database";
 import { Setup } from "./Setup";
 import { Viewer } from "./Viewer";
 // The pixel salmon (docs/BRAND.md).
@@ -12,7 +13,17 @@ const ACCESSIBILITY_CHANGED = "accessibility-changed";
 /** `null` while loading; "unknown" if the check itself failed. */
 type Access = boolean | null | "unknown";
 
+/** Nothing but where opening the database stands until it is open: the
+ * rest reads from it. */
 function App() {
+  return (
+    <DatabaseGate>
+      <Main />
+    </DatabaseGate>
+  );
+}
+
+function Main() {
   const [granted, setGranted] = useState<Access>(null);
   // Without the permission, onboarding is shown, but what was captured
   // before can still be seen.

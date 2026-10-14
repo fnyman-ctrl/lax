@@ -23,9 +23,13 @@ use crate::pause::CaptureState;
 use crate::redact::redact;
 
 mod ask;
+#[cfg(target_os = "macos")]
+mod cipher;
 mod memory;
 mod pages;
 mod vectors;
+#[cfg(target_os = "macos")]
+pub use cipher::{FileKind, file_kind};
 pub use memory::{Entity, EntityKind, Merged, Renamed, UnrecognizedEpisode, name_key};
 #[cfg(test)]
 pub use pages::LAX_VERSIONS_KEPT;
@@ -92,6 +96,16 @@ pub enum StoreError {
         found: i64,
         supported: i64,
     },
+    /// The keychain wouldn't hand over the key: locked, the prompt was
+    /// denied or cancelled, or something unexpected. The key is probably
+    /// fine, so trying again is the way out. Holds no key and no SQLite
+    /// text, which could (ADR 0010, "No key in error messages").
+    KeyUnavailable,
+    /// The database is encrypted and its key isn't in the keychain.
+    KeyMissing,
+    /// The key doesn't open the database: a wrong key, or a damaged file.
+    /// The two look the same.
+    CannotUnlock,
 }
 
 impl fmt::Display for StoreError {
@@ -113,6 +127,11 @@ impl fmt::Display for StoreError {
                 f,
                 "database schema {found} is newer than this version of Lax supports ({supported})"
             ),
+            StoreError::KeyUnavailable => f.write_str("Lax can't read its key from the keychain"),
+            StoreError::KeyMissing => f.write_str("Lax can't find its key in the keychain"),
+            StoreError::CannotUnlock => {
+                f.write_str("the database doesn't open with Lax's key (a wrong key, or damaged)")
+            }
         }
     }
 }
@@ -224,10 +243,36 @@ impl Forget {
     }
 }
 
+/// `PRAGMA auto_vacuum`'s value for INCREMENTAL.
+const INCREMENTAL: i64 = 2;
+
 /// How long a forget is remembered, to refuse captures read before it but
 /// handed to the store after it. Capture holds a capture back for at most
 /// 30 seconds, so this leaves plenty of room.
 const FORGET_MEMORY: TimeDelta = TimeDelta::minutes(10);
+
+/// Whether a connection has a key, for the settings that differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Layout {
+    Plaintext,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    Encrypted,
+}
+
+/// The database file in `data_dir`, private from the start: the folder and
+/// an empty file are made `0700` and `0600` before SQLite opens it, not
+/// chmod-ed afterwards.
+fn database_file(data_dir: &Path) -> Result<std::path::PathBuf> {
+    prepare_data_dir(data_dir)?;
+    let path = data_dir.join(DATABASE_FILE);
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(&path)?;
+    fs::set_permissions(&path, Permissions::from_mode(0o600))?;
+    Ok(path)
+}
 
 pub struct Store {
     conn: Connection,
@@ -236,37 +281,43 @@ pub struct Store {
 }
 
 impl Store {
-    /// Opens (or creates) the database in `data_dir`.
+    /// Opens (or creates) the database in `data_dir`, without a key.
     pub fn open(data_dir: &Path) -> Result<Self> {
-        prepare_data_dir(data_dir)?;
-        let path = data_dir.join(DATABASE_FILE);
-        // Create the file private from the start, not chmod it afterwards.
-        OpenOptions::new()
-            .create(true)
-            .append(true)
-            .mode(0o600)
-            .open(&path)?;
-        fs::set_permissions(&path, Permissions::from_mode(0o600))?;
-        let conn = Connection::open(&path)?;
+        let conn = Connection::open(database_file(data_dir)?)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
-        Self::init(conn)
+        Self::init(conn, Layout::Plaintext)
     }
 
     #[cfg(test)]
     pub(crate) fn open_in_memory() -> Result<Self> {
-        Self::init(Connection::open_in_memory()?)
+        Self::init(Connection::open_in_memory()?, Layout::Plaintext)
     }
 
-    fn init(mut conn: Connection) -> Result<Self> {
+    /// A new database without a key but laid out like an encrypted one
+    /// (`auto_vacuum = INCREMENTAL`), so the tests that read the files for
+    /// forgotten text can still see through it (ADR 0010, "Tests").
+    #[cfg(test)]
+    pub(crate) fn open_incremental(data_dir: &Path) -> Result<Self> {
+        let conn = Connection::open(database_file(data_dir)?)?;
+        conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        Self::init(conn, Layout::Plaintext)
+    }
+
+    fn init(mut conn: Connection, layout: Layout) -> Result<Self> {
         // Overwrite deleted content instead of leaving it in free pages.
         conn.pragma_update(None, "secure_delete", "ON")?;
-        // SQLCipher's build keeps temporary data in memory unless told
-        // otherwise, so VACUUM in `scrub` would build its copy of the whole
-        // database in RAM. While the database is plaintext, temporary files
-        // hold nothing it doesn't, so they stay files, as before. An
-        // encrypted database must use MEMORY instead, because SQLCipher
-        // doesn't encrypt temporary files (ADR 0010, rollout step 3).
-        conn.pragma_update(None, "temp_store", "FILE")?;
+        // SQLCipher encrypts the database, its journal and the write-ahead
+        // log, but not temporary files, so an encrypted database keeps
+        // temporary data in memory. A plaintext one keeps it in files, as
+        // before: they hold nothing the database doesn't, and VACUUM in
+        // `scrub` would otherwise build its copy of the whole database in
+        // RAM (ADR 0010, "Settings").
+        let temp_store = match layout {
+            Layout::Plaintext => "FILE",
+            Layout::Encrypted => "MEMORY",
+        };
+        conn.pragma_update(None, "temp_store", temp_store)?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         migrate(&mut conn)?;
         repair(&conn)?;
@@ -1172,9 +1223,12 @@ impl Store {
     }
 
     /// Removes deleted content from the files on disk. `secure_delete` has
-    /// already overwritten the freed pages; VACUUM rebuilds the file without
-    /// them, and the checkpoint empties the write-ahead log, which can still
-    /// hold old copies of pages.
+    /// already overwritten the freed pages and cells. A database laid out
+    /// for incremental vacuum (every encrypted one) gives its free pages
+    /// back without a copy; any other is rebuilt by VACUUM, which with
+    /// temporary data in memory would copy the whole database into RAM
+    /// (ADR 0010, "Forgetting without VACUUM"). The checkpoint empties the
+    /// write-ahead log, which can still hold old copies of pages.
     fn scrub(&self) -> Result<()> {
         self.conn.execute(
             "INSERT INTO captures_fts (captures_fts) VALUES ('optimize')",
@@ -1188,7 +1242,17 @@ impl Store {
             "INSERT INTO episodes_fts (episodes_fts) VALUES ('optimize')",
             [],
         )?;
-        self.conn.execute_batch("VACUUM")?;
+        let auto_vacuum: i64 = self
+            .conn
+            .pragma_query_value(None, "auto_vacuum", |row| row.get(0))?;
+        if auto_vacuum == INCREMENTAL {
+            // One page per step, so it is stepped until it has no more.
+            let mut statement = self.conn.prepare("PRAGMA incremental_vacuum")?;
+            let mut rows = statement.query([])?;
+            while rows.next()?.is_some() {}
+        } else {
+            self.conn.execute_batch("VACUUM")?;
+        }
         self.checkpoint()
     }
 
@@ -1478,7 +1542,7 @@ mod tests {
         )
         .unwrap();
         conn.pragma_update(None, "user_version", 4).unwrap();
-        let store = Store::init(conn).unwrap();
+        let store = Store::init(conn, Layout::Plaintext).unwrap();
         // A row from before, which doesn't say what it covered, goes with
         // any forget of a time up to when it was sent.
         let from_before = |store: &Store| -> i64 {
@@ -2015,8 +2079,16 @@ mod tests {
 
     #[test]
     fn forgotten_text_is_gone_from_the_files_on_disk() {
+        // Both layouts: rebuilt by VACUUM, and given back page by page as
+        // an encrypted database is.
+        for open in [Store::open, Store::open_incremental] {
+            forgotten_text_gone(open);
+        }
+    }
+
+    fn forgotten_text_gone(open: fn(&Path) -> Result<Store>) {
         let tmp = TempDir::new();
-        let store = Store::open(&tmp.0).unwrap();
+        let store = open(&tmp.0).unwrap();
         // A word that appears nowhere else, so finding its bytes anywhere in
         // the files means the text survived.
         let marker = "zebrafinkmarker";
@@ -2037,8 +2109,16 @@ mod tests {
 
     #[test]
     fn expired_text_is_gone_from_the_files_on_disk() {
+        // Both layouts: rebuilt by VACUUM, and given back page by page as
+        // an encrypted database is.
+        for open in [Store::open, Store::open_incremental] {
+            expired_text_gone(open);
+        }
+    }
+
+    fn expired_text_gone(open: fn(&Path) -> Result<Store>) {
         let tmp = TempDir::new();
-        let store = Store::open(&tmp.0).unwrap();
+        let store = open(&tmp.0).unwrap();
         store.set_retention_days(1, at_minute(0)).unwrap();
         let marker = "zebrafinkexpired";
         for _ in 0..50 {

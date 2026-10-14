@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-retry-opening"
+description = "Enables the retry_opening command without any pre-configured scope."
+commands.allow = ["retry_opening"]
+
+[[permission]]
+identifier = "deny-retry-opening"
+description = "Denies the retry_opening command without any pre-configured scope."
+commands.deny = ["retry_opening"]

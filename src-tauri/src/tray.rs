@@ -81,7 +81,7 @@ fn save_pause(app: &AppHandle) -> bool {
 }
 
 /// Updates the icon, tooltip and menu to match the pause state.
-fn refresh(app: &AppHandle) {
+pub fn refresh(app: &AppHandle) {
     let Some(tray) = app.tray_by_id(TRAY_ID) else {
         return;
     };

@@ -4,6 +4,7 @@ mod ask;
 mod ax;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))] // The loop is macOS only.
 mod capture;
+mod database;
 mod exclusion_settings;
 mod exclusions;
 mod expiry;
@@ -13,7 +14,6 @@ mod glass;
 mod insert;
 mod journal;
 #[cfg(target_os = "macos")]
-#[allow(dead_code)] // Nothing uses the key until the store does (ADR 0010, rollout step 3).
 mod keychain;
 #[allow(dead_code)] // Some levels and fields have no user yet.
 mod logging;
@@ -36,8 +36,6 @@ mod vectors;
 mod viewer;
 mod write;
 
-use std::sync::Mutex;
-
 use tauri::{Manager, WindowEvent};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -49,10 +47,15 @@ pub fn run() {
         .manage(capture::Heartbeat::default())
         .manage(exclusions::Current::default())
         .manage(summon::Summoned::default())
+        .manage(database::Database::default())
         .invoke_handler(tauri::generate_handler![
             accessibility::accessibility_status,
             accessibility::open_accessibility_settings,
             filevault::filevault_enabled,
+            database::database_status,
+            database::continue_opening,
+            database::retry_opening,
+            database::start_over,
             viewer::capture_status,
             viewer::recent_captures,
             viewer::search_captures,
@@ -122,54 +125,17 @@ pub fn run() {
             // All data lives in one private folder:
             // ~/Library/Application Support/io.github.fnyman-ctrl.lax
             //
-            // A pause set before Lax was quit still holds. It is restored before
-            // anything else starts, so nothing is read in between. If it can't
-            // be read, capture stays paused: stopping by mistake is safer than
-            // capturing by mistake.
-            //
-            // If the database can't be opened (damaged, from a newer Lax, disk
-            // full), Lax still starts so the user can see what's wrong in the
-            // window, but nothing can be stored.
-            let paused_until_resumed = pause::CaptureState::Paused { until: None };
-            let pause = app.state::<pause::Pause>();
-            match store::Store::open(&app.path().app_data_dir()?) {
-                Ok(store) => {
-                    pause.restore(store.pause_state().unwrap_or(paused_until_resumed));
-                    // Capture only starts with the user's exclusions in
-                    // place. If they can't be read, it doesn't start at all:
-                    // capturing an app the user excluded is the worse mistake.
-                    let exclusions = store.exclusions();
-                    app.manage(Mutex::new(store));
-                    expiry::start(app.handle().clone());
-                    // Does nothing until the user turns the journal on. The
-                    // memory runs in the same loop, after it.
-                    journal::start(app.handle().clone());
-                    match exclusions {
-                        Ok(exclusions) => {
-                            app.state::<exclusions::Current>().set(exclusions);
-                            // Capture checks the pause and the Accessibility
-                            // permission before every read, so it can start now.
-                            #[cfg(target_os = "macos")]
-                            capture::start(app.handle().clone());
-                        }
-                        Err(_) => {
-                            app.manage(viewer::StoreUnavailable(
-                                "your exclusions couldn't be read".to_string(),
-                            ));
-                        }
-                    }
-                }
-                Err(error) => {
-                    pause.restore(paused_until_resumed);
-                    app.manage(viewer::StoreUnavailable(format!(
-                        "the database couldn't be opened ({error})"
-                    )));
-                }
-            }
+            // Nothing is captured until the database is open and the pause
+            // saved in it is restored: stopping by mistake is safer than
+            // capturing by mistake. The database opens on a thread of its
+            // own, since reading its key can make macOS ask for the login
+            // password; the window says where it stands (ADR 0010). Capture,
+            // expiry, the journal and the writing assistant start once it is
+            // open.
+            app.state::<pause::Pause>()
+                .restore(pause::CaptureState::Paused { until: None });
             tray::create(app.handle())?;
-            // Listens for ⌥ Option only if the user turned the writing
-            // assistant on.
-            summon::start(app.handle());
+            database::start(app.handle());
 
             // Without the Accessibility permission Lax can't capture anything,
             // so show the onboarding window explaining why it's needed.
