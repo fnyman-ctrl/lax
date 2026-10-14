@@ -34,7 +34,10 @@ describe("the writing assistant's panel", () => {
     const draft = await screen.findByRole("textbox", { name: "The draft" });
     fireEvent.change(draft, { target: { value: "Hi Anna, thanks!" } });
     await act(async () => fireEvent.keyDown(draft, { key: "Enter" }));
-    expect(mocked).toHaveBeenCalledWith("insert_draft", { text: "Hi Anna, thanks!" });
+    // After the salmon dives into the text.
+    await vi.waitFor(() =>
+      expect(mocked).toHaveBeenCalledWith("insert_draft", { text: "Hi Anna, thanks!" }),
+    );
   });
 
   test("Escape closes the panel", async () => {
@@ -42,7 +45,8 @@ describe("the writing assistant's panel", () => {
     render(<Panel />);
     await screen.findByDisplayValue("reply and thank her");
     await act(async () => fireEvent.keyDown(window, { key: "Escape" }));
-    expect(mocked).toHaveBeenCalledWith("close_panel");
+    // After the salmon swims away.
+    await vi.waitFor(() => expect(mocked).toHaveBeenCalledWith("close_panel"));
   });
 
   test("Enter while an input method composes doesn't send", async () => {
