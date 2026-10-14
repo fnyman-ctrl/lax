@@ -69,30 +69,46 @@ export function Ask({ onShowJournal }: { onShowJournal: () => void }) {
     }
   }, [turns, streamed]);
   // Scrolling up, however little, leaves the end; scrolling back down to it
-  // follows again. The wheel is read as it turns: a piece of the answer can
-  // arrive before the scroll it caused is reported, and would scroll the
-  // window back down.
+  // follows again. The wheel and keys are read as they are used: a piece of
+  // the answer can arrive before the scroll they caused is reported, and
+  // would scroll the window back down. The window moving up because the
+  // page got shorter, such as when the thinking salmon makes way for the
+  // first line, leaves it at the end and isn't the user leaving.
   useEffect(() => {
     const page = document.scrollingElement ?? document.documentElement;
+    const gap = () => page.scrollHeight - page.scrollTop - page.clientHeight;
     let last = page.scrollTop;
+    const leave = () => {
+      if (page.scrollTop > 0) {
+        following.current = false;
+      }
+    };
     const onWheel = (e: WheelEvent) => {
       if (e.deltaY < 0) {
-        following.current = false;
+        leave();
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      const typing = e.target instanceof HTMLElement && e.target.closest("textarea, input");
+      if (!typing && ["ArrowUp", "PageUp", "Home"].includes(e.key)) {
+        leave();
       }
     };
     const onScroll = () => {
       const top = page.scrollTop;
-      if (top < last) {
+      if (top < last && gap() > 1) {
         following.current = false;
-      } else if (page.scrollHeight - top - page.clientHeight < 48) {
+      } else if (top >= last && gap() < 48) {
         following.current = true;
       }
       last = top;
     };
     window.addEventListener("wheel", onWheel, { passive: true });
+    window.addEventListener("keydown", onKey);
     window.addEventListener("scroll", onScroll, { passive: true });
     return () => {
       window.removeEventListener("wheel", onWheel);
+      window.removeEventListener("keydown", onKey);
       window.removeEventListener("scroll", onScroll);
     };
   }, []);

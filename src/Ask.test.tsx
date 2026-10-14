@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from "vitest";
+import { describe, expect, onTestFinished, test, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
 import { Ask } from "./Ask";
@@ -68,6 +68,12 @@ describe("Ask", () => {
     const question = pending();
     const scrolled = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
     const page = document.documentElement;
+    onTestFinished(() => {
+      scrolled.mockRestore();
+      for (const key of ["scrollHeight", "clientHeight", "scrollTop"]) {
+        delete (page as unknown as Record<string, unknown>)[key];
+      }
+    });
     const setPage = (top: number) => {
       Object.defineProperty(page, "scrollHeight", { configurable: true, value: 2000 });
       Object.defineProperty(page, "clientHeight", { configurable: true, value: 500 });
@@ -99,16 +105,23 @@ describe("Ask", () => {
     expect(scrolled).not.toHaveBeenCalled();
     setPage(200);
 
+    // The page getting shorter at the end moves the window up, but it is
+    // still at the end: followed.
+    setPage(1490);
+    Object.defineProperty(page, "scrollHeight", { configurable: true, value: 1980 });
+    Object.defineProperty(page, "scrollTop", { configurable: true, value: 1480 });
+    window.dispatchEvent(new Event("scroll"));
+    scrolled.mockClear();
+    await act(async () => channel().onmessage(" too"));
+    expect(scrolled).toHaveBeenCalled();
+    setPage(200);
+
     // Back down at the end: followed again.
     setPage(1490);
     await act(async () => channel().onmessage("."));
     expect(scrolled).toHaveBeenCalled();
 
     await act(async () => question.answer(answer("You wrote the quote.")));
-    scrolled.mockRestore();
-    for (const key of ["scrollHeight", "clientHeight", "scrollTop"]) {
-      delete (page as unknown as Record<string, unknown>)[key];
-    }
   });
 
   test("the salmon thinks while the answer comes, and a failed question comes back", async () => {
