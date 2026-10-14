@@ -54,7 +54,16 @@ export function Ask({ onShowJournal }: { onShowJournal: () => void }) {
     end.current?.scrollIntoView({ block: "end", behavior: "smooth" });
   }, [turns, asking, error]);
   // While the answer is written, follow it, unless the user has scrolled up
-  // to read something else.
+  // to read something else. The window scrolls, not the conversation, so
+  // that is where the user's scrolling is read from.
+  useEffect(() => {
+    const onScroll = () => {
+      const page = document.scrollingElement ?? document.documentElement;
+      following.current = page.scrollHeight - page.scrollTop - page.clientHeight < 48;
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
   useEffect(() => {
     if (streamed !== "" && following.current) {
       end.current?.scrollIntoView({ block: "end" });
@@ -67,6 +76,7 @@ export function Ask({ onShowJournal }: { onShowJournal: () => void }) {
       return;
     }
     setAsking(q);
+    following.current = true;
     setStreamed("");
     setError(null);
     setQuestion("");
@@ -111,10 +121,6 @@ export function Ask({ onShowJournal }: { onShowJournal: () => void }) {
         className="chat-log"
         role="log"
         aria-live="polite"
-        onScroll={(e) => {
-          const log = e.currentTarget;
-          following.current = log.scrollHeight - log.scrollTop - log.clientHeight < 48;
-        }}
       >
         {turns.length === 0 && asking === null && (
           <div className="chat-empty">
