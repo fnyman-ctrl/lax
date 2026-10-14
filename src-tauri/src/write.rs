@@ -27,9 +27,12 @@ is in (an English email gets an English reply even when the request is in Swedis
 that is rewritten, shortened or continued keeps its own language. Anything else is in the \
 language of the request. A language the request names always wins. \
 Form: a reply to an email is a whole email, with a greeting, the text and a sign-off the way \
-the user signs (from the memory or their earlier messages in the window; no name if neither \
-says). A chat message has no greeting or sign-off. A list, note or rewritten paragraph is only \
-that text. Keep it as short as the request allows, in the user's usual tone. \
+the user signs (from the memory or their earlier messages in the window; if neither says, no \
+name and no placeholder for one). A chat message has no greeting or sign-off. A list, note or rewritten paragraph is only \
+that text. When the request holds a text and says what to do with it (shorten, rephrase, fix, \
+translate), answer with only that text, changed as asked, and nothing from the window around \
+it; shorter means clearly shorter, about half. Keep it as short as the request allows, in the \
+user's usual tone. \
 Don't make up facts about the user's work or life, such as dates, amounts, names or promises, \
 that aren't in the request or the context; leave a short placeholder in brackets instead, like \
 [date]. Common knowledge, such as what goes on a shopping list, is fine. Leave out passwords, account \
@@ -128,6 +131,74 @@ pub(crate) fn participants(window: &str) -> Vec<String> {
     names
 }
 
+/// Short, common words that tell Swedish and English apart.
+const SWEDISH_WORDS: &[&str] = &[
+    "och", "att", "det", "är", "för", "med", "på", "jag", "inte", "som", "en", "ett", "vi", "du",
+    "har", "kan", "till", "av", "om", "den", "vill", "eller", "när", "så",
+];
+const ENGLISH_WORDS: &[&str] = &[
+    "the", "and", "to", "of", "is", "for", "with", "you", "we", "your", "are", "this", "that",
+    "have", "be", "on", "in", "will", "our", "it", "at", "or", "if", "can",
+];
+
+/// The language of a window's sentences, Swedish or English, if one clearly
+/// leads: lines of at least six words only, so a webmail's menus, buttons and
+/// labels (often in the other language) don't count. `None` if neither leads
+/// by two to one, or there is too little to tell.
+pub(crate) fn window_language(window: &str) -> Option<&'static str> {
+    let (mut swedish, mut english) = (0usize, 0usize);
+    for line in window.lines() {
+        let words: Vec<String> = line
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .map(str::to_lowercase)
+            .collect();
+        if words.len() < 6 {
+            continue;
+        }
+        for word in &words {
+            swedish += usize::from(SWEDISH_WORDS.contains(&word.as_str()));
+            english += usize::from(ENGLISH_WORDS.contains(&word.as_str()));
+        }
+    }
+    if swedish + english < 8 {
+        None
+    } else if english >= 2 * swedish {
+        Some("English")
+    } else if swedish >= 2 * english {
+        Some("Swedish")
+    } else {
+        None
+    }
+}
+
+/// Whether the user's instruction names the language to write in ("på
+/// svenska", "in English").
+fn names_a_language(instruction: &str) -> bool {
+    const LANGUAGES: &[&str] = &[
+        "svenska",
+        "engelska",
+        "tyska",
+        "franska",
+        "spanska",
+        "norska",
+        "danska",
+        "finska",
+        "swedish",
+        "english",
+        "german",
+        "french",
+        "spanish",
+        "norwegian",
+        "danish",
+        "finnish",
+    ];
+    instruction
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|word| LANGUAGES.contains(&word))
+}
+
 /// What the panel shows when it opens.
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -219,6 +290,9 @@ pub async fn write_draft(app: AppHandle, instruction: String) -> Result<Draft, S
     let Ok(endpoint) = Endpoint::parse(&choice.base_url) else {
         return Err("The chat model's address isn't valid. Check it under Models.".to_string());
     };
+    // The window's language, from its sentences, so a reply follows the
+    // message rather than a webmail's menus or the request's language.
+    let language = call.context.as_deref().and_then(window_language);
     let mut texts = known;
     let read_window = call.context.is_some();
     if let Some(context) = call.context {
@@ -228,7 +302,17 @@ pub async fn write_draft(app: AppHandle, instruction: String) -> Result<Draft, S
         ));
     }
     let started = std::time::Instant::now();
-    let asked = draft(endpoint, &choice.model, &instruction, &texts);
+    // Said as an instruction: a small model follows the request's language
+    // over the rule in the task. Not when the user named a language.
+    let request = match language {
+        Some(language) if !names_a_language(&instruction) => {
+            format!(
+                "{instruction}\n\nWrite it in {language}, the language of the message in the window."
+            )
+        }
+        _ => instruction.clone(),
+    };
+    let asked = draft(endpoint, &choice.model, &request, &texts);
     let Some(reply) = app.state::<Pause>().unless_paused(asked).await else {
         return Err("Lax was paused, so nothing was written.".to_string());
     };
@@ -370,6 +454,35 @@ mod tests {
         assert!(reply("Hej\u{0007}").validate().is_err());
         assert!(reply("Hej\u{202E}dlrow").validate().is_err());
         assert!(reply("Hej\u{200B}").validate().is_err());
+    }
+
+    #[test]
+    fn the_window_language_comes_from_its_sentences() {
+        // A webmail in Swedish around an English newsletter: the menus are
+        // short lines and don't count.
+        let gmail = "Inkorg\nSkickat\nUtkast\nSvara\nVidarebefordra\nArkivera\n\
+            We are opening our new store in Stockholm, and you are invited to the launch.\n\
+            The date is Tuesday 20 October, and we will write again on Saturday.\n\
+            Thank you for being with us, and see you there.";
+        assert_eq!(window_language(gmail), Some("English"));
+        let swedish = "Hej Sam!\nHär kommer offerten för nya webbplatsen, och vi kan leverera vecka 46.\n\
+            Hör av dig senast på fredag om ni vill gå vidare med det här.\nVänliga hälsningar";
+        assert_eq!(window_language(swedish), Some("Swedish"));
+        // Too little, or mixed: no hint.
+        assert_eq!(window_language("Inkorg\nSkickat\nSvara"), None);
+        assert_eq!(
+            window_language("We will see you there and it is fine.\nVi ses där och det är bra så."),
+            None
+        );
+    }
+
+    #[test]
+    fn a_named_language_wins() {
+        assert!(names_a_language("svara på svenska och tacka"));
+        assert!(names_a_language("Reply in English, please"));
+        assert!(!names_a_language("svara att det passar bra"));
+        // A word that only contains a language's name isn't one.
+        assert!(!names_a_language("svenskarna har bokat"));
     }
 
     #[test]
