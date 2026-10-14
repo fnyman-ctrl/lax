@@ -210,11 +210,16 @@ fn names_in(
 /// first name is left out too; asking the user for their names comes with
 /// `about-me.md` (ADR 0008).
 fn own_names() -> Vec<String> {
+    names_of(&account_name())
+}
+
+/// The full name of the user's macOS account, or "" where there is none.
+pub(crate) fn account_name() -> String {
     #[cfg(target_os = "macos")]
     let full = objc2_foundation::NSFullUserName().to_string();
     #[cfg(not(target_os = "macos"))]
     let full = String::new();
-    names_of(&full)
+    full
 }
 
 fn names_of(full: &str) -> Vec<String> {
