@@ -1001,9 +1001,32 @@ mark {
   border-bottom-left-radius: 4px;
 }
 
-.bubble .answer {
+.bubble.from-lax {
+  /* Lines short enough to read in one go. */
+  max-width: min(85%, 40rem);
+}
+
+.bubble .answer p {
   margin: 0;
   white-space: pre-wrap;
+}
+
+.bubble .answer > * + * {
+  margin-top: 0.5rem;
+}
+
+.bubble .answer ul {
+  margin-bottom: 0;
+  padding-left: 1.2rem;
+  list-style: disc;
+}
+
+.bubble .answer li + li {
+  margin-top: 0.3rem;
+}
+
+.bubble .answer li::marker {
+  color: var(--muted);
 }
 
 .bubble .sources {
@@ -1089,7 +1112,8 @@ mark {
 
 /* While the answer is being written, and not yet checked: a cursor after
    the text, until the checked answer takes its place. */
-.bubble.writing .answer::after {
+.bubble.writing .answer > p:last-child::after,
+.bubble.writing .answer > ul:last-child > li:last-child::after {
   content: "";
   display: inline-block;
   width: 0.45em;
@@ -1151,7 +1175,8 @@ button.link {
   .bubble.thinking,
   .chat-salmon.working,
   .dots span,
-  .bubble.writing .answer::after {
+  .bubble.writing .answer > p:last-child::after,
+  .bubble.writing .answer > ul:last-child > li:last-child::after {
     animation: none;
   }
 }

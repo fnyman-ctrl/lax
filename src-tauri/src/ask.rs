@@ -69,15 +69,22 @@ const MAX_ANSWER_CHARS: usize = 4000;
 const TASK: &str = "Answer the user's question using only the captured blocks: what the \
 memory knows about the user and about people, organisations and projects, and journal entries. \
 Each journal entry starts with its number in brackets, then when it happened and in which apps. \
-Answer briefly and directly, in the language of the question, and only about what the question \
-asks: leave out entries about other things, and when an entry covers several things, use only \
-the part about the question's subject. For several things, use short \
-lines starting with \"- \". Put the numbers of the journal entries the answer is based on in \
+Answer in the language of the question, even when the entries are in another language, and \
+only about what the question asks: leave out entries about other things, and when an entry \
+covers several things, use only the part about the question's subject. Make it easy to read: \
+for several things, a short sentence that sums up, then each thing as a point of a few words on a \
+line of its own starting with \"- \" (\\n before each in the JSON string), at most five, \
+putting together what belongs together and leaving out repeats. For one thing, or a length the \
+question asks for such as one sentence, only that. Asked what \
+is left to do, answer from what the entries say is planned, promised or not done yet. Put the numbers of the journal entries the answer is based on in \
 sources, as a list of numbers such as [1, 4] (what the memory knows has no number). Don't put \
 entry numbers in the answer. If the blocks don't answer the question, say so plainly; don't \
 guess. A block may hold the conversation so far: use it only to understand what a follow-up \
 question refers to, and answer from the memory and the journal entries.";
 const SHAPE: &str = r#"{"answer": string, "sources": [number]}"#;
+/// Low, so an answer keeps the form asked for every time, as a draft does
+/// (`write::TEMPERATURE`).
+const TEMPERATURE: f32 = 0.1;
 
 /// What the model must answer.
 #[derive(Debug, Deserialize)]
@@ -847,8 +854,12 @@ fn request<Tz: TimeZone>(question: &str, now: &DateTime<Tz>) -> String
 where
     Tz::Offset: std::fmt::Display,
 {
+    // A small model otherwise answers in the entries' language.
+    let language = crate::write::window_language(question)
+        .map(|language| format!("\n\nAnswer in {language}."))
+        .unwrap_or_default();
     format!(
-        "Today is {}.\n\nQuestion: {question}",
+        "Today is {}.\n\nForm: for several things, a sentence that sums up and then \"- \" points of a few words.\n\nQuestion: {question}{language}",
         now.format("%A %Y-%m-%d, %H:%M")
     )
 }
@@ -1104,7 +1115,8 @@ async fn answer(
     // about ten times faster.
     let client = ModelClient::new(endpoint)
         .map_err(StructuredError::Model)?
-        .without_reasoning();
+        .without_reasoning()
+        .with_temperature(TEMPERATURE);
     let captured: Vec<Captured> = texts.iter().map(|t| Captured(t.as_str())).collect();
     structured::ask_streaming(
         &client, model, TASK, SHAPE, request, &captured, MAX_TOKENS, on_text,
@@ -1962,6 +1974,67 @@ mod tests {
         assert_eq!(shown, without_references(&reply.answer));
         assert!(reply.answer.to_lowercase().contains("offert"));
         assert!(reply.sources.contains(&1));
+    }
+
+    /// Synthetic entries that overlap, like a week of work for one client.
+    fn overlapping_entries() -> Vec<String> {
+        [
+            "[1] Mon 2026-10-05 09:00–10:10 (Pages, Safari): Arbetade med Example AB:s processkarta för ledning och kärnverksamhet inför onboardingen; flödesschemat gick inte att flytta.",
+            "[2] Mon 2026-10-05 13:00–14:00 (Safari): Granskade Example AB:s onboardingdokument och AI-genererade flödesscheman i Nyterio.",
+            "[3] Tue 2026-10-06 10:00–11:30 (Pages): Gick igenom att Example AB:s onboardingdokumentation var klar, med tidslinje och projektsteg.",
+            "[4] Tue 2026-10-06 15:00–16:00 (Pages, Mail): Uppdaterade flödesschemat 'Utföra tillverkning' för Example AB och läste nya onboardingdokument från Anna Example.",
+            "[5] Wed 2026-10-07 09:30–11:00 (Pages): Detaljerade huvudprocesskartan för Example AB: Ledning, Reklamation, Lager och Ekonomi; saknad dokumentation noterad.",
+            "[6] Wed 2026-10-07 14:00–15:00 (Claude, Pages): Korrigerade onboardingprocessen och projektets milstolpar för Example AB; testade också AI-modellernas hastighet för Lax.",
+            "[7] Thu 2026-10-08 10:00–12:00 (Claude, Terminal): Arbetade med Lax skrivassistent och mergade ändringar; skrev kort till Anna Example att processkartan skickas för godkännande på fredag.",
+        ]
+        .map(String::from)
+        .to_vec()
+    }
+
+    /// Answers over overlapping entries read well: a sentence first, then a
+    /// few points; one sentence when asked for; the question's language.
+    /// Synthetic data only.
+    #[tokio::test]
+    #[ignore = "needs a local model server: LAX_LIVE_MODEL_URL, LAX_LIVE_CHAT_MODEL"]
+    async fn live_answers_read_well() {
+        let env = |name| std::env::var(name).unwrap_or_else(|_| panic!("{name} is not set"));
+        for question in [
+            "Vad har jag gjort för Example AB den här veckan?",
+            "Kan du sammanfatta i en mening vad jag har kvar för Example AB?",
+            "What did I do for Example AB on Wednesday?",
+        ] {
+            let started = Instant::now();
+            let reply = answer(
+                Endpoint::parse(&env("LAX_LIVE_MODEL_URL")).unwrap(),
+                &env("LAX_LIVE_CHAT_MODEL"),
+                &request(question, &now()),
+                &overlapping_entries(),
+                |_| {},
+            )
+            .await
+            .expect("an answer");
+            let answer = &reply.answer;
+            assert!(started.elapsed().as_secs() < 30, "slow: {question}");
+            assert!(
+                !answer.starts_with("- "),
+                "no summing-up sentence: {answer}"
+            );
+            if question.contains("en mening") {
+                assert!(
+                    !answer.contains("\n- "),
+                    "points after one sentence: {answer}"
+                );
+                assert!(answer.contains("fredag"), "not what is planned: {answer}");
+            } else if question.starts_with("What") {
+                assert!(
+                    !answer.contains(['å', 'ä', 'ö']),
+                    "an English question got a Swedish answer: {answer}"
+                );
+            } else {
+                let points = answer.matches("\n- ").count();
+                assert!((2..=6).contains(&points), "{points} points: {answer}");
+            }
+        }
     }
 
     #[test]

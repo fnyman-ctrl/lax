@@ -1,7 +1,7 @@
 import { describe, expect, onTestFinished, test, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
-import { Ask } from "./Ask";
+import { Ask, answerBlocks } from "./Ask";
 
 // The channel the answer streams through: the tests play the Rust side by
 // calling its `onmessage`.
@@ -212,5 +212,38 @@ describe("Ask", () => {
     fireEvent.change(box, { target: { value: "First line" } });
     fireEvent.keyDown(box, { key: "Enter", shiftKey: true });
     expect(mocked).not.toHaveBeenCalled();
+  });
+
+  test("an answer reads as paragraphs and lists of points", () => {
+    expect(answerBlocks("You worked on the quote.\n- Prices\n- Delivery in week 46")).toEqual([
+      { kind: "text", text: "You worked on the quote." },
+      { kind: "points", points: ["Prices", "Delivery in week 46"] },
+    ]);
+    // A list written on one line, as small models sometimes do.
+    expect(answerBlocks("It covered: - Prices for Example AB. - Delivery.")).toEqual([
+      { kind: "text", text: "It covered:" },
+      { kind: "points", points: ["Prices for Example AB.", "Delivery."] },
+    ]);
+    // A dash inside a sentence, or a single one, is not a list.
+    expect(answerBlocks("Example AB - the client - called. Then - nothing.")).toEqual([
+      { kind: "text", text: "Example AB - the client - called. Then - nothing." },
+    ]);
+    // A blank line ends a paragraph; text after a list starts a new one.
+    expect(answerBlocks("One.\n\nTwo.\n- A\nThree.")).toEqual([
+      { kind: "text", text: "One." },
+      { kind: "text", text: "Two." },
+      { kind: "points", points: ["A"] },
+      { kind: "text", text: "Three." },
+    ]);
+  });
+
+  test("an answer is shown as text, never as HTML", async () => {
+    const question = pending();
+    render(<Ask onShowJournal={() => {}} />);
+    await act(async () => ask("What did I do yesterday?"));
+    await act(async () => question.answer(answer("Notes:\n- <b>bold</b>\n- **two**")));
+    const points = screen.getAllByRole("listitem").map((item) => item.textContent);
+    expect(points).toEqual(["<b>bold</b>", "**two**"]);
+    expect(document.querySelector(".answer b")).toBeNull();
   });
 });

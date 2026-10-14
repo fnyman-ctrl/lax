@@ -136,16 +136,16 @@ pub(crate) fn participants(window: &str) -> Vec<String> {
 const SWEDISH_WORDS: &[&str] = &[
     "och", "att", "det", "är", "för", "med", "på", "jag", "inte", "som", "en", "ett", "vi", "du",
     "har", "kan", "till", "av", "om", "den", "vill", "eller", "när", "så", "hej", "tack", "mig",
-    "min", "kunde", "skulle", "ni", "er",
+    "min", "kunde", "skulle", "ni", "er", "vad", "vem", "hur", "gjorde", "gjort",
 ];
 const ENGLISH_WORDS: &[&str] = &[
     "the", "and", "to", "of", "is", "for", "with", "you", "we", "your", "are", "this", "that",
     "have", "be", "on", "in", "will", "our", "it", "at", "or", "if", "can", "hi", "thanks",
-    "could", "would", "please", "my", "me", "i",
+    "could", "would", "please", "my", "me", "i", "what", "who", "how", "did", "do", "about",
 ];
 
-/// The language of a window's sentences, Swedish or English, if one clearly
-/// leads: lines of at least five words only, so a webmail's menus, buttons
+/// The language of a window's sentences, or of a question, Swedish or
+/// English, if one clearly leads: lines of at least five words only, so a webmail's menus, buttons
 /// and labels (often in the other language) don't count. `None` if neither
 /// leads by two to one, or there is too little to tell.
 pub(crate) fn window_language(window: &str) -> Option<&'static str> {

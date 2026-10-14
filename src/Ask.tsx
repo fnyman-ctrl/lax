@@ -190,7 +190,7 @@ export function Ask({ onShowJournal }: { onShowJournal: () => void }) {
           <Fragment key={i}>
             <p className="bubble from-you">{turn.question}</p>
             <div className="bubble from-lax">
-              <p className="answer">{turn.answer.answer}</p>
+              <AnswerText text={turn.answer.answer} />
               {turn.answer.recentOnly && turn.answer.considered > 0 && (
                 <p className="muted hint">
                   The question didn't name a time, or a person, project or word Lax could
@@ -240,11 +240,10 @@ export function Ask({ onShowJournal }: { onShowJournal: () => void }) {
                 </span>
               </div>
             ) : (
-              // Plain text only: React puts it in as text, never as HTML,
-              // and nothing reads it as Markdown. Screen readers hear the
+              // Plain text only (AnswerText). Screen readers hear the
               // validated answer once, not each piece as it comes.
               <div className="bubble from-lax writing" aria-live="off" aria-busy="true">
-                <p className="answer">{streamed}</p>
+                <AnswerText text={streamed} />
               </div>
             )}
           </>
@@ -295,6 +294,72 @@ export function Ask({ onShowJournal }: { onShowJournal: () => void }) {
         )}
       </p>
     </section>
+  );
+}
+
+type Block = { kind: "text"; text: string } | { kind: "points"; points: string[] };
+
+const POINT = /^\s*[-•*]\s+(.*)$/;
+// A list the model wrote on one line: "It covered: - this. - that."
+const INLINE_POINT = /([.:!?])\s+-\s+(?=\S)/g;
+
+/** The answer as paragraphs and lists of points, for reading: lines
+ * starting with "- " become a list, and a blank line ends a paragraph. */
+export function answerBlocks(text: string): Block[] {
+  const lines = text.split("\n").flatMap((line) => {
+    const split = line.replace(INLINE_POINT, "$1\n- ");
+    return split.split("\n").length > 2 ? split.split("\n") : [line];
+  });
+  const blocks: Block[] = [];
+  let paragraph: string[] = [];
+  let points: string[] = [];
+  const end = () => {
+    if (paragraph.length > 0) {
+      blocks.push({ kind: "text", text: paragraph.join("\n") });
+    }
+    if (points.length > 0) {
+      blocks.push({ kind: "points", points });
+    }
+    paragraph = [];
+    points = [];
+  };
+  for (const line of lines) {
+    const point = POINT.exec(line);
+    if (point) {
+      if (paragraph.length > 0) {
+        end();
+      }
+      points.push(point[1]);
+    } else if (line.trim() === "") {
+      end();
+    } else {
+      if (points.length > 0) {
+        end();
+      }
+      paragraph.push(line);
+    }
+  }
+  end();
+  return blocks;
+}
+
+/** An answer as plain text in paragraphs and lists: React puts it in as
+ * text, never as HTML, and nothing else of Markdown is read. */
+function AnswerText({ text }: { text: string }) {
+  return (
+    <div className="answer">
+      {answerBlocks(text).map((block, i) =>
+        block.kind === "points" ? (
+          <ul key={i}>
+            {block.points.map((point, j) => (
+              <li key={j}>{point}</li>
+            ))}
+          </ul>
+        ) : (
+          <p key={i}>{block.text}</p>
+        ),
+      )}
+    </div>
   );
 }
 
