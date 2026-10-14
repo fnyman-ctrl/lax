@@ -70,7 +70,8 @@ const TASK: &str = "Answer the user's question using only the captured blocks: w
 memory knows about the user and about people, organisations and projects, and journal entries. \
 Each journal entry starts with its number in brackets, then when it happened and in which apps. \
 Answer briefly and directly, in the language of the question, and only about what the question \
-asks: leave out entries about other things. For several things, use short \
+asks: leave out entries about other things, and when an entry covers several things, use only \
+the part about the question's subject. For several things, use short \
 lines starting with \"- \". Put the numbers of the journal entries the answer is based on in \
 sources, as a list of numbers such as [1, 4] (what the memory knows has no number). Don't put \
 entry numbers in the answer. If the blocks don't answer the question, say so plainly; don't \
@@ -90,13 +91,15 @@ struct Reply {
 /// Entry numbers as the model writes them: a list of numbers as asked, but
 /// also, from small models answering without reasoning, numbers as text
 /// ("4", "[4]"), ranges ("1-8"), comma-separated text ("1, 3") and lists
-/// in lists ([[5]]). Anything else, such as words, is refused. Whether the
-/// numbers were given is checked afterwards.
+/// in lists ([[5]]). Anything else, such as a sentence about the entries,
+/// counts as no sources: the answer is still good, and its own "[1]"
+/// references are used instead (`references`). Whether the numbers were
+/// given is checked afterwards.
 fn sources<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<u32>, D::Error> {
     let value = serde_json::Value::deserialize(deserializer)?;
     let mut out = Vec::new();
     if collect(&value, 0, &mut out).is_none() {
-        return Err(serde::de::Error::custom("not entry numbers"));
+        return Ok(Vec::new());
     }
     // The same entry twice is one source.
     out.sort_unstable();
@@ -1022,7 +1025,11 @@ pub async fn ask_memory(
         return Err("Lax was paused, so the question was dropped.".to_string());
     };
     let (first_words, shown) = (streamed.first, streamed.chars);
-    let reply = reply.and_then(|reply| {
+    let reply = reply.and_then(|mut reply| {
+        // No usable sources: the references in the answer's own text.
+        if reply.sources.is_empty() {
+            reply.sources = references(&reply.answer);
+        }
         if reply
             .sources
             .iter()
@@ -1212,6 +1219,33 @@ fn with_store<T>(app: &AppHandle, work: impl FnOnce(&Store) -> T) -> Option<T> {
 
 /// The answer without entry references such as "[3]" or "[1-8]", which
 /// models put in although sources are shown on their own.
+/// The entry numbers an answer refers to in its text ("[1]", "[2, 4]",
+/// "[3-5]"), the same references `without_references` takes out.
+fn references(answer: &str) -> Vec<u32> {
+    let mut out = Vec::new();
+    let mut rest = answer;
+    while let Some(open) = rest.find('[') {
+        let after = &rest[open + 1..];
+        let Some(close) = after.find(']') else { break };
+        let inside = &after[..close];
+        if inside.chars().any(|c| c.is_ascii_digit())
+            && inside
+                .chars()
+                .all(|c| c.is_ascii_digit() || matches!(c, ',' | '-' | '–' | ' '))
+        {
+            let mut found = Vec::new();
+            if numbers(inside, &mut found).is_some() {
+                out.extend(found);
+            }
+        }
+        rest = after;
+    }
+    out.sort_unstable();
+    out.dedup();
+    out.truncate(MAX_ENTRIES);
+    out
+}
+
 fn without_references(answer: &str) -> String {
     let mut out = String::with_capacity(answer.len());
     let mut rest = answer;
@@ -1789,6 +1823,18 @@ mod tests {
     }
 
     #[test]
+    fn references_in_the_answer_are_read() {
+        assert_eq!(
+            references("Mailade Anna [1].\n- Planerade [2, 4]."),
+            [1, 2, 4]
+        );
+        assert_eq!(references("Hela veckan [3-5], och [3]."), [3, 4, 5]);
+        // Not references: a link, a placeholder, a range too long to be real.
+        assert!(references("Se [länken] och [date]").is_empty());
+        assert!(references("[1-100000]").is_empty());
+    }
+
+    #[test]
     fn answers_are_validated() {
         let parse = |json: &str| structured::parse::<Reply>(json);
         assert!(parse(r#"{"answer":"Du mailade Anna.","sources":[1]}"#).is_ok());
@@ -1811,13 +1857,22 @@ mod tests {
             sources(r#"{"answer":"ok","sources":[2, "5-6"]}"#),
             Some(vec![2, 5, 6])
         );
-        // Not numbers, or a range too long to be real, is refused.
-        assert!(parse(r#"{"answer":"ok","sources":"all of them"}"#).is_err());
-        assert!(parse(r#"{"answer":"ok","sources":"1-100000"}"#).is_err());
-        assert!(parse(r#"{"answer":"ok","sources":"5-2"}"#).is_err());
-        assert!(parse(r#"{"answer":"ok","sources":[true]}"#).is_err());
-        assert!(parse(r#"{"answer":"ok","sources":[[[[1]]]]}"#).is_err());
-        assert!(parse(r#"{"answer":"ok","sources":[-1]}"#).is_err());
+        // Not numbers, or a range too long to be real, gives no sources, and
+        // the answer stays: its own "[1]" references are used instead. A
+        // sentence instead of numbers came from the maintainer's real data.
+        let none = Some(Vec::new());
+        assert_eq!(sources(r#"{"answer":"ok","sources":"all of them"}"#), none);
+        assert_eq!(
+            sources(r#"{"answer":"ok","sources":["entries about the launch on 2026-10-13"]}"#),
+            none
+        );
+        assert_eq!(sources(r#"{"answer":"ok","sources":"1-100000"}"#), none);
+        assert_eq!(sources(r#"{"answer":"ok","sources":"5-2"}"#), none);
+        assert_eq!(sources(r#"{"answer":"ok","sources":[true]}"#), none);
+        assert_eq!(sources(r#"{"answer":"ok","sources":[[[[1]]]]}"#), none);
+        assert_eq!(sources(r#"{"answer":"ok","sources":[-1]}"#), none);
+        // The shape itself still matters.
+        assert!(parse(r#"{"answer":"ok"}"#).is_err());
         // More shapes from the live probe.
         assert_eq!(sources(r#"{"answer":"ok","sources":[[5]]}"#), Some(vec![5]));
         assert_eq!(
@@ -1836,7 +1891,10 @@ mod tests {
             sources(r#"{"answer":"ok","sources":[1.0, 3.0]}"#),
             Some(vec![1, 3])
         );
-        assert!(parse(r#"{"answer":"ok","sources":[1.5]}"#).is_err());
+        assert_eq!(
+            sources(r#"{"answer":"ok","sources":[1.5]}"#),
+            Some(Vec::new())
+        );
         // Repeats count once.
         assert_eq!(
             sources(r#"{"answer":"ok","sources":["1-30", 1, 2, 3, 30]}"#),
