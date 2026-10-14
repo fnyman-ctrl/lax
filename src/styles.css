@@ -552,6 +552,9 @@ select {
   .river-salmon .ripple {
     display: none;
   }
+  .river-salmon .heading.left {
+    transform: none;
+  }
 }
 
 .status {

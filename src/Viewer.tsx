@@ -139,15 +139,25 @@ export function Viewer() {
   // going, beats its tail while it swims, and turns back to face right.
   const [swim, setSwim] = useState<"left" | "right" | null>(null);
   const lastAt = useRef<number | null>(null);
+  const lastTab = useRef(tab);
   // A ring on the water where it arrives; the key restarts it.
   const [ripple, setRipple] = useState(0);
   useEffect(() => {
     const from = lastAt.current;
+    const moved = lastTab.current !== tab;
     lastAt.current = fishAt;
-    if (from !== null && fishAt !== null && Math.abs(fishAt - from) > 1) {
-      setSwim(fishAt < from ? "left" : "right");
+    lastTab.current = tab;
+    // Only when the section changed, not when the window is resized, and
+    // never with "Reduce motion".
+    const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    if (!moved || still || from === null || fishAt === null || Math.abs(fishAt - from) <= 1) {
+      return;
     }
-  }, [fishAt]);
+    setSwim(fishAt < from ? "left" : "right");
+    // In case the move never ends as a transition (a hidden window).
+    const done = window.setTimeout(() => setSwim(null), 900);
+    return () => window.clearTimeout(done);
+  }, [fishAt, tab]);
   useLayoutEffect(() => {
     const place = () => {
       const button = nav.current?.querySelector<HTMLElement>('[aria-current="page"]');
