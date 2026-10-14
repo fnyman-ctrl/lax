@@ -144,13 +144,17 @@ export function Viewer() {
   const [ripple, setRipple] = useState(0);
   useEffect(() => {
     const from = lastAt.current;
+    // The section may change a moment before its position is known.
+    if (fishAt === null || fishAt === from) {
+      return;
+    }
     const moved = lastTab.current !== tab;
     lastAt.current = fishAt;
     lastTab.current = tab;
     // Only when the section changed, not when the window is resized, and
     // never with "Reduce motion".
     const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
-    if (!moved || still || from === null || fishAt === null || Math.abs(fishAt - from) <= 1) {
+    if (!moved || still || from === null || Math.abs(fishAt - from) <= 1) {
       return;
     }
     setSwim(fishAt < from ? "left" : "right");
