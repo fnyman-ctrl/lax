@@ -28,7 +28,7 @@ that is rewritten, shortened or continued keeps its own language. Anything else 
 language of the request. A language the request names always wins. \
 Form: a reply to an email is a whole email, with a greeting, the text and a sign-off the way \
 the user signs (from the memory or their earlier messages in the window; if neither says, \
-their first name from the block with their name; if no name is known, no name and no placeholder \
+their first name from the block with it; if no name is known, no name and no placeholder \
 for one). A chat message has no greeting or sign-off. A list, note or rewritten paragraph is only \
 that text. When a block holds the text the user selected, the request says what to do with it (shorten, \
 rephrase, fix, translate, continue): answer with only that text, changed as asked, and nothing \
@@ -192,34 +192,18 @@ fn request_for(instruction: &str, language: Option<&str>, selected: bool) -> Str
     }
 }
 
-/// Whether the user's instruction names the language to write in ("på
-/// svenska", "in English").
-/// The user's name for a draft's sign-off: their macOS account's full
-/// name, then the other names they gave under Memory.
+/// The user's first name, for a draft's sign-off: from their macOS
+/// account, otherwise the first name they gave under Memory. Only the first
+/// name: the model needs no more to sign.
 fn name_block(account: &str, other: &[String]) -> Option<String> {
-    let account = account.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut names: Vec<&str> = Vec::new();
-    for name in std::iter::once(account.as_str()).chain(other.iter().map(|n| n.trim())) {
-        let first = |n: &str| n.split(' ').next().unwrap_or_default().to_lowercase();
-        if !name.is_empty()
-            && !names
-                .iter()
-                .any(|known| known.eq_ignore_ascii_case(name) || first(known) == first(name))
-        {
-            names.push(name);
-        }
-    }
-    let (name, also) = names.split_first()?;
-    Some(if also.is_empty() {
-        format!("The user's name: {name}")
-    } else {
-        format!(
-            "The user's name: {name}. They also go by {}.",
-            also.join(", ")
-        )
-    })
+    let first = std::iter::once(account)
+        .chain(other.iter().map(String::as_str))
+        .find_map(|name| name.split_whitespace().next())?;
+    Some(format!("The user's first name: {first}"))
 }
 
+/// Whether the user's instruction names the language to write in ("på
+/// svenska", "in English").
 fn names_a_language(instruction: &str) -> bool {
     const LANGUAGES: &[&str] = &[
         "svenska",
@@ -349,11 +333,11 @@ pub async fn write_draft(app: AppHandle, instruction: String) -> Result<Draft, S
         .as_deref()
         .or(call.context.as_deref())
         .and_then(window_language);
-    // First, as it rarely changes: who the user is, for the sign-off.
-    let mut texts: Vec<String> = name_block(&crate::memory::account_name(), &own_names)
-        .into_iter()
-        .chain(known)
-        .collect();
+    // First, as it rarely changes: the user's name, for a sign-off. A
+    // selection is changed in place and never signed.
+    let name =
+        name_block(&crate::memory::account_name(), &own_names).filter(|_| call.selection.is_none());
+    let mut texts: Vec<String> = name.into_iter().chain(known).collect();
     // With a selection, the window isn't needed, and a small model would
     // take sentences from around the selection into the changed text.
     let context = if call.selection.is_some() {
@@ -556,14 +540,14 @@ mod tests {
     }
 
     #[test]
-    fn the_name_block_starts_with_the_account_name() {
+    fn the_name_block_has_the_first_name_only() {
         assert_eq!(
-            name_block("  Anna   Example ", &["Annie".into(), "Anna".into()]).as_deref(),
-            Some("The user's name: Anna Example. They also go by Annie.")
+            name_block("  Anna   Example ", &["Annie".into()]).as_deref(),
+            Some("The user's first name: Anna")
         );
         assert_eq!(
-            name_block("", &["Anna".into()]).as_deref(),
-            Some("The user's name: Anna")
+            name_block("", &["Annie Example".into()]).as_deref(),
+            Some("The user's first name: Annie")
         );
         assert_eq!(name_block(" ", &[]), None);
     }
@@ -629,7 +613,12 @@ mod tests {
             "an English email got a reply with Swedish letters"
         );
         assert!(
-            reply.draft.trim_end().ends_with("Sam"),
+            reply
+                .draft
+                .trim_end()
+                .lines()
+                .last()
+                .is_some_and(|line| line.contains("Sam")),
             "the reply isn't signed with the user's first name"
         );
     }
