@@ -212,7 +212,7 @@ function NotOpen({ state }: { state: Exclude<State, "open" | "opening" | "encryp
         <p className="muted">
           If you reset your login password, macOS may have kept the old keychain under a new name.
           Open Keychain Access, unlock the old keychain with your old password, and try again. If
-          you kept a copy of the key, add it back as "Lax database key".
+          you kept a copy of the key, the user guide says how to put it back.
         </p>
         <p className="actions">
           {tryAgain} {startOver}
