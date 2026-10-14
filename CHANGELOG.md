@@ -21,4 +21,13 @@ The first version. Everything runs on your Mac; nothing leaves it.
   you. Enter puts it in the field; Lax never sends.
 - **Forget and expiry:** forget a time, an app or a person; raw text goes 30
   days after it's summarized, and at 90 days at the latest.
+- **Encrypted database:** everything Lax keeps in its database is encrypted with
+  a random key that only your login keychain holds. A new database is encrypted
+  from the start; an existing one is converted once, after a notice. The
+  conversion is one-way: an older version of Lax can't open the encrypted
+  database. Backups and snapshots made before the conversion still hold the old,
+  unencrypted file. The memory pages in `~/Lax` are not part of the database
+  yet. After every build, macOS asks once for your login password so the new
+  build may read the key. There is no recovery key: keep a copy of the key in
+  your password manager. See [Encryption](docs/USER-GUIDE.md#encryption).
 - **Install:** build from source with `npm run build:app`.

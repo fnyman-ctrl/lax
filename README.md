@@ -131,7 +131,7 @@ other local tools can use your memory.
   if your computer can't run a local model, you'll be able to pick a
   privacy-focused provider instead: opt-in, redacted first, and every request
   logged for you to inspect.
-- **Your data, open formats.** Memory is stored as Markdown + SQLite in a folder you own.
+- **Your data, open formats.** Memory is stored as Markdown + SQLite in folders you own. The database is encrypted with a key in your login keychain.
 - **Transparent.** You can always see what was captured, what Lax believes about you,
   and what was sent off your machine. You can pause, exclude apps or delete anything.
 - **No telemetry.** Ever.
@@ -142,7 +142,7 @@ and [docs/CLAIMS.md](docs/CLAIMS.md) shows the test behind each one.
 ## Tech stack
 
 - [Tauri](https://tauri.app) (Rust backend, React/TypeScript UI)
-- SQLite with FTS5 full-text search, and episode vectors for search by meaning
+- SQLite with FTS5 full-text search, and episode vectors for search by meaning, encrypted with SQLCipher
 - Any OpenAI-compatible model API: local (LM Studio, Ollama…), remote after 0.1
 - The macOS Accessibility API to read windows and write drafts; AppKit for the
   writing assistant's panel and Liquid Glass

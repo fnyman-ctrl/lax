@@ -38,6 +38,20 @@ they change.
   captures settle; the memory's reading, page facts and Ask's vectors wait
   until two minutes without keyboard or mouse input
   (`journal::may_use_model`). A question in Ask always goes first.
+- **An encrypted database keeps temporary data in memory.** SQLCipher encrypts
+  the database, its journal and its write-ahead log, but not the temporary
+  files SQLite makes for sorts and temporary indexes. So the encrypted database
+  uses `temp_store = MEMORY`, and those files never reach the disk
+  ([ADR 0010](adr/0010-encrypted-database.md)).
+- **Forgetting doesn't copy the database.** `VACUUM` builds a full copy, which
+  with temporary data in memory takes about as much RAM as the file is large
+  (296 MB for a 246 MB file in the probe, against a budget of 150 MB). An
+  encrypted database is laid out for `auto_vacuum = INCREMENTAL`, and
+  forgetting frees pages with `PRAGMA incremental_vacuum` instead (10 MB peak in
+  the same probe). Deleted text is still zeroed by `secure_delete`.
+- **Migrations that build indexes on large tables must be measured.** Building
+  an index sorts in memory now. Before such a migration ships, run it on a
+  database as large as a few months of captures and check the peak memory.
 - **Expensive setup happens once.** Chromium and Electron apps are asked to
   build their accessibility tree once per process, not on every read.
 

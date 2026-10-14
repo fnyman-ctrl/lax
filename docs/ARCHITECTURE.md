@@ -9,6 +9,11 @@ previous one, so they can be built, tested and improved independently.
      └────────────── SQLite ──────────────┘        └── ~/Lax/
 ```
 
+The database is encrypted with SQLCipher. Its random key lives in the login
+keychain, and Lax opens the database on a thread of its own, so a Keychain
+prompt never freezes the window. See
+[ADR 0010](adr/0010-encrypted-database.md).
+
 ## 1. Capture
 
 - Lax runs in the menu bar. While capture is paused, nothing at all is read.

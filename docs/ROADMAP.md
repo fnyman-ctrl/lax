@@ -135,5 +135,4 @@ Ideas for after 0.1, roughly in order of interest. None of them are committed.
 - **Time tracking:** time per project, derived from the journal
 - **MCP server:** read-only access to your memory for other local tools
 - **OCR fallback** for apps that don't expose text through Accessibility
-- **Encrypted database** (SQLCipher)
 - **Windows and Linux** support
