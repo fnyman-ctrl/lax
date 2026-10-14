@@ -66,22 +66,27 @@ export function Panel() {
   // The salmon leaves, then `then` runs: the card and the glass go first, so
   // nothing is left hanging while the window closes. If the window stays
   // (a draft that couldn't be inserted), everything comes back.
+  // One leave at a time: a second Enter or Escape meanwhile does nothing, so
+  // a draft is never inserted twice.
+  const going = useRef(false);
   const leave = useRef<(how: Leaving, then: () => Promise<unknown>) => void>(() => {});
   leave.current = (how, then) => {
+    if (going.current) {
+      return;
+    }
+    going.current = true;
+    const done = () => {
+      going.current = false;
+      setLeaving(null);
+    };
     if (stillMotion()) {
-      void then();
+      void then().finally(done);
       return;
     }
     setLeaving(how);
     opened.current = false;
     fit();
-    window.setTimeout(() => {
-      void then().finally(() => {
-        setLeaving(null);
-        opened.current = true;
-        fit();
-      });
-    }, LEAVE_MS);
+    window.setTimeout(() => void then().finally(done), LEAVE_MS);
   };
 
   useEffect(() => {
@@ -151,9 +156,12 @@ export function Panel() {
       return;
     }
     leave.current("dive", () =>
-      invoke("insert_draft", { text }).catch((e) =>
-        setStage((s) => (s.kind === "draft" ? { ...s, error: String(e) } : s)),
-      ),
+      invoke("insert_draft", { text }).catch((e) => {
+        // The panel stays, with the draft: the card and its glass come back.
+        opened.current = true;
+        fit();
+        setStage((s) => (s.kind === "draft" ? { ...s, error: String(e) } : s));
+      }),
     );
   };
 

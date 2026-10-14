@@ -40,6 +40,23 @@ describe("the writing assistant's panel", () => {
     );
   });
 
+  test("a second Enter while the salmon dives doesn't insert twice", async () => {
+    app("Thanks!");
+    render(<Panel />);
+    const instruction = await screen.findByDisplayValue("reply and thank her");
+    await act(async () => fireEvent.keyDown(instruction, { key: "Enter" }));
+    const draft = await screen.findByRole("textbox", { name: "The draft" });
+    await act(async () => {
+      fireEvent.keyDown(draft, { key: "Enter" });
+      fireEvent.keyDown(draft, { key: "Enter" });
+    });
+    await vi.waitFor(() =>
+      expect(mocked).toHaveBeenCalledWith("insert_draft", { text: "Thanks!" }),
+    );
+    await new Promise((r) => setTimeout(r, 250));
+    expect(mocked.mock.calls.filter(([c]) => c === "insert_draft")).toHaveLength(1);
+  });
+
   test("Escape closes the panel", async () => {
     app();
     render(<Panel />);
