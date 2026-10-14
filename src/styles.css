@@ -192,6 +192,7 @@ button:hover {
 
 button:focus-visible,
 input:focus-visible,
+textarea:focus-visible,
 select:focus-visible,
 summary:focus-visible {
   outline: 2px solid var(--accent);
@@ -441,16 +442,76 @@ select {
   vector-effect: non-scaling-stroke;
 }
 
-/* The salmon on the river, under the chosen section, at whole pixels. */
+/* The salmon on the river, under the chosen section, at whole pixels. It
+   faces the way it swims and beats its tail on the way, then turns back to
+   face right and floats gently where it stopped. */
 .river-salmon {
   position: absolute;
   left: 0;
   bottom: 2px;
   width: 38px;
   height: 22px;
-  image-rendering: pixelated;
   pointer-events: none;
-  transition: transform 480ms cubic-bezier(0.3, 1.3, 0.5, 1);
+  transition: transform 520ms cubic-bezier(0.3, 1.2, 0.5, 1);
+}
+
+.river-salmon .heading {
+  display: block;
+  width: 38px;
+  height: 22px;
+  transition: transform 160ms ease-out;
+}
+
+.river-salmon .heading.left {
+  transform: scaleX(-1);
+}
+
+.river-salmon .fish {
+  display: block;
+  width: 38px;
+  height: 22px;
+  image-rendering: pixelated;
+  transform-origin: 70% 50%;
+  animation: float 3.2s ease-in-out infinite alternate;
+}
+
+.river-salmon .fish.swimming {
+  animation: wiggle 120ms ease-in-out infinite alternate;
+}
+
+/* A ring spreading on the water where the salmon arrives. */
+.river-salmon .ripple {
+  position: absolute;
+  left: 50%;
+  bottom: 1px;
+  width: 44px;
+  height: 6px;
+  margin-left: -22px;
+  border: 1px solid var(--accent);
+  border-radius: 50%;
+  opacity: 0;
+  pointer-events: none;
+  animation: ripple 700ms ease-out both;
+}
+
+@keyframes ripple {
+  from {
+    opacity: 0.55;
+    transform: scale(0.3, 0.6);
+  }
+  to {
+    opacity: 0;
+    transform: none;
+  }
+}
+
+@keyframes float {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(-1px);
+  }
 }
 
 .content {
@@ -480,8 +541,19 @@ select {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .river-salmon {
+  .river-salmon,
+  .river-salmon .heading {
     transition: none;
+  }
+  .river-salmon .fish,
+  .river-salmon .fish.swimming {
+    animation: none;
+  }
+  .river-salmon .ripple {
+    display: none;
+  }
+  .river-salmon .heading.left {
+    transform: none;
   }
 }
 
@@ -948,6 +1020,24 @@ mark {
   display: flex;
   align-items: center;
   gap: 0.6rem;
+  /* Water slowly rising and falling behind the salmon while it thinks. */
+  background-image: linear-gradient(
+    to top,
+    color-mix(in srgb, var(--accent) 18%, transparent) 50%,
+    transparent 50%
+  );
+  background-size: 100% 200%;
+  background-position: 0 0;
+  animation: tide 2.6s ease-in-out infinite alternate;
+}
+
+@keyframes tide {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 0 70%;
+  }
 }
 
 .bubble.thinking .chat-salmon {
@@ -1058,6 +1148,7 @@ button.link {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .bubble.thinking,
   .chat-salmon.working,
   .dots span,
   .bubble.writing .answer::after {
@@ -1156,26 +1247,29 @@ button.link {
   transform-origin: 70% 50%;
 }
 
-.panel .bubble {
+/* Two pixel bubbles from the salmon's mouth, like those in the app icon.
+   They drift up and ahead within the window, which starts at the salmon's
+   back. */
+.panel .air {
   position: absolute;
-  border: 1.5px solid #2e6f73;
-  border-radius: 50%;
+  box-sizing: border-box;
+  border: 1px solid var(--accent);
   opacity: 0;
   animation: rise 700ms ease-out 350ms both;
 }
 
-.panel .bubble.one {
-  width: 5px;
-  height: 5px;
-  left: 38px;
-  top: -1px;
+.panel .air.one {
+  width: 4px;
+  height: 4px;
+  left: 39px;
+  top: 7px;
 }
 
-.panel .bubble.two {
+.panel .air.two {
   width: 3px;
   height: 3px;
-  left: 43px;
-  top: -4px;
+  left: 42px;
+  top: 4px;
   animation-delay: 450ms;
 }
 
@@ -1269,11 +1363,11 @@ button.link {
     bob 0.8s ease-in-out infinite alternate;
 }
 
-.panel .swim.working .bubble {
+.panel .swim.working .air {
   animation: rise 900ms ease-out infinite;
 }
 
-.panel .swim.working .bubble.two {
+.panel .swim.working .air.two {
   animation-delay: 450ms;
 }
 
@@ -1333,7 +1427,7 @@ button.link {
   }
   100% {
     opacity: 0;
-    transform: translate(4px, -26px);
+    transform: translate(9px, -5px);
   }
 }
 
@@ -1392,7 +1486,7 @@ button.link {
   .panel *::before {
     animation: none !important;
   }
-  .panel .bubble {
+  .panel .air {
     display: none;
   }
 }

@@ -135,6 +135,33 @@ export function Viewer() {
   // The salmon swims along the river to the chosen section.
   const nav = useRef<HTMLElement>(null);
   const [fishAt, setFishAt] = useState<number | null>(null);
+  // Which way it swims, and whether it's on its way: it faces where it's
+  // going, beats its tail while it swims, and turns back to face right.
+  const [swim, setSwim] = useState<"left" | "right" | null>(null);
+  const lastAt = useRef<number | null>(null);
+  const lastTab = useRef(tab);
+  // A ring on the water where it arrives; the key restarts it.
+  const [ripple, setRipple] = useState(0);
+  useEffect(() => {
+    const from = lastAt.current;
+    // The section may change a moment before its position is known.
+    if (fishAt === null || fishAt === from) {
+      return;
+    }
+    const moved = lastTab.current !== tab;
+    lastAt.current = fishAt;
+    lastTab.current = tab;
+    // Only when the section changed, not when the window is resized, and
+    // never with "Reduce motion".
+    const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    if (!moved || still || from === null || Math.abs(fishAt - from) <= 1) {
+      return;
+    }
+    setSwim(fishAt < from ? "left" : "right");
+    // In case the move never ends as a transition (a hidden window).
+    const done = window.setTimeout(() => setSwim(null), 900);
+    return () => window.clearTimeout(done);
+  }, [fishAt, tab]);
   useLayoutEffect(() => {
     const place = () => {
       const button = nav.current?.querySelector<HTMLElement>('[aria-current="page"]');
@@ -178,12 +205,21 @@ export function Viewer() {
           <path d="M0 4 Q 25 0 50 4 T 100 4 T 150 4 T 200 4 T 250 4 T 300 4 T 350 4 T 400 4" />
         </svg>
         {fishAt !== null && (
-          <img
-            src={laxIcon}
-            alt=""
+          <span
             className="river-salmon"
             style={{ transform: `translateX(${fishAt - 19}px)` }}
-          />
+            onTransitionEnd={(event) => {
+              if (event.propertyName === "transform" && event.target === event.currentTarget) {
+                setSwim(null);
+                setRipple((r) => r + 1);
+              }
+            }}
+          >
+            {ripple > 0 && <span key={ripple} className="ripple" />}
+            <span className={swim === "left" ? "heading left" : "heading"}>
+              <img src={laxIcon} alt="" className={swim ? "fish swimming" : "fish"} />
+            </span>
+          </span>
         )}
       </nav>
 
