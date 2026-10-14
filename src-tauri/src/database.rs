@@ -137,9 +137,12 @@ pub fn retry_opening(app: AppHandle) {
 /// aside, still encrypted, and the old key item is renamed, never deleted,
 /// so the old file can still be opened if its key turns up (ADR 0010,
 /// "When the key is missing or wrong").
-#[tauri::command]
+///
+/// Async, so a Keychain prompt for the rename never holds the main thread.
+#[tauri::command(async)]
 pub fn start_over(app: AppHandle) -> Result<(), String> {
     let database = app.state::<Database>();
+    let before = database.get();
     let from = [
         Some(State::Failed(Failure::KeyMissing)),
         Some(State::Failed(Failure::CannotUnlock)),
@@ -154,7 +157,8 @@ pub fn start_over(app: AppHandle) -> Result<(), String> {
     let stamp = Local::now().format("%Y%m%d-%H%M%S").to_string();
     if let Err(error) = move_aside(&dir, &LoginKeychain::lax(), &stamp) {
         logging::warn("store.start_over_failed", &[Field::Error(ErrorKind::Other)]);
-        database.set(State::Failed(Failure::CannotUnlock));
+        // As it was: the same explanation, and Start over still offered.
+        database.set(before.unwrap_or(State::Failed(Failure::CannotUnlock)));
         changed(&app);
         return Err(error);
     }
@@ -195,6 +199,11 @@ fn open_in_background(app: AppHandle, noted: bool) {
         let next = open(&app, noted);
         app.state::<Database>().set(next);
         changed(&app);
+        // Lax waits for the user, or can't go on: show them why, also when
+        // the window would otherwise stay hidden.
+        if matches!(next, State::UpdateNote | State::Failed(_)) {
+            crate::tray::open_window(&app);
+        }
     });
 }
 

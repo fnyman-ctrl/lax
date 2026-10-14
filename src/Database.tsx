@@ -36,7 +36,10 @@ export function DatabaseGate({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     refresh();
+    // Asked again once listening: a change between the first answer and
+    // the listener would otherwise be missed.
     const unlisten = listen(DATABASE_CHANGED, refresh);
+    unlisten.then(refresh, () => {});
     return () => {
       unlisten.then((stop) => stop());
     };
