@@ -64,6 +64,9 @@ block2 = "0.6"
 # turned on in the tree by Tauri's own dependencies.
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFArray", "CFData", "CFDictionary", "CFNumber", "CFString", "CFURL"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSGeometry", "NSProcessInfo", "NSString", "NSPathUtilities"] }
+# Free disk space before converting the database to an encrypted copy
+# (statvfs, ADR 0010). Already in Cargo.lock through Tauri and others.
+libc = "0.2"
 # The database key in the login keychain, and its random bytes (ADR 0010).
 # Already in Cargo.lock through reqwest's native-tls; no features needed.
 security-framework = { version = "3", default-features = false }

@@ -10,7 +10,7 @@ const mocked = vi.mocked(invoke);
 function withState(state: string) {
   mocked.mockReset();
   mocked.mockImplementation(async (command: string) =>
-    command === "database_status" ? { state } : null,
+    command === "database_status" ? { state, postponed: null } : null,
   );
 }
 
@@ -69,5 +69,29 @@ describe("opening the database", () => {
     expect(screen.queryByRole("button", { name: "Start over…" })).toBeNull();
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Try again" })));
     expect(mocked).toHaveBeenCalledWith("retry_opening");
+  });
+
+  test("a plaintext database is encrypted after the notice", async () => {
+    await show("convert");
+    expect(screen.queryByText("The app")).toBeNull();
+    expect(screen.getByText(/one-way/)).toBeTruthy();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Encrypt" })));
+    expect(mocked).toHaveBeenCalledWith("continue_opening");
+  });
+
+  test("a postponed conversion says so above the app", async () => {
+    mocked.mockReset();
+    mocked.mockImplementation(async (command: string) =>
+      command === "database_status" ? { state: "open", postponed: "lowSpace" } : null,
+    );
+    await act(async () =>
+      render(
+        <DatabaseGate>
+          <p>The app</p>
+        </DatabaseGate>,
+      ),
+    );
+    expect(screen.getByText("The app")).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toContain("free space");
   });
 });

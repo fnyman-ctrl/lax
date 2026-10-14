@@ -12,6 +12,8 @@ const OPENING_SHOWN_AFTER_MS = 400;
 type State =
   | "opening"
   | "update"
+  | "convert"
+  | "encrypting"
   | "open"
   | "keyUnavailable"
   | "keyMissing"
@@ -26,10 +28,16 @@ type State =
  */
 export function DatabaseGate({ children }: { children: ReactNode }) {
   const [state, setState] = useState<State | null>(null);
+  const [postponed, setPostponed] = useState<"lowSpace" | "notEncrypted" | null>(null);
 
   const refresh = useCallback(() => {
-    invoke<{ state: State }>("database_status").then(
-      (status) => setState(status.state),
+    invoke<{ state: State; postponed: "lowSpace" | "notEncrypted" | null }>(
+      "database_status",
+    ).then(
+      (status) => {
+        setState(status.state);
+        setPostponed(status.postponed);
+      },
       () => setState("failed"),
     );
   }, []);
@@ -46,15 +54,23 @@ export function DatabaseGate({ children }: { children: ReactNode }) {
   }, [refresh]);
 
   if (state === "open") {
-    return <>{children}</>;
+    return (
+      <>
+        {postponed && <NotEncryptedYet why={postponed} />}
+        {children}
+      </>
+    );
   }
   if (state === null || state === "opening") {
-    return <Opening />;
+    return <Opening text="Opening the database…" />;
+  }
+  if (state === "encrypting") {
+    return <Opening text="Encrypting the database…" />;
   }
   return <NotOpen state={state} />;
 }
 
-function Opening() {
+function Opening({ text }: { text: string }) {
   const [shown, setShown] = useState(false);
   useEffect(() => {
     const timer = window.setTimeout(() => setShown(true), OPENING_SHOWN_AFTER_MS);
@@ -67,13 +83,25 @@ function Opening() {
     <main className="container database">
       <img src={salmon} alt="" className="chat-salmon working" />
       <p className="muted" role="status">
-        Opening the database…
+        {text}
       </p>
     </main>
   );
 }
 
-function NotOpen({ state }: { state: Exclude<State, "open" | "opening"> }) {
+/** The database is open but still plaintext; Lax tries again next start. */
+function NotEncryptedYet({ why }: { why: "lowSpace" | "notEncrypted" }) {
+  return (
+    <aside className="notice" role="status">
+      {why === "lowSpace"
+        ? "Lax couldn't encrypt its database: the disk needs free space of twice its size. "
+        : "Lax couldn't encrypt its database this time. "}
+      It works as before, and Lax tries again the next time it starts.
+    </aside>
+  );
+}
+
+function NotOpen({ state }: { state: Exclude<State, "open" | "opening" | "encrypting"> }) {
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -85,6 +113,38 @@ function NotOpen({ state }: { state: Exclude<State, "open" | "opening"> }) {
       .catch((e) => setError(String(e)))
       .finally(() => setBusy(false));
   };
+
+  if (state === "convert") {
+    return (
+      <main className="container database">
+        <h1>Lax encrypts its database</h1>
+        <p>
+          From now on, everything Lax keeps in its database is encrypted, with a key that only
+          your login keychain holds. Lax makes an encrypted copy, checks it, and then puts it in
+          the old one's place. It takes a moment, and only happens once.
+        </p>
+        <p>
+          macOS may ask whether Lax may use its key. Type your login password and choose{" "}
+          <strong>Always Allow</strong>.
+        </p>
+        <p className="muted">
+          This is one-way: an older version of Lax can't open the encrypted database. Backups
+          and snapshots made before now still hold the old, unencrypted file until they are
+          gone. Your memory pages in ~/Lax are not part of the database yet.
+        </p>
+        <p className="actions">
+          <button type="button" onClick={() => run("continue_opening")} disabled={busy}>
+            Encrypt
+          </button>
+        </p>
+        {error && (
+          <p className="error" role="alert">
+            {error}
+          </p>
+        )}
+      </main>
+    );
+  }
 
   if (state === "update") {
     return (

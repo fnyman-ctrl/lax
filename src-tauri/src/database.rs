@@ -30,7 +30,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::keychain::{self, ACCOUNT, BuildHash, KeyError, KeySource, LoginKeychain};
 use crate::logging::{self, ErrorKind, Field};
 use crate::pause::{CaptureState, Pause};
-use crate::store::{DATABASE_FILE, FileKind, Store, StoreError, file_kind};
+use crate::store::{DATABASE_FILE, FileKind, Opened, Postponed, Store, StoreError, file_kind};
 
 /// Tells the window that the database's state changed.
 pub const CHANGED_EVENT: &str = "database-changed";
@@ -45,7 +45,13 @@ enum State {
     Opening,
     /// A new build is about to read the key: Lax's note first.
     UpdateNote,
-    Open,
+    /// A plaintext database is about to be encrypted: the one-time notice
+    /// first.
+    ConvertNotice,
+    /// Converting.
+    Encrypting,
+    /// Open, and if the conversion was put off, why.
+    Open(Option<Postponed>),
     Failed(Failure),
 }
 
@@ -94,31 +100,44 @@ impl Database {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DatabaseStatus {
-    /// "opening", "update", "open", "keyUnavailable", "keyMissing",
-    /// "cannotUnlock", "newerSchema" or "failed".
+    /// "opening", "update", "convert", "encrypting", "open",
+    /// "keyUnavailable", "keyMissing", "cannotUnlock", "newerSchema" or
+    /// "failed".
     state: &'static str,
+    /// When open but still plaintext: "lowSpace" or "notEncrypted".
+    postponed: Option<&'static str>,
 }
 
 #[tauri::command]
 pub fn database_status(app: AppHandle) -> DatabaseStatus {
-    let state = match app.state::<Database>().get() {
+    let current = app.state::<Database>().get();
+    let state = match current {
         None | Some(State::Opening) => "opening",
         Some(State::UpdateNote) => "update",
-        Some(State::Open) => "open",
+        Some(State::ConvertNotice) => "convert",
+        Some(State::Encrypting) => "encrypting",
+        Some(State::Open(_)) => "open",
         Some(State::Failed(Failure::KeyUnavailable)) => "keyUnavailable",
         Some(State::Failed(Failure::KeyMissing)) => "keyMissing",
         Some(State::Failed(Failure::CannotUnlock)) => "cannotUnlock",
         Some(State::Failed(Failure::NewerSchema)) => "newerSchema",
         Some(State::Failed(Failure::Other)) => "failed",
     };
-    DatabaseStatus { state }
+    let postponed = match current {
+        Some(State::Open(Some(Postponed::LowSpace))) => Some("lowSpace"),
+        Some(State::Open(Some(Postponed::Failed))) => Some("notEncrypted"),
+        _ => None,
+    };
+    DatabaseStatus { state, postponed }
 }
 
-/// After Lax's note: reads the key, and macOS asks.
+/// After Lax's note or the notice before encrypting: reads the key, and
+/// macOS may ask.
 #[tauri::command]
 pub fn continue_opening(app: AppHandle) {
     let database = app.state::<Database>();
-    if database.change(&[Some(State::UpdateNote)], State::Opening) {
+    let from = [Some(State::UpdateNote), Some(State::ConvertNotice)];
+    if database.change(&from, State::Opening) {
         open_in_background(app.clone(), true);
     }
 }
@@ -201,7 +220,10 @@ fn open_in_background(app: AppHandle, noted: bool) {
         changed(&app);
         // Lax waits for the user, or can't go on: show them why, also when
         // the window would otherwise stay hidden.
-        if matches!(next, State::UpdateNote | State::Failed(_)) {
+        if matches!(
+            next,
+            State::UpdateNote | State::ConvertNotice | State::Failed(_)
+        ) {
             crate::tray::open_window(&app);
         }
     });
@@ -216,30 +238,45 @@ fn open(app: &AppHandle, noted: bool) -> State {
         Err(_) => return State::Failed(Failure::Other),
     };
     let build = keychain::own_build_hash();
-    if !noted && needs_note(kind, recorded_build(&dir).as_deref(), build.as_ref()) {
-        logging::info("store.update_note", &[]);
-        return State::UpdateNote;
+    if !noted {
+        // A plaintext database is encrypted once, after a notice that
+        // also says what macOS may ask.
+        if kind == FileKind::Plaintext {
+            logging::info("store.convert_notice", &[]);
+            return State::ConvertNotice;
+        }
+        if needs_note(kind, recorded_build(&dir).as_deref(), build.as_ref()) {
+            logging::info("store.update_note", &[]);
+            return State::UpdateNote;
+        }
+    }
+    if kind == FileKind::Plaintext {
+        app.state::<Database>().set(State::Encrypting);
+        changed(app);
     }
     let started = Instant::now();
     match Store::open_keyed(&dir, &LoginKeychain::lax()) {
-        Ok(store) => {
+        Ok((store, how)) => {
             // This build read the key, or made it: it may read it again
             // without a prompt.
-            if kind != FileKind::Plaintext
-                && let Some(build) = build
-            {
+            if let Some(build) = build {
                 let _ = record_build(&dir, &build);
             }
+            let postponed = match how {
+                Opened::Postponed(why) => Some(why),
+                Opened::New | Opened::Encrypted | Opened::Converted => None,
+            };
             logging::info(
                 "store.opened",
                 &[
-                    Field::Flag("encrypted", kind != FileKind::Plaintext),
-                    Field::Flag("new", kind == FileKind::Empty),
+                    Field::Flag("new", how == Opened::New),
+                    Field::Flag("converted", how == Opened::Converted),
+                    Field::Flag("postponed", postponed.is_some()),
                     Field::Duration("elapsed", started.elapsed()),
                 ],
             );
             opened(app, store);
-            State::Open
+            State::Open(postponed)
         }
         Err(error) => {
             let failure = failure(&error);
@@ -446,7 +483,7 @@ mod tests {
     fn starting_over_keeps_the_old_file_and_key() {
         let tmp = TempDir::new();
         let keys = FakeKeychain::holding(KEY);
-        drop(Store::open_keyed(&tmp.0, &keys).unwrap());
+        drop(Store::open_keyed(&tmp.0, &keys).unwrap().0);
         move_aside(&tmp.0, &keys, "20261015-010203").unwrap();
         // The old key is kept under another name, with its data.
         assert_eq!(
@@ -461,7 +498,7 @@ mod tests {
         assert_eq!(file_kind(&old).unwrap(), FileKind::Encrypted);
         assert!(!tmp.0.join(DATABASE_FILE).exists());
         // The next start makes a new key and an empty database.
-        drop(Store::open_keyed(&tmp.0, &keys).unwrap());
+        drop(Store::open_keyed(&tmp.0, &keys).unwrap().0);
         assert!(keys.item.borrow().is_some());
         assert_eq!(keys.renamed.borrow().len(), 1);
         assert_eq!(
@@ -474,7 +511,7 @@ mod tests {
     fn starting_over_moves_nothing_if_the_key_cant_be_put_aside() {
         let tmp = TempDir::new();
         let keys = FakeKeychain::holding(KEY);
-        drop(Store::open_keyed(&tmp.0, &keys).unwrap());
+        drop(Store::open_keyed(&tmp.0, &keys).unwrap().0);
         struct Refusing;
         impl KeySource for Refusing {
             fn read_item(&self) -> Result<zeroize::Zeroizing<Vec<u8>>, KeyError> {

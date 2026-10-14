@@ -1,21 +1,22 @@
 //! The encrypted database (ADR 0010).
 //!
 //! A new database is encrypted with SQLCipher under the key in the login
-//! keychain ([`crate::keychain`]). A plaintext one opens as before until it is
-//! converted (rollout step 4). An encrypted one opens only with its own key:
-//! a missing key is an error, never a reason to make a new one.
+//! keychain ([`crate::keychain`]), and a plaintext one is converted once. An
+//! encrypted one opens only with its own key: a missing key is an error,
+//! never a reason to make a new one.
 //!
 //! The key never appears in SQL: it is set with `sqlite3_key_v2`, and every
 //! failure on the way is one of the fixed errors in [`StoreError`], with no
 //! SQLite text, which can quote the statement it failed on.
 
-// One call into SQLite's C API, to set the key; see SAFETY below.
+// SQLite's C API to set the key, and statvfs for free space; see SAFETY.
 #![allow(unsafe_code)]
 
 use std::ffi::c_int;
-use std::fs::File;
+use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read};
-use std::path::Path;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
 
 use rusqlite::{Connection, ffi};
 use zeroize::Zeroizing;
@@ -60,42 +61,236 @@ pub fn file_kind(path: &Path) -> std::io::Result<FileKind> {
     })
 }
 
+/// How the database was opened.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Opened {
+    /// Made now, encrypted.
+    New,
+    /// Encrypted already.
+    Encrypted,
+    /// Plaintext until now: converted, and opened encrypted.
+    Converted,
+    /// Plaintext, and still plaintext: the conversion didn't happen this
+    /// time, and is tried again at the next start.
+    Postponed(Postponed),
+}
+
+/// Why a plaintext database wasn't converted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Postponed {
+    /// Less free space than twice the database.
+    LowSpace,
+    /// The copy couldn't be made or didn't match the original. The
+    /// original is untouched.
+    Failed,
+}
+
+/// The encrypted copy made by a conversion, until it replaces the database.
+const ENCRYPTING_SUFFIX: &str = ".encrypting";
+
 impl Store {
     /// Opens (or creates) the database in `data_dir`, encrypted under the
     /// key from `keys`:
     ///
     /// - **Empty:** the stored key, or a new one if there is none, stored
     ///   and read back first; then a new encrypted database.
-    /// - **Plaintext:** opened as before, without reading the key, until it
-    ///   is converted.
+    /// - **Plaintext:** the same key rule, then converted (ADR 0010,
+    ///   "Converting an existing database"). If that can't be done now, it
+    ///   opens as before and is tried again next time.
     /// - **Encrypted:** the stored key only. Without it, [`StoreError::
     ///   KeyMissing`]; nothing new is made.
     ///
     /// Reading an existing key may make macOS ask for the login password
     /// (after an update); the caller says so first (ADR 0010, "After an
     /// update").
-    pub fn open_keyed(data_dir: &Path, keys: &impl KeySource) -> Result<Self> {
+    pub fn open_keyed(data_dir: &Path, keys: &impl KeySource) -> Result<(Self, Opened)> {
         let path = database_file(data_dir)?;
-        match file_kind(&path)? {
-            FileKind::Plaintext => Self::open(data_dir),
-            FileKind::Empty => {
-                let key = key(keys, DatabaseFile::NotEncrypted)?;
-                let conn = Connection::open(&path)?;
-                unlock(&conn, &key)?;
-                // Before WAL: set after it, it silently stays off.
-                conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
-                conn.pragma_update(None, "journal_mode", "WAL")?;
-                Self::init(conn, Layout::Encrypted)
-            }
-            FileKind::Encrypted => {
-                let key = key(keys, DatabaseFile::Encrypted)?;
-                let conn = Connection::open(&path)?;
-                unlock(&conn, &key)?;
-                conn.pragma_update(None, "journal_mode", "WAL")?;
-                Self::init(conn, Layout::Encrypted)
-            }
+        let kind = file_kind(&path)?;
+        let key = key(
+            keys,
+            match kind {
+                FileKind::Encrypted => DatabaseFile::Encrypted,
+                FileKind::Empty | FileKind::Plaintext => DatabaseFile::NotEncrypted,
+            },
+        )?;
+        let opened = match kind {
+            FileKind::Empty => Opened::New,
+            FileKind::Encrypted => Opened::Encrypted,
+            FileKind::Plaintext => match convert(&path, &key, free_space(data_dir)) {
+                Ok(()) => Opened::Converted,
+                Err(postponed) => return Ok((Self::open(data_dir)?, Opened::Postponed(postponed))),
+            },
+        };
+        let conn = Connection::open(&path)?;
+        unlock(&conn, &key)?;
+        if opened == Opened::New {
+            // Before WAL: set after it, it silently stays off.
+            conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
+        }
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        Ok((Self::init(conn, Layout::Encrypted)?, opened))
+    }
+}
+
+/// Converts the plaintext database at `path` into an encrypted one under
+/// `key`, with `available` bytes free on its disk (ADR 0010, "Converting
+/// an existing database"):
+///
+/// 1. At least twice the database's size must be free.
+/// 2. The write-ahead log is folded into the database and removed.
+/// 3. An encrypted copy is exported next to it, laid out for incremental
+///    vacuum, with the schema version copied by hand.
+/// 4. The copy is checked with the key: integrity, the search indexes, and
+///    the same rows in every table.
+/// 5. The copy replaces the database by a rename, after both are synced.
+///
+/// Until the rename, the database is the untouched plaintext one, and a
+/// copy left by a stop halfway is deleted and made again next time. After
+/// it, the database is the checked encrypted copy. There is no moment with
+/// neither. The plaintext's old blocks become free space; FileVault, where
+/// on, covers them.
+fn convert(
+    path: &Path,
+    key: &DatabaseKey,
+    available: Option<u64>,
+) -> std::result::Result<(), Postponed> {
+    let copy = path_with(path, ENCRYPTING_SUFFIX);
+    remove_copy(&copy);
+    let size = [path.to_path_buf(), path_with(path, "-wal")]
+        .iter()
+        .filter_map(|file| fs::metadata(file).ok())
+        .map(|meta| meta.len())
+        .sum::<u64>();
+    if available.is_some_and(|free| free < size.saturating_mul(2)) {
+        return Err(Postponed::LowSpace);
+    }
+    let result = export(path, &copy, key).and_then(|()| check(path, &copy, key));
+    if result.is_err() {
+        remove_copy(&copy);
+        return Err(Postponed::Failed);
+    }
+    swap(&copy, path).map_err(|_| {
+        remove_copy(&copy);
+        Postponed::Failed
+    })
+}
+
+/// Exports the plaintext database into an encrypted copy.
+fn export(path: &Path, copy: &Path, key: &DatabaseKey) -> rusqlite::Result<()> {
+    let conn = Connection::open(path)?;
+    // Everything in the database file itself, and no -wal or -shm left.
+    conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+    conn.pragma_update(None, "journal_mode", "DELETE")?;
+    let version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    // Private from the start, like the database.
+    let _ = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(copy)
+        .map_err(|_| rusqlite::Error::InvalidPath(copy.to_path_buf()))?;
+    let raw = raw_key(key);
+    // Path and key are bound, never written into the SQL, so no error text
+    // can hold the key.
+    conn.execute(
+        "ATTACH ?1 AS encrypted KEY ?2",
+        rusqlite::params![copy.to_string_lossy(), raw.as_str()],
+    )?;
+    conn.pragma_update(Some("encrypted"), "cipher_compatibility", 4)?;
+    conn.pragma_update(Some("encrypted"), "auto_vacuum", "INCREMENTAL")?;
+    conn.query_row("SELECT sqlcipher_export('encrypted')", [], |_| Ok(()))?;
+    // The export doesn't copy the schema version.
+    conn.pragma_update(Some("encrypted"), "user_version", version)?;
+    conn.execute("DETACH encrypted", [])?;
+    Ok(())
+}
+
+/// Checks the encrypted copy against the plaintext database.
+fn check(path: &Path, copy: &Path, key: &DatabaseKey) -> rusqlite::Result<()> {
+    let plain = Connection::open(path)?;
+    let encrypted = Connection::open(copy)?;
+    unlock(&encrypted, key).map_err(|_| rusqlite::Error::InvalidQuery)?;
+    let ok: String = encrypted.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+    if ok != "ok" {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    for index in SEARCH_INDEXES {
+        encrypted.execute(
+            &format!("INSERT INTO {index} ({index}) VALUES ('integrity-check')"),
+            [],
+        )?;
+    }
+    let version = |conn: &Connection| -> rusqlite::Result<i64> {
+        conn.pragma_query_value(None, "user_version", |row| row.get(0))
+    };
+    if version(&plain)? != version(&encrypted)? {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    let tables = |conn: &Connection| -> rusqlite::Result<Vec<String>> {
+        let mut statement = conn.prepare(
+            "SELECT name FROM sqlite_schema WHERE type = 'table' AND sql NOT LIKE 'CREATE VIRTUAL%' ORDER BY name",
+        )?;
+        statement.query_map([], |row| row.get(0))?.collect()
+    };
+    let names = tables(&plain)?;
+    if names != tables(&encrypted)? {
+        return Err(rusqlite::Error::InvalidQuery);
+    }
+    for name in names {
+        // Names from the database's own schema, quoted.
+        let sql = format!("SELECT count(*) FROM \"{}\"", name.replace('"', "\"\""));
+        let count = |conn: &Connection| -> rusqlite::Result<i64> {
+            conn.query_row(&sql, [], |row| row.get(0))
+        };
+        if count(&plain)? != count(&encrypted)? {
+            return Err(rusqlite::Error::InvalidQuery);
         }
     }
+    Ok(())
+}
+
+/// Puts the checked copy in the database's place: the copy is synced, then
+/// renamed over the database, then the folder is synced, so the rename
+/// survives a power cut.
+fn swap(copy: &Path, path: &Path) -> std::io::Result<()> {
+    File::open(copy)?.sync_all()?;
+    fs::rename(copy, path)?;
+    if let Some(dir) = path.parent() {
+        File::open(dir)?.sync_all()?;
+    }
+    Ok(())
+}
+
+/// The FTS5 indexes, checked after a conversion.
+const SEARCH_INDEXES: [&str; 3] = ["captures_fts", "outbox_fts", "episodes_fts"];
+
+fn path_with(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(suffix);
+    PathBuf::from(name)
+}
+
+/// Removes a conversion's copy and its rollback journal, if any.
+fn remove_copy(copy: &Path) {
+    let _ = fs::remove_file(copy);
+    let _ = fs::remove_file(path_with(copy, "-journal"));
+}
+
+/// Free bytes on the disk that holds `dir`, for this user. `None` if it
+/// can't be told, and then the conversion goes ahead: the copy is checked
+/// before it replaces anything.
+fn free_space(dir: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;
+    let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: `path` is NUL-terminated; on success `statvfs` fills `stats`.
+    let status = unsafe { libc::statvfs(path.as_ptr(), stats.as_mut_ptr()) };
+    if status != 0 {
+        return None;
+    }
+    // SAFETY: filled by the successful call above.
+    let stats = unsafe { stats.assume_init() };
+    Some(u64::from(stats.f_bavail).saturating_mul(stats.f_frsize))
 }
 
 /// The key for a file of this kind, with the keychain's error turned into
@@ -150,7 +345,7 @@ mod tests {
 
     use super::*;
     use crate::keychain::fake::FakeKeychain;
-    use crate::store::{DATABASE_FILE, Forget, NewCapture};
+    use crate::store::{DATABASE_FILE, Forget, NewCapture, schema_version};
 
     const KEY: &[u8] = b"00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
     const OTHER_KEY: &[u8] = b"ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100";
@@ -234,7 +429,7 @@ mod tests {
     fn a_new_database_is_encrypted_with_a_new_key() {
         let tmp = TempDir::new();
         let keys = FakeKeychain::default();
-        let store = Store::open_keyed(&tmp.0, &keys).unwrap();
+        let (store, _) = Store::open_keyed(&tmp.0, &keys).unwrap();
         assert_eq!(keys.adds.get(), 1, "a key was made");
         assert!(keys.item.borrow().is_some());
         for _ in 0..20 {
@@ -269,10 +464,10 @@ mod tests {
     fn an_encrypted_database_opens_again_with_its_key() {
         let tmp = TempDir::new();
         let keys = FakeKeychain::default();
-        let store = Store::open_keyed(&tmp.0, &keys).unwrap();
+        let (store, _) = Store::open_keyed(&tmp.0, &keys).unwrap();
         store.insert(&capture("hello")).unwrap();
         drop(store);
-        let store = Store::open_keyed(&tmp.0, &keys).unwrap();
+        let (store, _) = Store::open_keyed(&tmp.0, &keys).unwrap();
         assert_eq!(keys.adds.get(), 1, "no second key");
         let count: i64 = store
             .conn
@@ -353,20 +548,102 @@ mod tests {
         assert!(matches!(error, StoreError::CannotUnlock), "{error:?}");
     }
 
+    /// A plaintext database with a capture, a setting and the marker, as
+    /// an older Lax left it: closed, so its write-ahead log is folded in.
+    fn plaintext_database(dir: &Path) {
+        let store = Store::open(dir).unwrap();
+        for _ in 0..30 {
+            store.insert(&capture(MARKER)).unwrap();
+        }
+        store.insert(&capture("quarterly offer")).unwrap();
+        store.set_setting("note", MARKER).unwrap();
+    }
+
+    fn count(store: &Store, table: &str) -> i64 {
+        store
+            .conn
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap()
+    }
+
     #[test]
-    fn a_plaintext_database_opens_as_before_without_the_key() {
+    fn a_plaintext_database_is_converted_once() {
         let tmp = TempDir::new();
-        let store = Store::open(&tmp.0).unwrap();
-        store.insert(&capture("hello")).unwrap();
-        drop(store);
-        let keys = FakeKeychain::holding(KEY);
-        let store = Store::open_keyed(&tmp.0, &keys).unwrap();
+        plaintext_database(&tmp.0);
+        let version = schema_version();
+        let keys = FakeKeychain::default();
+        let (store, opened) = Store::open_keyed(&tmp.0, &keys).unwrap();
+        assert_eq!(opened, Opened::Converted);
+        assert_eq!(keys.adds.get(), 1, "a key was made for it");
+        // Everything came along, the search index too.
+        assert_eq!(count(&store, "captures"), 31);
+        assert_eq!(pragma(&store, "user_version"), version);
+        let hits: i64 = store
+            .conn
+            .query_row(
+                "SELECT count(*) FROM captures_fts WHERE captures_fts MATCH 'quarterly'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(hits, 1);
         assert_eq!(
-            keys.reads.get(),
-            0,
-            "the key isn't read for a plaintext file"
+            pragma(&store, "auto_vacuum"),
+            2,
+            "laid out for incremental vacuum"
         );
-        assert_eq!(pragma(&store, "temp_store"), 1, "temp_store stays FILE");
+        assert_eq!(pragma(&store, "temp_store"), 2);
+        drop(store);
+        // No plaintext left in any file Lax keeps, and no copy left over.
+        assert_eq!(on_disk(&tmp.0, MARKER), Vec::<String>::new());
+        assert_eq!(file_kind(&tmp.database()).unwrap(), FileKind::Encrypted);
+        assert!(!path_with(&tmp.database(), ENCRYPTING_SUFFIX).exists());
+        // The next start just opens it.
+        let (_, opened) = Store::open_keyed(&tmp.0, &keys).unwrap();
+        assert_eq!(opened, Opened::Encrypted);
+        assert_eq!(keys.adds.get(), 1);
+    }
+
+    #[test]
+    fn a_copy_left_by_a_stop_halfway_is_made_again() {
+        let tmp = TempDir::new();
+        plaintext_database(&tmp.0);
+        // As if Lax stopped during the export: a half-written copy and its
+        // journal next to the untouched database.
+        let copy = path_with(&tmp.database(), ENCRYPTING_SUFFIX);
+        fs::write(&copy, [9u8; 4096]).unwrap();
+        fs::write(path_with(&copy, "-journal"), [9u8; 512]).unwrap();
+        let (store, opened) = Store::open_keyed(&tmp.0, &FakeKeychain::holding(KEY)).unwrap();
+        assert_eq!(opened, Opened::Converted);
+        assert_eq!(count(&store, "captures"), 31);
+        assert!(!copy.exists());
+        assert!(!path_with(&copy, "-journal").exists());
+    }
+
+    #[test]
+    fn too_little_space_changes_nothing() {
+        let tmp = TempDir::new();
+        plaintext_database(&tmp.0);
+        let path = tmp.database();
+        let key = keychain::read_key(&FakeKeychain::holding(KEY)).unwrap();
+        assert_eq!(convert(&path, &key, Some(1024)), Err(Postponed::LowSpace));
+        assert_eq!(file_kind(&path).unwrap(), FileKind::Plaintext);
+        assert!(!path_with(&path, ENCRYPTING_SUFFIX).exists());
+        // Unknown free space doesn't stop it: the copy is checked anyway.
+        assert_eq!(convert(&path, &key, None), Ok(()));
+        assert_eq!(file_kind(&path).unwrap(), FileKind::Encrypted);
+    }
+
+    #[test]
+    fn a_postponed_conversion_opens_the_plaintext_database() {
+        let tmp = TempDir::new();
+        plaintext_database(&tmp.0);
+        // A folder where the copy should go makes the export fail.
+        fs::create_dir(path_with(&tmp.database(), ENCRYPTING_SUFFIX)).unwrap();
+        let (store, opened) = Store::open_keyed(&tmp.0, &FakeKeychain::holding(KEY)).unwrap();
+        assert_eq!(opened, Opened::Postponed(Postponed::Failed));
+        assert_eq!(count(&store, "captures"), 31);
+        assert_eq!(pragma(&store, "temp_store"), 1, "still plaintext");
         drop(store);
         assert_eq!(file_kind(&tmp.database()).unwrap(), FileKind::Plaintext);
     }
@@ -375,7 +652,7 @@ mod tests {
     fn forgotten_text_is_gone_from_an_encrypted_database_too() {
         let tmp = TempDir::new();
         let keys = FakeKeychain::holding(KEY);
-        let store = Store::open_keyed(&tmp.0, &keys).unwrap();
+        let (store, _) = Store::open_keyed(&tmp.0, &keys).unwrap();
         for _ in 0..200 {
             store.insert(&capture(MARKER)).unwrap();
         }

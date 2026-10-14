@@ -29,7 +29,7 @@ mod memory;
 mod pages;
 mod vectors;
 #[cfg(target_os = "macos")]
-pub use cipher::{FileKind, file_kind};
+pub use cipher::{FileKind, Opened, Postponed, file_kind};
 pub use memory::{Entity, EntityKind, Merged, Renamed, UnrecognizedEpisode, name_key};
 #[cfg(test)]
 pub use pages::LAX_VERSIONS_KEPT;
