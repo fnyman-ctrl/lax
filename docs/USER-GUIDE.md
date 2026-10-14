@@ -143,10 +143,10 @@ encrypted copy, checks it, and puts it in the old file's place. Press
 is done.
 
 - It is one-way. An older version of Lax can't open the encrypted database.
-- Lax needs free space of twice the database's size. If there isn't enough, or
-  the check of the copy fails, nothing is changed. Lax opens the old database
-  as before, shows a note that it couldn't encrypt it, and tries again the next
-  time it starts.
+- Lax needs free space of twice the database's size. If there isn't enough,
+  Lax skips the notice, opens the old database as before and says so. If the
+  check of the copy fails, nothing is changed either. Either way Lax tries
+  again the next time it starts.
 - macOS may ask whether Lax may use its key. Type your login password and
   choose **Always Allow**.
 
