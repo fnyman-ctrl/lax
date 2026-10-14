@@ -104,8 +104,8 @@ other local tools can use your memory.
   The answer comes from your journal, with the entries it is based on, so you
   don't have to piece the day together from memory.
 - **Finding something again.** Ask "Which article about local-first software did
-  I read last week?" and Lax looks through what you had on screen, by words and
-  by meaning, instead of you digging through browser history.
+  I read last week?" and Lax looks through your journal, by words and by
+  meaning, instead of you digging through browser history.
 - **Picking up after a context switch or a holiday.** Open the project's page in
   `~/Lax`, or ask "What happened with Example AB last week?". You get the short
   version of where things stood and who was involved.
@@ -121,8 +121,6 @@ other local tools can use your memory.
   Lax does not index or understand your repository. How much text it gets from a
   code editor or terminal depends on the app. Secrets such as API keys and
   tokens are masked before anything is stored, and you can exclude any app.
-- **Later.** A local MCP server, so your other local tools can use the same
-  memory.
 
 ## Principles
 
