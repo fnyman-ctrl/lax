@@ -216,7 +216,8 @@ folder, and the old key in Keychain Access, by hand.
 ### Opening the database without Lax
 
 The database is a standard SQLCipher 4 file, and you can read it yourself. Quit
-Lax first, or work on a copy of the file. You need the `sqlcipher` command-line
+Lax first: while it runs, the latest changes are still in `lax.sqlite-wal`, and
+a copy of `lax.sqlite` alone would miss them. You need the `sqlcipher` command-line
 tool (for example `brew install sqlcipher`) and the key from Keychain Access:
 
 ```sh
