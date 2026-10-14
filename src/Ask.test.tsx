@@ -228,6 +228,11 @@ describe("Ask", () => {
     expect(answerBlocks("Example AB - the client - called. Then - nothing.")).toEqual([
       { kind: "text", text: "Example AB - the client - called. Then - nothing." },
     ]);
+    // A point still being written is a point from its dash.
+    expect(answerBlocks("Two things:\n- Prices\n-")).toEqual([
+      { kind: "text", text: "Two things:" },
+      { kind: "points", points: ["Prices", ""] },
+    ]);
     // A blank line ends a paragraph; text after a list starts a new one.
     expect(answerBlocks("One.\n\nTwo.\n- A\nThree.")).toEqual([
       { kind: "text", text: "One." },

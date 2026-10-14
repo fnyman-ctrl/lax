@@ -299,7 +299,8 @@ export function Ask({ onShowJournal }: { onShowJournal: () => void }) {
 
 type Block = { kind: "text"; text: string } | { kind: "points"; points: string[] };
 
-const POINT = /^\s*[-•*]\s+(.*)$/;
+// Also a lone "-", the start of a point still being written.
+const POINT = /^\s*[-•*](?:\s+(.*)|\s*)$/;
 // A list the model wrote on one line: "It covered: - this. - that."
 const INLINE_POINT = /([.:!?])\s+-\s+(?=\S)/g;
 
@@ -329,7 +330,7 @@ export function answerBlocks(text: string): Block[] {
       if (paragraph.length > 0) {
         end();
       }
-      points.push(point[1]);
+      points.push(point[1] ?? "");
     } else if (line.trim() === "") {
       end();
     } else {

@@ -81,6 +81,10 @@ sources, as a list of numbers such as [1, 4] (what the memory knows has no numbe
 entry numbers in the answer. If the blocks don't answer the question, say so plainly; don't \
 guess. A block may hold the conversation so far: use it only to understand what a follow-up \
 question refers to, and answer from the memory and the journal entries.";
+/// The answer's form from TASK, again right before the question, where a
+/// small model follows it.
+const FORM: &str =
+    "for several things, a sentence that sums up and then \"- \" points of a few words.";
 const SHAPE: &str = r#"{"answer": string, "sources": [number]}"#;
 /// Low, so an answer keeps the form asked for every time, as a draft does
 /// (`write::TEMPERATURE`).
@@ -854,12 +858,14 @@ fn request<Tz: TimeZone>(question: &str, now: &DateTime<Tz>) -> String
 where
     Tz::Offset: std::fmt::Display,
 {
-    // A small model otherwise answers in the entries' language.
+    // A small model otherwise answers in the entries' language. A language
+    // the question names wins.
     let language = crate::write::window_language(question)
+        .filter(|_| !crate::write::names_a_language(question))
         .map(|language| format!("\n\nAnswer in {language}."))
         .unwrap_or_default();
     format!(
-        "Today is {}.\n\nForm: for several things, a sentence that sums up and then \"- \" points of a few words.\n\nQuestion: {question}{language}",
+        "Today is {}.\n\nForm: {FORM}\n\nQuestion: {question}{language}",
         now.format("%A %Y-%m-%d, %H:%M")
     )
 }
@@ -1936,6 +1942,23 @@ mod tests {
             "[3] Tue 2026-10-06 14:00–14:15 (Mail, Slack): Mailade Anna."
         );
         assert!(request("Vad gjorde jag?", &now()).starts_with("Today is Sunday 2026-10-11"));
+        // The question's language goes along when it is clear, unless the
+        // question names one.
+        assert!(
+            request("What did I do for Example AB on Wednesday?", &now())
+                .ends_with("\n\nAnswer in English.")
+        );
+        assert!(
+            request("Vad har jag gjort för Example AB i veckan?", &now())
+                .ends_with("\n\nAnswer in Swedish.")
+        );
+        assert!(
+            request(
+                "Kan du svara på engelska vad jag gjorde för Example AB?",
+                &now()
+            )
+            .ends_with("Example AB?")
+        );
     }
 
     /// Against a real model server, like `journal::tests::live_journal_episode`.

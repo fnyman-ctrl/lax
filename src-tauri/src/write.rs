@@ -141,12 +141,13 @@ const SWEDISH_WORDS: &[&str] = &[
 const ENGLISH_WORDS: &[&str] = &[
     "the", "and", "to", "of", "is", "for", "with", "you", "we", "your", "are", "this", "that",
     "have", "be", "on", "in", "will", "our", "it", "at", "or", "if", "can", "hi", "thanks",
-    "could", "would", "please", "my", "me", "i", "what", "who", "how", "did", "do", "about",
+    "could", "would", "please", "my", "me", "what", "who", "how", "did", "do", "about",
 ];
 
 /// The language of a window's sentences, or of a question, Swedish or
-/// English, if one clearly leads: lines of at least five words only, so a webmail's menus, buttons
-/// and labels (often in the other language) don't count. `None` if neither
+/// English, if one clearly leads: lines of at least five words only, so a
+/// webmail's menus, buttons and labels (often in the other language) don't
+/// count. Not "i", which is also Swedish for "in". `None` if neither
 /// leads by two to one, or there is too little to tell.
 pub(crate) fn window_language(window: &str) -> Option<&'static str> {
     let (mut swedish, mut english) = (0usize, 0usize);
@@ -204,7 +205,7 @@ fn name_block(account: &str, other: &[String]) -> Option<String> {
 
 /// Whether the user's instruction names the language to write in ("på
 /// svenska", "in English").
-fn names_a_language(instruction: &str) -> bool {
+pub(crate) fn names_a_language(instruction: &str) -> bool {
     const LANGUAGES: &[&str] = &[
         "svenska",
         "engelska",
