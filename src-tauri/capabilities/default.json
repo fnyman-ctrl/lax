@@ -15,6 +15,8 @@
     "allow-page-text",
     "allow-save-page",
     "allow-close-page",
+    "allow-delete-old-page-files",
+    "allow-keep-old-page-files",
     "allow-filevault-enabled",
     "allow-capture-status",
     "allow-recent-captures",

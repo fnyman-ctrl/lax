@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-keep-old-page-files"
+description = "Enables the keep_old_page_files command without any pre-configured scope."
+commands.allow = ["keep_old_page_files"]
+
+[[permission]]
+identifier = "deny-keep-old-page-files"
+description = "Denies the keep_old_page_files command without any pre-configured scope."
+commands.deny = ["keep_old_page_files"]

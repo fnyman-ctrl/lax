@@ -14,6 +14,8 @@ type MemoryStatus = {
   aboutMe: PageItem | null;
   /** The pages are in the encrypted database and edited here (ADR 0011). */
   pagesInDatabase: boolean;
+  /** The old page files in ~/Lax after the move, while there are any. */
+  oldPageFiles: { count: number; kept: boolean } | null;
 };
 type PageItem = { path: string; state: "ok" | "missing" | "detached" | "recreate" };
 type Kind = "person" | "organisation" | "project";
@@ -181,6 +183,14 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
                   </button>
                 </p>
               )
+            )}
+            {status.oldPageFiles && (
+              <OldPageFiles
+                files={status.oldPageFiles}
+                busy={busy}
+                run={run}
+                onKept={setStatus}
+              />
             )}
             <p className="buttons">
               <button type="button" className="secondary" onClick={() => toggle(false)}>
@@ -472,6 +482,84 @@ function AboutYou({
         </p>
       )}
     </div>
+  );
+}
+
+/**
+ * After the pages moved into the database (ADR 0011): asks once whether to
+ * delete the old files in ~/Lax, with Delete as the default; after "Keep
+ * them", a quiet line that still offers it. Only files that still hold
+ * exactly what was moved are deleted.
+ */
+export function OldPageFiles({
+  files,
+  busy,
+  run,
+  onKept,
+}: {
+  files: { count: number; kept: boolean };
+  busy: boolean;
+  run: (work: Promise<string>) => Promise<boolean>;
+  onKept: (status: MemoryStatus) => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const remove = () =>
+    run(
+      invoke<{ deleted: number; changed: string[] }>("delete_old_page_files").then((done) => {
+        const deleted = `Deleted ${done.deleted} old ${done.deleted === 1 ? "file" : "files"}.`;
+        return done.changed.length === 0
+          ? deleted
+          : `${deleted} Kept ${done.changed.join(", ")}: changed after the move.`;
+      }),
+    );
+  if (files.kept && !confirming) {
+    return (
+      <p className="buttons">
+        <span className="muted">Your old page files are still in ~/Lax.</span>
+        <button type="button" className="secondary" disabled={busy} onClick={() => setConfirming(true)}>
+          Delete the old files
+        </button>
+      </p>
+    );
+  }
+  return (
+    <section className="card confirm" role="alertdialog" aria-label="The old page files">
+      <h3>Your pages are now in Lax's encrypted database. Delete the old files in ~/Lax?</h3>
+      <ul>
+        <li>Edits to the old files are no longer read.</li>
+        <li>
+          Deleting doesn't reliably erase the old text from the disk: on APFS and SSDs, old blocks
+          can stay until they're reused. FileVault, if it's on, keeps them unreadable. Time Machine
+          backups and local snapshots keep the files until they expire.
+        </li>
+        <li>If you keep them, they stay readable by every program, as now.</li>
+      </ul>
+      <p className="muted">
+        Only the {files.count} {files.count === 1 ? "file" : "files"} Lax moved, and only if they
+        still hold what was moved. Your own files stay.
+      </p>
+      <p className="actions">
+        <button type="button" className="danger" disabled={busy} autoFocus onClick={remove}>
+          Delete the old files
+        </button>{" "}
+        {files.kept ? (
+          <button type="button" className="secondary" onClick={() => setConfirming(false)}>
+            Cancel
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="secondary"
+            disabled={busy}
+            onClick={() =>
+              invoke<MemoryStatus>("keep_old_page_files").then(onKept, () => undefined)
+            }
+          >
+            Keep them
+          </button>
+        )}
+      </p>
+    </section>
   );
 }
 

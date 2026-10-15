@@ -98,6 +98,8 @@ pub fn run() {
             memory::page_text,
             memory::save_page,
             memory::close_page,
+            memory::delete_old_page_files,
+            memory::keep_old_page_files,
             memory::keep_entity,
             memory::rename_entity,
             memory::merge_entities,

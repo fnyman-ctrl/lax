@@ -33,7 +33,7 @@ pub use cipher::{FileKind, Opened, Postponed, conversion_fits, file_kind};
 pub use memory::{Entity, EntityKind, Merged, Renamed, UnrecognizedEpisode, name_key};
 #[cfg(test)]
 pub use pages::{LAX_VERSIONS_KEPT, USER_EDITS_KEPT};
-pub use pages::{Page, PageKind, PageState, fact_key, facts_in};
+pub use pages::{MovedFile, MovedPage, Page, PageKind, PageState, fact_key, facts_in};
 #[cfg(test)]
 pub use vectors::cosine;
 
@@ -55,6 +55,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0011_episode_vectors.sql"),
     include_str!("../migrations/0012_page_text.sql"),
     include_str!("../migrations/0013_page_edits.sql"),
+    include_str!("../migrations/0014_moved_page_files.sql"),
 ];
 
 /// How long raw captures are kept unless the user chooses otherwise
@@ -280,6 +281,9 @@ pub struct Store {
     conn: Connection,
     /// Recent forgets and when they happened.
     recent_forgets: RefCell<Vec<(Forget, DateTime<Utc>)>>,
+    /// Whether the database has a key (ADR 0010). The pages move in only
+    /// then (ADR 0011).
+    encrypted: bool,
 }
 
 impl Store {
@@ -326,7 +330,20 @@ impl Store {
         Ok(Store {
             conn,
             recent_forgets: RefCell::new(Vec::new()),
+            encrypted: layout == Layout::Encrypted,
         })
+    }
+
+    /// Whether the database is encrypted (ADR 0010).
+    pub fn is_encrypted(&self) -> bool {
+        self.encrypted
+    }
+
+    /// For tests: as if the database were encrypted, so the pages may move
+    /// in.
+    #[cfg(test)]
+    pub(crate) fn pretend_encrypted(&mut self) {
+        self.encrypted = true;
     }
 
     /// Stores a capture and returns its id. The window title and text are
@@ -1612,6 +1629,7 @@ mod tests {
         1465373273103624669,  // 0011 episode vectors
         5724453071597441843,  // 0012 page text
         10269123721939706164, // 0013 page edits
+        6651659427512421612,  // 0014 moved page files
     ];
 
     #[test]

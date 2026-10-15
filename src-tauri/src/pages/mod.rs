@@ -17,6 +17,7 @@
 
 pub mod block;
 pub mod facts;
+pub mod moving;
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, DirBuilder, OpenOptions, Permissions};
@@ -78,6 +79,7 @@ impl OpenPages {
             .collect()
     }
 }
+
 /// How deep below the folder pages are looked for.
 const MAX_DEPTH: usize = 4;
 
@@ -910,6 +912,10 @@ pub fn sync_now(app: &AppHandle) {
         return;
     };
     let mut store = store.lock().unwrap_or_else(PoisonError::into_inner);
+    // Once the database is encrypted, the pages move into it, once.
+    if moving::move_in(&mut store, &dir).is_err() {
+        logging::warn("pages.move_failed", &[Field::Error(ErrorKind::Database)]);
+    }
     // Moved into the database: no folder to prepare.
     if store.pages_in_database().unwrap_or(false) {
         let open = app

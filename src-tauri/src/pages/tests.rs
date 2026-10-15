@@ -1182,3 +1182,131 @@ fn a_page_open_in_the_editor_is_left_alone() {
     assert_eq!(sync_rows_now(&mut store).written, 1);
     assert!(anna_text(&store).contains("Ringde Anna."));
 }
+
+// Moving the pages in (ADR 0011, step 3).
+
+/// Pages written to the folder, then the database "encrypted".
+fn written_to_folder(folder: &Folder) -> Store {
+    let mut store = sample();
+    sync_now(&mut store, folder);
+    store.pretend_encrypted();
+    store
+}
+
+#[test]
+fn moving_in_keeps_every_line_the_user_wrote() {
+    let folder = Folder::new();
+    let mut store = written_to_folder(&folder);
+    let mine = folder
+        .read(ANNA)
+        .replace("# Anna Example\n", "# Anna Example\n\nMy notes.\n")
+        .replace(
+            "Mailade Anna om Q3-offerten.",
+            "Mailade Anna om Q4-offerten (rättat).",
+        );
+    folder.put(ANNA, &mine);
+
+    let moved = moving::move_in(&mut store, &folder.0).unwrap().unwrap();
+    assert_eq!((moved.pages, moved.missing, moved.detached), (2, 0, 0));
+    assert!(store.pages_in_database().unwrap());
+    // The text is the file's, byte for byte.
+    assert_eq!(anna_text(&store), mine);
+    assert_eq!(store.moved_page_files().unwrap().len(), 2);
+    // Only once.
+    assert_eq!(moving::move_in(&mut store, &folder.0).unwrap(), None);
+    // The edit in Lax's block is adopted at the next round, on the row.
+    assert_eq!(sync_rows_now(&mut store).adopted, 1);
+    let text = anna_text(&store);
+    assert!(text.starts_with("# Anna Example\n\nMy notes.\n"));
+    assert!(text.contains("Mailade Anna om Q4-offerten (rättat)."));
+    // The file is left as it was: the move deletes nothing by itself.
+    assert_eq!(folder.read(ANNA), mine);
+}
+
+#[test]
+fn moving_in_follows_the_rules_for_missing_detached_copied_and_unknown_files() {
+    let folder = Folder::new();
+    let mut store = written_to_folder(&folder);
+    let about = store.about_me_page().unwrap().unwrap();
+    // About me without Lax's markers: the user's now.
+    folder.put(&about.path, "# Me\n\nOnly my words.\n");
+    // Anna's page copied, and an unknown file of the user's.
+    let anna = folder.read(ANNA);
+    folder.put("people/anna-copy.md", &anna);
+    folder.put("people/notes.md", "My own file.\n");
+    let moved = moving::move_in(&mut store, &folder.0).unwrap().unwrap();
+    assert_eq!(
+        (moved.pages, moved.detached, moved.copies),
+        (1, 1, 1),
+        "{moved:?}"
+    );
+    let about = store.about_me_page().unwrap().unwrap();
+    assert_eq!(about.state, PageState::Detached);
+    assert_eq!(
+        store.page_text(&about.id).unwrap().unwrap(),
+        "# Me\n\nOnly my words.\n"
+    );
+    // Neither the copy nor the unknown file is among the files to delete.
+    let paths: Vec<String> = store
+        .moved_page_files()
+        .unwrap()
+        .into_iter()
+        .map(|f| f.path)
+        .collect();
+    assert_eq!(paths, ["about-me.md", ANNA]);
+}
+
+#[test]
+fn a_page_whose_file_is_gone_moves_in_missing() {
+    let folder = Folder::new();
+    let mut store = written_to_folder(&folder);
+    fs::remove_file(folder.0.join(ANNA)).unwrap();
+    let moved = moving::move_in(&mut store, &folder.0).unwrap().unwrap();
+    assert_eq!(moved.missing, 1);
+    assert_eq!(anna_page(&store).state, PageState::Missing);
+    assert_eq!(store.page_text(&anna_page(&store).id).unwrap(), None);
+    // Never recreated without asking.
+    sync_rows_now(&mut store);
+    assert_eq!(anna_page(&store).state, PageState::Missing);
+}
+
+#[test]
+fn pages_never_move_into_a_plaintext_database() {
+    let folder = Folder::new();
+    let mut store = sample();
+    sync_now(&mut store, &folder);
+    assert_eq!(moving::move_in(&mut store, &folder.0).unwrap(), None);
+    assert!(!store.pages_in_database().unwrap());
+}
+
+#[test]
+fn only_old_files_that_still_hold_what_was_moved_are_deleted() {
+    let folder = Folder::new();
+    let mut store = written_to_folder(&folder);
+    folder.put("people/notes.md", "My own file.\n");
+    moving::move_in(&mut store, &folder.0).unwrap();
+    // Changed after the move: kept, and listed.
+    let about = store.about_me_page().unwrap().unwrap();
+    folder.put(&about.path, "# About me\n\nChanged after the move.\n");
+    let deleted = moving::delete_old_files(&store, &folder.0).unwrap();
+    assert_eq!(deleted.deleted, 1);
+    assert_eq!(deleted.changed, [about.path.clone()]);
+    assert!(!folder.0.join(ANNA).exists());
+    // The user's own file, and the folder holding it, stay.
+    assert_eq!(folder.read("people/notes.md"), "My own file.\n");
+    // Nothing left to ask about.
+    assert!(store.moved_page_files().unwrap().is_empty());
+}
+
+#[test]
+fn an_empty_memory_folder_goes_with_the_old_files() {
+    let folder = Folder::new();
+    let mut store = written_to_folder(&folder);
+    folder.put(".DS_Store", "finder");
+    moving::move_in(&mut store, &folder.0).unwrap();
+    assert_eq!(
+        moving::delete_old_files(&store, &folder.0).unwrap().deleted,
+        2
+    );
+    assert!(!folder.0.exists());
+}

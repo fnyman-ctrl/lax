@@ -129,6 +129,27 @@ const PAGE_COLUMNS: &str = "p.id, p.entity_id, p.path, p.state,
     (SELECT block FROM page_versions WHERE id = p.last_version), p.facts, p.kind, p.facts_at";
 
 const PAGES_IN_DATABASE_KEY: &str = "pages_in_database";
+const OLD_FILES_KEY: &str = "old_page_files";
+
+/// A page as it moves into the database.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MovedPage {
+    pub id: String,
+    /// The file's whole text; `None` for a page whose file wasn't found.
+    pub text: Option<String>,
+    pub state: PageState,
+    pub path: String,
+}
+
+/// A page file moved in, with a fingerprint of what it held then.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MovedFile {
+    /// Relative to `~/Lax`.
+    pub path: String,
+    /// FNV-1a of its bytes.
+    pub hash: u64,
+    pub bytes: u64,
+}
 
 /// How many versions of the user's own text on a page are kept.
 pub const USER_EDITS_KEPT: i64 = 20;
@@ -619,6 +640,73 @@ impl Store {
             .prepare("SELECT text FROM page_edits WHERE page_id = ?1 ORDER BY id DESC")?;
         let rows = statement.query_map([id], |row| row.get(0))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Moves the pages in, in one transaction (ADR 0011): each page's text
+    /// (none for a page whose file wasn't found), its state and path; the
+    /// fingerprints of the files moved, for deleting them later; and the
+    /// setting that pages now live in the database. If anything fails,
+    /// nothing changed and the move runs again next time.
+    pub fn move_pages_in(&mut self, pages: &[MovedPage], files: &[MovedFile]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        for page in pages {
+            tx.execute(
+                "UPDATE pages SET text = ?2, state = ?3, path = ?4 WHERE id = ?1",
+                params![page.id, page.text, page.state.as_str(), page.path],
+            )?;
+        }
+        for file in files {
+            tx.execute(
+                "INSERT OR REPLACE INTO moved_page_files (path, hash, bytes) VALUES (?1, ?2, ?3)",
+                params![
+                    file.path,
+                    i64::from_ne_bytes(file.hash.to_ne_bytes()),
+                    i64::try_from(file.bytes).unwrap_or(i64::MAX)
+                ],
+            )?;
+        }
+        tx.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, '1')
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            [PAGES_IN_DATABASE_KEY],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The page files moved in and not dealt with yet.
+    pub fn moved_page_files(&self) -> Result<Vec<MovedFile>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT path, hash, bytes FROM moved_page_files ORDER BY path")?;
+        let rows = statement.query_map([], |row| {
+            Ok(MovedFile {
+                path: row.get(0)?,
+                hash: u64::from_ne_bytes(row.get::<_, i64>(1)?.to_ne_bytes()),
+                bytes: u64::try_from(row.get::<_, i64>(2)?).unwrap_or(0),
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Stops keeping track of moved files: deleted, or no longer the text
+    /// that was moved.
+    pub fn forget_moved_page_files(&self, paths: &[String]) -> Result<()> {
+        for path in paths {
+            self.conn
+                .execute("DELETE FROM moved_page_files WHERE path = ?1", [path])?;
+        }
+        Ok(())
+    }
+
+    /// Whether the user answered the one-time question about the old
+    /// files with "Keep them".
+    pub fn old_page_files_kept(&self) -> Result<bool> {
+        Ok(self.setting(OLD_FILES_KEY)?.as_deref() == Some("kept"))
+    }
+
+    pub fn keep_old_page_files(&self) -> Result<()> {
+        self.set_setting(OLD_FILES_KEY, "kept")
     }
 
     /// The paths pages have, for naming a new one.

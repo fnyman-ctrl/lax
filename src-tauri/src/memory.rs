@@ -254,6 +254,16 @@ pub struct MemoryStatus {
     pub about_me: Option<PageItem>,
     /// Whether the pages are in the database and edited in Lax (ADR 0011).
     pub pages_in_database: bool,
+    /// The old page files in `~/Lax` after the move, while there are any.
+    pub old_page_files: Option<OldPageFiles>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct OldPageFiles {
+    pub count: usize,
+    /// The user answered "Keep them": a quiet line instead of the question.
+    pub kept: bool,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -310,6 +320,16 @@ fn status(store: &Store) -> crate::store::Result<MemoryStatus> {
         own_names: store.own_names()?,
         about_me: store.about_me_page()?.map(|p| page_item(&p)),
         pages_in_database: store.pages_in_database()?,
+        old_page_files: {
+            let count = store.moved_page_files()?.len();
+            (count > 0)
+                .then(|| {
+                    store
+                        .old_page_files_kept()
+                        .map(|kept| OldPageFiles { count, kept })
+                })
+                .transpose()?
+        },
     })
 }
 
@@ -642,6 +662,29 @@ pub fn close_page(app: AppHandle, entity: Option<i64>) {
         app.state::<pages::OpenPages>().close(&id);
     }
     pages::sync_now(&app);
+}
+
+/// Deletes the old page files in `~/Lax` that still hold exactly what was
+/// moved into the database, after the user agreed (ADR 0011). Files changed
+/// since are kept and listed.
+#[tauri::command(async)]
+pub fn delete_old_page_files(app: AppHandle) -> Result<pages::moving::Deleted, String> {
+    let folder = pages::folder_of(&app).ok_or("Lax couldn't find the memory folder.")?;
+    command(&app, |store| {
+        pages::moving::delete_old_files(store, &folder)
+            .map_err(|_| "Lax couldn't delete the old files.".to_string())
+    })
+}
+
+/// "Keep them": the one-time question about the old files isn't asked
+/// again; a quiet line stays.
+#[tauri::command(async)]
+pub fn keep_old_page_files(app: AppHandle) -> Result<MemoryStatus, String> {
+    command(&app, |store| {
+        let failed = |_| "Lax couldn't save that.".to_string();
+        store.keep_old_page_files().map_err(failed)?;
+        status(store).map_err(failed)
+    })
 }
 
 /// Opens the memory folder in Finder.

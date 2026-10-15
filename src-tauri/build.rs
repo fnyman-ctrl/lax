@@ -75,6 +75,8 @@ fn main() {
             "page_text",
             "save_page",
             "close_page",
+            "delete_old_page_files",
+            "keep_old_page_files",
             "recreate_page",
             "recreate_about_me",
             "open_memory_folder",
