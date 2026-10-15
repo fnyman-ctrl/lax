@@ -705,8 +705,10 @@ pub fn export_pages(
     all: bool,
     synced_confirmed: bool,
 ) -> Result<pages::export::Exported, String> {
-    let chosen = app.state::<pages::export::ChosenFolder>();
-    let folder = chosen.get().ok_or("Choose a folder first.")?;
+    let folder = app
+        .state::<pages::export::ChosenFolder>()
+        .take()
+        .ok_or("Choose a folder first.")?;
     if pages::export::synced_service(&folder).is_some() && !synced_confirmed {
         return Err("That folder is synced off this Mac. Confirm it first.".into());
     }
@@ -729,7 +731,6 @@ pub fn export_pages(
         pages::export::write(&pages, &folder, &date)
             .map_err(|_| "Lax couldn't write the pages there.".to_string())
     })?;
-    chosen.set(None);
     Ok(exported)
 }
 

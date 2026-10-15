@@ -34,11 +34,12 @@ impl ChosenFolder {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = folder;
     }
 
-    pub fn get(&self) -> Option<PathBuf> {
+    /// The folder, once: an export uses up the pick, whatever happens.
+    pub fn take(&self) -> Option<PathBuf> {
         self.0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
+            .take()
     }
 }
 
@@ -90,11 +91,28 @@ pub fn write(pages: &[ExportPage], into: &Path, date: &str) -> std::io::Result<E
                 .mode(0o700)
                 .create(parent)?;
         }
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)?;
+        // Two pages with one path (a detached page and a new one): the
+        // second gets its id in the name. Never over an existing file.
+        let mut file = None;
+        for candidate in [
+            path.clone(),
+            path.with_file_name(format!("page-{}.md", page.id)),
+        ] {
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&candidate)
+            {
+                Ok(opened) => {
+                    file = Some(opened);
+                    break;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        let mut file = file.ok_or(std::io::ErrorKind::AlreadyExists)?;
         file.write_all(text.as_bytes())?;
         written += 1;
     }
@@ -162,7 +180,9 @@ mod macos {
     pub fn pick() -> Option<PathBuf> {
         let mtm = MainThreadMarker::new()?;
         // Lax lives in the menu bar: come to the front, so the picker does.
-        NSApplication::sharedApplication(mtm).activate();
+        // `activate` is macOS 14 and later; this works on every version.
+        #[allow(deprecated)]
+        NSApplication::sharedApplication(mtm).activateIgnoringOtherApps(true);
         let panel = NSOpenPanel::openPanel(mtm);
         panel.setCanChooseDirectories(true);
         panel.setCanChooseFiles(false);
@@ -217,11 +237,12 @@ mod tests {
             page("a2", "people/gone.md", None),
             page("a3", "../outside.md", Some("# Odd\n")),
             page("a4", "people/anna-example.md", Some("# Anna Example\n")),
+            page("a5", "people/anna-example.md", Some("# Anna, detached\n")),
         ];
 
         let first = write(&pages, &into.0, "2026-10-15").unwrap();
         assert_eq!(first.folder, "Lax pages 2026-10-15");
-        assert_eq!(first.pages, 3, "a page without text is skipped");
+        assert_eq!(first.pages, 4, "a page without text is skipped");
         let dir = into.0.join(&first.folder);
         assert_eq!(
             fs::read_to_string(dir.join("about-me.md")).unwrap(),
@@ -230,6 +251,11 @@ mod tests {
         // A path that isn't plain names stays inside the new folder.
         assert!(dir.join("page-a3.md").exists());
         assert!(dir.join("people/anna-example.md").exists());
+        // The second page with that path gets its id in the name.
+        assert_eq!(
+            fs::read_to_string(dir.join("people/page-a5.md")).unwrap(),
+            "# Anna, detached\n"
+        );
         assert!(!into.0.join("outside.md").exists());
         let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&dir), 0o700);
