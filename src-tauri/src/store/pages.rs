@@ -173,12 +173,19 @@ impl Store {
             .optional()?)
     }
 
-    /// Starts keeping track of `about-me.md`; its file is written next.
-    pub fn add_about_me_page(&self, id: &str, path: &str, now: DateTime<Utc>) -> Result<()> {
+    /// Starts keeping track of the About me page, with its `text` once the
+    /// pages are in the database, or `None` when its file is written first.
+    pub fn add_about_me_page(
+        &self,
+        id: &str,
+        path: &str,
+        text: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO pages (id, entity_id, path, state, kind, created_at)
-             VALUES (?1, NULL, ?2, 'ok', 'about-me', ?3)",
-            params![id, path, now.timestamp_millis()],
+            "INSERT INTO pages (id, entity_id, path, state, kind, created_at, text)
+             VALUES (?1, NULL, ?2, 'ok', 'about-me', ?3, ?4)",
+            params![id, path, now.timestamp_millis(), text],
         )?;
         Ok(())
     }
@@ -247,12 +254,21 @@ impl Store {
         Ok(apps.into_iter().take(limit).map(|(name, _)| name).collect())
     }
 
-    /// Starts keeping track of a page; its file is written next.
-    pub fn add_page(&self, id: &str, entity: i64, path: &str, now: DateTime<Utc>) -> Result<()> {
+    /// Starts keeping track of a page, with its `text` once the pages are
+    /// in the database (in the same statement, so no row is left without
+    /// it), or `None` when its file is written first.
+    pub fn add_page(
+        &self,
+        id: &str,
+        entity: i64,
+        path: &str,
+        text: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO pages (id, entity_id, path, state, created_at)
-             VALUES (?1, ?2, ?3, 'ok', ?4)",
-            params![id, entity, path, now.timestamp_millis()],
+            "INSERT INTO pages (id, entity_id, path, state, created_at, text)
+             VALUES (?1, ?2, ?3, 'ok', ?4, ?5)",
+            params![id, entity, path, now.timestamp_millis(), text],
         )?;
         Ok(())
     }

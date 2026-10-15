@@ -462,13 +462,13 @@ mod tests {
         store.set_setting("note", MARKER).unwrap();
         // A memory page's text, with a line of the user's own (ADR 0011).
         store
-            .add_about_me_page("page-marker", "about-me.md", Utc::now())
+            .add_about_me_page(
+                "page-marker",
+                "about-me.md",
+                Some(&format!("# About me\n\n{MARKER}\n")),
+                Utc::now(),
+            )
             .unwrap();
-        assert!(
-            store
-                .set_page_text("page-marker", None, &format!("# About me\n\n{MARKER}\n"))
-                .unwrap()
-        );
         let provider: String = store
             .conn
             .query_row("PRAGMA cipher_provider", [], |r| r.get(0))

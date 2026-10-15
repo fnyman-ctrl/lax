@@ -312,8 +312,9 @@ pub enum Shelf<'a> {
 enum Spot {
     /// A file, relative to the memory folder.
     File(PathBuf),
-    /// The page's row.
-    Row,
+    /// The page's row, with the text it held when found, so a round reads
+    /// each page once.
+    Row(String),
 }
 
 impl Shelf<'_> {
@@ -331,30 +332,34 @@ impl Shelf<'_> {
                         .cloned()
                 })
                 .map(Spot::File),
-            Shelf::Rows => store.page_text(&page.id)?.map(|_| Spot::Row),
+            Shelf::Rows => store.page_text(&page.id)?.map(Spot::Row),
         })
     }
 
-    fn read(&self, store: &Store, id: &str, spot: &Spot) -> Option<String> {
-        match (self, spot) {
-            (Shelf::Folder { dir, .. }, Spot::File(relative)) => {
-                fs::read_to_string(dir.join(relative)).ok()
-            }
-            (Shelf::Rows, Spot::Row) => store.page_text(id).ok().flatten(),
-            _ => None,
+    /// The page's text where it was found. A file is read now; a row's
+    /// text was read when it was found.
+    fn read(&self, spot: &Spot) -> Option<String> {
+        match spot {
+            Spot::File(relative) => match self {
+                Shelf::Folder { dir, .. } => fs::read_to_string(dir.join(relative)).ok(),
+                Shelf::Rows => unreachable!("a row shelf finds no files"),
+            },
+            Spot::Row(text) => Some(text.clone()),
         }
     }
 
     /// Replaces the page's text with `text` if it still is `expected`.
     fn write(&self, store: &Store, id: &str, spot: &Spot, expected: &str, text: &str) -> bool {
-        match (self, spot) {
-            (Shelf::Folder { dir, .. }, Spot::File(relative)) => {
-                write_inside(dir, &dir.join(relative), Some(expected), text).unwrap_or(false)
-            }
-            (Shelf::Rows, Spot::Row) => store
+        match spot {
+            Spot::File(relative) => match self {
+                Shelf::Folder { dir, .. } => {
+                    write_inside(dir, &dir.join(relative), Some(expected), text).unwrap_or(false)
+                }
+                Shelf::Rows => unreachable!("a row shelf finds no files"),
+            },
+            Spot::Row(_) => store
                 .set_page_text(id, Some(expected), text)
                 .unwrap_or(false),
-            _ => false,
         }
     }
 
@@ -362,7 +367,7 @@ impl Shelf<'_> {
     fn path(page: &Page, spot: &Spot) -> String {
         match spot {
             Spot::File(relative) => relative.to_string_lossy().to_string(),
-            Spot::Row => page.path.clone(),
+            Spot::Row(_) => page.path.clone(),
         }
     }
 
@@ -396,16 +401,16 @@ impl Shelf<'_> {
         Ok(candidate)
     }
 
-    /// Puts a new page's `text` in place for the page `add` records: the
-    /// file first and then the row, so no row points at a file that wasn't
-    /// written; or the row, then its text.
+    /// Puts a new page's `text` in place for the page `add` records, given
+    /// the text to keep on its row: the file first and then the row
+    /// without text, so no row points at a file that wasn't written; or the
+    /// row with its text, in one statement.
     fn put_new(
         &self,
         store: &mut Store,
-        id: &str,
         path: &str,
         text: &str,
-        add: impl FnOnce(&mut Store) -> crate::store::Result<()>,
+        add: impl FnOnce(&mut Store, Option<&str>) -> crate::store::Result<()>,
     ) -> crate::store::Result<bool> {
         match self {
             Shelf::Folder { dir, .. } => {
@@ -415,12 +420,12 @@ impl Shelf<'_> {
                 if !write_inside(dir, &full, None, text).unwrap_or(false) {
                     return Ok(false);
                 }
-                add(store)?;
+                add(store, None)?;
                 Ok(true)
             }
             Shelf::Rows => {
-                add(store)?;
-                store.set_page_text(id, None, text)
+                add(store, Some(text))?;
+                Ok(true)
             }
         }
     }
@@ -432,7 +437,8 @@ impl Shelf<'_> {
     /// the user's text on it, which the forget showed them first (ADR 0011).
     fn take_away(&self, page: &Page, found: Option<&Spot>) -> bool {
         match (self, found) {
-            (_, None) | (Shelf::Rows, _) => true,
+            (_, None) | (_, Some(Spot::Row(_))) => true,
+            (Shelf::Rows, Some(Spot::File(_))) => unreachable!("a row shelf finds no files"),
             (Shelf::Folder { dir, .. }, Some(Spot::File(relative))) => {
                 let path = dir.join(relative);
                 match fs::read_to_string(&path) {
@@ -447,7 +453,6 @@ impl Shelf<'_> {
                     },
                 }
             }
-            (Shelf::Folder { .. }, Some(Spot::Row)) => false,
         }
     }
 
@@ -565,8 +570,8 @@ where
         let content = content(&[], entity, &latest, tz);
         let path = shelf.new_path(store, Some(entity.kind), &entity.name)?;
         let text = block::new_page(&entity.name, &id, &content);
-        if shelf.put_new(store, &id, &path, &text, |store| {
-            store.add_page(&id, entity.id, &path, now)
+        if shelf.put_new(store, &path, &text, |store, text| {
+            store.add_page(&id, entity.id, &path, text, now)
         })? {
             let sources: Vec<i64> = latest.iter().map(|e| e.id).collect();
             store.page_written(&id, &path, &block::normalize(&content), &sources, now)?;
@@ -621,7 +626,7 @@ fn refresh(
     // written there again.
     let mut facts = page.facts.clone().unwrap_or_default();
     if let Some(spot) = &found
-        && let Some(text) = shelf.read(store, &page.id, spot)
+        && let Some(text) = shelf.read(spot)
     {
         for line in block::removed_lines(&text, &page.id, page.last_block.as_deref()) {
             let Some(fact) = line.strip_prefix("- ") else {
@@ -669,7 +674,7 @@ fn refresh(
                 // A new block of Lax's below the user's text on the same
                 // page, or a new page if it had none.
                 Shelf::Rows => {
-                    let current = found.and_then(|spot| shelf.read(store, &page.id, &spot));
+                    let current = found.and_then(|spot| shelf.read(&spot));
                     let text = match &current {
                         Some(current) => format!(
                             "{}\n\n{}\n",
@@ -703,7 +708,7 @@ fn refresh(
         }
         (_, Some(spot)) => {
             let path = Shelf::path(page, &spot);
-            let Some(text) = shelf.read(store, &page.id, &spot) else {
+            let Some(text) = shelf.read(&spot) else {
                 return Ok(());
             };
             match block::update(&text, &page.id, page.last_block.as_deref(), &content) {
@@ -811,8 +816,8 @@ fn about_me(
             let content = about_me_content(&[], &lately);
             let path = shelf.new_path(store, None, ABOUT_ME_TITLE)?;
             let text = block::new_page(ABOUT_ME_TITLE, &id, &content);
-            if shelf.put_new(store, &id, &path, &text, |store| {
-                store.add_about_me_page(&id, &path, now)
+            if shelf.put_new(store, &path, &text, |store, text| {
+                store.add_about_me_page(&id, &path, text, now)
             })? {
                 store.page_written(&id, &path, &block::normalize(&content), &[], now)?;
                 done.created += 1;

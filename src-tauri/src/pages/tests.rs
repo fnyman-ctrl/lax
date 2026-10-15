@@ -998,7 +998,13 @@ fn an_edit_saved_while_lax_writes_is_kept() {
     // The user saves after Lax read the page and before it writes.
     let saved = format!("{read}\nSaved meanwhile.\n");
     assert!(store.set_page_text(&page.id, Some(&read), &saved).unwrap());
-    assert!(!Shelf::Rows.write(&store, &page.id, &Spot::Row, &read, "Lax's text"));
+    assert!(!Shelf::Rows.write(
+        &store,
+        &page.id,
+        &Spot::Row(read.clone()),
+        &read,
+        "Lax's text"
+    ));
     assert_eq!(anna_text(&store), saved);
 }
 
