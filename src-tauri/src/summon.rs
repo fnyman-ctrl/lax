@@ -622,14 +622,17 @@ fn come(app: &AppHandle, app_decision: Decision) {
         if let Some(found) = macos::locate(&app) {
             let (pid, front) = (found.call.pid, found.front.clone());
             show(&app, found.call, found.caret, found.field);
-            // Loads the model while the user types, if it was unloaded.
-            crate::write::wake_model(&app);
             // The window is read after the salmon is on its way: under the
             // same rules as capture, for the app Lax was called to (Lax's
             // own panel is in front by now). If it turns out to be a site
             // the user excluded, Lax goes away again before anything is used.
             match macos::read_window(&app, front) {
-                Ok(context) => app.state::<Summoned>().set_context(pid, context),
+                Ok(context) => {
+                    app.state::<Summoned>().set_context(pid, context);
+                    // Loads the model while the user types, if it was
+                    // unloaded. Not for a window Lax may not read.
+                    crate::write::wake_model(&app);
+                }
                 Err(()) => {
                     if let Some(panel) = app.get_webview_window(PANEL) {
                         let _ = panel.hide();
