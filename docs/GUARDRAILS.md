@@ -185,10 +185,10 @@ written to manipulate an AI ("ignore previous instructions and…"). Therefore:
   folder the user picks, after a notice that the copy is not encrypted. Lax
   warns, and asks again, before exporting into iCloud Drive or another synced
   folder, since that copies the memory off the machine (§1).
-- Until Lax has moved them in, the pages are Markdown files in `~/Lax` (`0700`,
-  files `0600`), protected by FileVault and those permissions, and Lax refuses
-  to write them if that folder is inside a synced folder. Lax warns if FileVault
-  is off.
+- Until Lax has moved them in (ADR 0011 is built in steps), the pages are
+  Markdown files in `~/Lax` (`0700`, files `0600`) that the user edits in any
+  editor, protected by FileVault and those permissions, and Lax refuses to write
+  them if that folder is inside a synced folder. Lax warns if FileVault is off.
 - **Logs never contain captured content**, only metadata such as counts and timings.
 - Everything is stored in open formats so the user can export, back up or
   inspect it without Lax: the database is SQLite (SQLCipher, opened with the key
