@@ -1654,6 +1654,23 @@ button.link {
 
 /* The memory page editor (src/PageEditor.tsx): plain text. */
 
+/* The editor under a name: clear of the button above it, the hint, the
+   export card and Done each on a row of their own. */
+.page-editor {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0.75rem 0 1rem;
+}
+
+.page-editor > p,
+.page-editor > .card {
+  margin: 0;
+}
+
+.page-editor > .hint {
+  margin-top: -0.35rem;
+}
+
 .page-editor textarea {
   width: 100%;
   min-height: 16rem;
