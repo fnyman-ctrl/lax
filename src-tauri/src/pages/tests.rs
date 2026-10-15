@@ -938,7 +938,7 @@ fn in_database() -> Store {
 }
 
 fn sync_rows_now(store: &mut Store) -> Synced {
-    sync_rows(store, at(11, 13), &stockholm()).unwrap()
+    sync_rows(store, None, at(11, 13), &stockholm()).unwrap()
 }
 
 fn anna_text(store: &Store) -> String {
@@ -1110,4 +1110,71 @@ fn names_on_rows_get_a_number_too() {
             .unwrap(),
         "people/anna-example-2.md"
     );
+}
+
+#[test]
+fn the_editor_saves_only_over_what_it_loaded_and_keeps_versions() {
+    let mut store = in_database();
+    sync_rows_now(&mut store);
+    let page = anna_page(&store);
+    let opened = anna_text(&store);
+    // First save after opening: a new version of the user's.
+    let one = format!("{opened}\nNote one.\n");
+    assert!(
+        store
+            .save_page_text(&page.id, &opened, &one, true, at(11, 14))
+            .unwrap()
+    );
+    // Later saves in the same visit update it.
+    let two = format!("{one}Note two.\n");
+    assert!(
+        store
+            .save_page_text(&page.id, &one, &two, false, at(11, 14))
+            .unwrap()
+    );
+    assert_eq!(store.page_edits(&page.id).unwrap(), std::slice::from_ref(&two));
+    // A save over text that changed meanwhile saves nothing.
+    assert!(
+        !store
+            .save_page_text(&page.id, &opened, "Stale", false, at(11, 14))
+            .unwrap()
+    );
+    assert_eq!(anna_text(&store), two);
+    // A new visit is a new version; only the latest are kept.
+    let mut current = two;
+    for i in 0..(crate::store::USER_EDITS_KEPT + 3) {
+        let next = format!("{current}Visit {i}.\n");
+        assert!(
+            store
+                .save_page_text(&page.id, &current, &next, true, at(11, 15))
+                .unwrap()
+        );
+        current = next;
+    }
+    assert_eq!(
+        store.page_edits(&page.id).unwrap().len() as i64,
+        crate::store::USER_EDITS_KEPT
+    );
+    // Forgetting the entity takes the user's versions with the page.
+    store
+        .forget_entity(page.entity_id.unwrap(), false, at(11, 16))
+        .unwrap();
+    sync_rows_now(&mut store);
+    assert!(store.page_edits(&page.id).unwrap().is_empty());
+}
+
+#[test]
+fn a_page_open_in_the_editor_is_left_alone() {
+    let mut store = in_database();
+    sync_rows_now(&mut store);
+    let page = anna_page(&store);
+    let before = anna_text(&store);
+    let later = episode(&mut store, at(11, 9), "Mail", "Ringde Anna.");
+    mention(&mut store, later, "Anna Example");
+    let done = sync_rows(&mut store, Some(&page.id), at(11, 13), &stockholm()).unwrap();
+    assert_eq!(done.written, 0);
+    assert_eq!(anna_text(&store), before);
+    // Closed: brought up to date.
+    assert_eq!(sync_rows_now(&mut store).written, 1);
+    assert!(anna_text(&store).contains("Ringde Anna."));
 }

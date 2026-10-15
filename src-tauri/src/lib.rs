@@ -48,6 +48,7 @@ pub fn run() {
         .manage(exclusions::Current::default())
         .manage(summon::Summoned::default())
         .manage(database::Database::default())
+        .manage(pages::OpenPage::default())
         .invoke_handler(tauri::generate_handler![
             accessibility::accessibility_status,
             accessibility::open_accessibility_settings,
@@ -94,6 +95,9 @@ pub fn run() {
             memory::restore_page_version,
             memory::set_own_names,
             memory::open_memory_folder,
+            memory::page_text,
+            memory::save_page,
+            memory::close_page,
             memory::keep_entity,
             memory::rename_entity,
             memory::merge_entities,

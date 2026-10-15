@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { PageEditor } from "./PageEditor";
 
 // Shapes returned by src-tauri/src/memory.rs.
 type MemoryStatus = {
@@ -11,6 +12,8 @@ type MemoryStatus = {
   folderProblem: string | null;
   ownNames: string[];
   aboutMe: PageItem | null;
+  /** The pages are in the encrypted database and edited here (ADR 0011). */
+  pagesInDatabase: boolean;
 };
 type PageItem = { path: string; state: "ok" | "missing" | "detached" | "recreate" };
 type Kind = "person" | "organisation" | "project";
@@ -153,7 +156,12 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
             {!status.journal && (
               <p className="muted">The journal is off, so no new entries arrive.</p>
             )}
-            {status.folderProblem ? (
+            {status.pagesInDatabase ? (
+              <p className="muted">
+                Lax keeps a page for each name it's sure of, in its encrypted database. Write in
+                them freely: Lax only changes its own part.
+              </p>
+            ) : status.folderProblem ? (
               <p className="error">{status.folderProblem}</p>
             ) : (
               status.folder && (
@@ -295,6 +303,7 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
                   key={entity.id}
                   entity={entity}
                   all={entities}
+                  editable={status.pagesInDatabase}
                   busy={busy}
                   open={open === entity.id}
                   onOpen={(on) => setOpen(on ? entity.id : null)}
@@ -317,6 +326,7 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
                       key={entity.id}
                       entity={entity}
                       all={entities}
+                      editable={status.pagesInDatabase}
                       busy={busy}
                       open={open === entity.id}
                       onOpen={(on) => setOpen(on ? entity.id : null)}
@@ -383,6 +393,7 @@ function AboutYou({
   onMessage: (message: string | null) => void;
 }) {
   const [names, setNames] = useState(status.ownNames.join(", "));
+  const [editing, setEditing] = useState(false);
   const saved = status.ownNames.join(", ");
 
   const save = () => {
@@ -422,11 +433,24 @@ function AboutYou({
           Save
         </button>
       </p>
-      {status.aboutMe?.state === "ok" && (
+      {status.aboutMe?.state === "ok" && !status.pagesInDatabase && (
         <p className="muted hint">
           {status.aboutMe.path} says who and what you work with most, and what Lax learned about
           your work.
         </p>
+      )}
+      {status.pagesInDatabase && status.aboutMe && status.aboutMe.state !== "missing" && (
+        <>
+          <p className="buttons">
+            <span className="muted">
+              Your page says who and what you work with most, and what Lax learned about your work.
+            </span>
+            <button type="button" className="secondary" onClick={() => setEditing(!editing)}>
+              {editing ? "Close your page" : "Edit your page"}
+            </button>
+          </p>
+          {editing && <PageEditor entity={null} onClose={() => setEditing(false)} />}
+        </>
       )}
       {(status.aboutMe?.state === "missing" || status.aboutMe?.state === "detached") && (
         <p className="buttons page-problem">
@@ -458,6 +482,7 @@ function AboutYou({
 function EntityRow({
   entity,
   all,
+  editable,
   busy,
   open,
   onOpen,
@@ -465,6 +490,8 @@ function EntityRow({
 }: {
   entity: EntityItem;
   all: EntityItem[];
+  /** The page can be edited here (the pages are in the database). */
+  editable: boolean;
   busy: boolean;
   open: boolean;
   onOpen: (open: boolean) => void;
@@ -476,6 +503,7 @@ function EntityRow({
   // coming back, unless the user unticks it.
   const [dontLearn, setDontLearn] = useState(entity.isNew);
   const [confirming, setConfirming] = useState(false);
+  const [editing, setEditing] = useState(false);
   const nameInput = useRef<HTMLInputElement>(null);
   const confirmButton = useRef<HTMLButtonElement>(null);
   const others = all
@@ -539,7 +567,17 @@ function EntityRow({
           <p className="muted aliases">Also: {entity.aliases.join(", ")}</p>
         )}
         <p className="muted seen">{seen(entity)}</p>
-        {entity.page?.state === "ok" && <p className="muted seen">Page: {entity.page.path}</p>}
+        {entity.page?.state === "ok" && !editable && (
+          <p className="muted seen">Page: {entity.page.path}</p>
+        )}
+        {editable && entity.page && entity.page.state !== "missing" && (
+          <p className="buttons">
+            <button type="button" className="secondary" onClick={() => setEditing(!editing)}>
+              {editing ? "Close the page" : "Edit page"}
+            </button>
+          </p>
+        )}
+        {editing && <PageEditor entity={entity.id} onClose={() => setEditing(false)} />}
         {(entity.page?.state === "missing" || entity.page?.state === "detached") && (
           <p className="buttons page-problem">
             <span>

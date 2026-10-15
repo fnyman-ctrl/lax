@@ -1651,3 +1651,20 @@ button.link {
 .database .confirm {
   margin-top: 1rem;
 }
+
+/* The memory page editor (src/PageEditor.tsx): plain text. */
+
+.page-editor textarea {
+  width: 100%;
+  min-height: 16rem;
+  box-sizing: border-box;
+  padding: 0.7rem 0.8rem;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.page-editor .confirm textarea {
+  min-height: 8rem;
+}

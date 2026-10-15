@@ -252,6 +252,8 @@ pub struct MemoryStatus {
     pub own_names: Vec<String>,
     /// `about-me.md`, once written.
     pub about_me: Option<PageItem>,
+    /// Whether the pages are in the database and edited in Lax (ADR 0011).
+    pub pages_in_database: bool,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -307,6 +309,7 @@ fn status(store: &Store) -> crate::store::Result<MemoryStatus> {
         folder_problem: None,
         own_names: store.own_names()?,
         about_me: store.about_me_page()?.map(|p| page_item(&p)),
+        pages_in_database: store.pages_in_database()?,
     })
 }
 
@@ -551,6 +554,88 @@ pub fn recreate_page(app: AppHandle, id: i64) -> Result<(), String> {
     })?;
     pages::sync_now(&app);
     Ok(())
+}
+
+/// The page for `entity`, or the About me page for `None`, once the pages
+/// are in the database.
+fn page_to_edit(store: &Store, entity: Option<i64>) -> Result<Page, String> {
+    let failed = |_| "Lax couldn't read the page.".to_string();
+    if !store.pages_in_database().map_err(failed)? {
+        return Err("Your pages are still files in ~/Lax. Edit them there for now.".into());
+    }
+    let page = match entity {
+        Some(id) => store.page_of(id).map_err(failed)?,
+        None => store.about_me_page().map_err(failed)?,
+    };
+    page.ok_or_else(|| "There is no page yet.".to_string())
+}
+
+/// A page's whole text, for the editor. While it is open, Lax doesn't
+/// write it (`pages::OpenPage`). Shown as text, never as HTML: Lax's block
+/// is written from captured text.
+#[tauri::command(async)]
+pub fn page_text(app: AppHandle, entity: Option<i64>) -> Result<String, String> {
+    let (id, text) = command(&app, |store| {
+        let page = page_to_edit(store, entity)?;
+        let text = store
+            .page_text(&page.id)
+            .map_err(|_| "Lax couldn't read the page.".to_string())?
+            .ok_or("This page has no text. Recreate it first.")?;
+        Ok((page.id, text))
+    })?;
+    app.state::<pages::OpenPage>().set(Some(id));
+    Ok(text)
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Saved {
+    pub saved: bool,
+    /// What the page says now, if it changed since `loaded`; nothing was
+    /// saved then.
+    pub current: Option<String>,
+}
+
+/// Saves the user's text on a page if it still holds `loaded`, what the
+/// editor opened or last saved. `first` marks the first save after the
+/// page was opened, which starts a new version of the user's.
+#[tauri::command(async)]
+pub fn save_page(
+    app: AppHandle,
+    entity: Option<i64>,
+    loaded: String,
+    text: String,
+    first: bool,
+) -> Result<Saved, String> {
+    if text.len() as u64 > pages::MAX_PAGE_BYTES {
+        return Err("A page can be at most 1 MB.".into());
+    }
+    command(&app, |store| {
+        let failed = |_| "Lax couldn't save the page.".to_string();
+        let page = page_to_edit(store, entity)?;
+        if store
+            .save_page_text(&page.id, &loaded, &text, first, Utc::now())
+            .map_err(failed)?
+        {
+            Ok(Saved {
+                saved: true,
+                current: None,
+            })
+        } else {
+            Ok(Saved {
+                saved: false,
+                current: store.page_text(&page.id).map_err(failed)?,
+            })
+        }
+    })
+}
+
+/// The editor closed: Lax may write the page again, and brings it up to
+/// date now, taking in what the user changed in its block.
+#[tauri::command(async)]
+pub fn close_page(app: AppHandle) {
+    app.state::<pages::OpenPage>().set(None);
+    pages::sync_now(&app);
 }
 
 /// Opens the memory folder in Finder.

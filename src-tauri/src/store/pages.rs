@@ -130,6 +130,9 @@ const PAGE_COLUMNS: &str = "p.id, p.entity_id, p.path, p.state,
 
 const PAGES_IN_DATABASE_KEY: &str = "pages_in_database";
 
+/// How many versions of the user's own text on a page are kept.
+pub const USER_EDITS_KEPT: i64 = 20;
+
 /// How many of Lax's versions of a page are kept.
 pub const LAX_VERSIONS_KEPT: i64 = 20;
 
@@ -561,6 +564,61 @@ impl Store {
             params![id, expected, text],
         )?;
         Ok(changed == 1)
+    }
+
+    /// Saves the user's `text` on a page if the page still holds `loaded`,
+    /// what the editor opened or last saved, and keeps it as a version of
+    /// theirs: a new one for the first save after opening the page
+    /// (`new_version`), otherwise the latest is updated, so a version is
+    /// one visit, not one save. `false` if the page changed meanwhile; then
+    /// nothing is saved, and the editor shows both texts.
+    pub fn save_page_text(
+        &mut self,
+        id: &str,
+        loaded: &str,
+        text: &str,
+        new_version: bool,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        let tx = self.conn.transaction()?;
+        let changed = tx.execute(
+            "UPDATE pages SET text = ?3 WHERE id = ?1 AND text IS ?2",
+            params![id, loaded, text],
+        )?;
+        if changed != 1 {
+            return Ok(false);
+        }
+        let updated = if new_version {
+            0
+        } else {
+            tx.execute(
+                "UPDATE page_edits SET text = ?2, saved_at = ?3
+                 WHERE id = (SELECT max(id) FROM page_edits WHERE page_id = ?1)",
+                params![id, text, now.timestamp_millis()],
+            )?
+        };
+        if updated == 0 {
+            tx.execute(
+                "INSERT INTO page_edits (page_id, saved_at, text) VALUES (?1, ?2, ?3)",
+                params![id, now.timestamp_millis(), text],
+            )?;
+            tx.execute(
+                "DELETE FROM page_edits WHERE page_id = ?1 AND id NOT IN
+                 (SELECT id FROM page_edits WHERE page_id = ?1 ORDER BY id DESC LIMIT ?2)",
+                params![id, USER_EDITS_KEPT],
+            )?;
+        }
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// The user's saved versions of a page, newest first.
+    pub fn page_edits(&self, id: &str) -> Result<Vec<String>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT text FROM page_edits WHERE page_id = ?1 ORDER BY id DESC")?;
+        let rows = statement.query_map([id], |row| row.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
     /// The paths pages have, for naming a new one.

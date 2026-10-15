@@ -32,7 +32,7 @@ mod vectors;
 pub use cipher::{FileKind, Opened, Postponed, conversion_fits, file_kind};
 pub use memory::{Entity, EntityKind, Merged, Renamed, UnrecognizedEpisode, name_key};
 #[cfg(test)]
-pub use pages::LAX_VERSIONS_KEPT;
+pub use pages::{LAX_VERSIONS_KEPT, USER_EDITS_KEPT};
 pub use pages::{Page, PageKind, PageState, fact_key, facts_in};
 #[cfg(test)]
 pub use vectors::cosine;
@@ -54,6 +54,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0010_about_me.sql"),
     include_str!("../migrations/0011_episode_vectors.sql"),
     include_str!("../migrations/0012_page_text.sql"),
+    include_str!("../migrations/0013_page_edits.sql"),
 ];
 
 /// How long raw captures are kept unless the user chooses otherwise
@@ -1610,6 +1611,7 @@ mod tests {
         2814010323252384379,  // 0010 about me
         1465373273103624669,  // 0011 episode vectors
         5724453071597441843,  // 0012 page text
+        10269123721939706164, // 0013 page edits
     ];
 
     #[test]
