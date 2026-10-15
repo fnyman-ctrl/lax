@@ -1133,11 +1133,28 @@ mark {
 .ask-form {
   position: sticky;
   bottom: 0;
+  padding: 0.6rem 0 0.2rem;
+  background: var(--bg);
+}
+
+.ask-row {
   display: flex;
   gap: 0.5rem;
   align-items: flex-end;
-  padding: 0.6rem 0 0.2rem;
-  background: var(--bg);
+}
+
+/* A new conversation, always in reach above the question box. */
+.ask-form .conversation {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.ask-form .conversation p {
+  margin: 0;
+  font-size: 0.9em;
 }
 
 .ask-form textarea {
