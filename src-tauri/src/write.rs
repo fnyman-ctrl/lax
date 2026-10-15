@@ -394,11 +394,21 @@ fn user_names(account: &str, other: &[String]) -> Vec<String> {
 /// name (as messaging sites show the sender above a message), and lines
 /// that start with the name and a colon (as in "Filip: ok!").
 fn own_messages(window: &str, names: &[String]) -> Vec<String> {
+    // The name alone, or a full name followed by a mark ("Anna Example ✓"):
+    // never a first name with another surname, which is someone else.
     let is_name = |text: &str| {
         let text = text.trim().to_lowercase();
-        names
-            .iter()
-            .any(|name| text == *name || text.starts_with(&format!("{name} ")))
+        names.iter().any(|name| {
+            text == *name || (name.contains(' ') && text.starts_with(&format!("{name} ")))
+        })
+    };
+    // A time or a mark under a sender's name ("· 9:23 AM").
+    let is_mark =
+        |line: &str| line.starts_with(['·', '•']) || line.chars().any(|c| c.is_ascii_digit());
+    // Where a mail quotes the message before ("On Tue, Bo wrote:").
+    let is_quote = |line: &str| {
+        let lower = line.to_lowercase();
+        line.starts_with('>') || lower.ends_with("wrote:") || lower.ends_with("skrev:")
     };
     let words = |line: &str| line.split_whitespace().count();
     let mut found: Vec<String> = Vec::new();
@@ -426,9 +436,11 @@ fn own_messages(window: &str, names: &[String]) -> Vec<String> {
             continue;
         }
         match &mut current {
+            _ if is_quote(line) => finish(&mut current, &mut found),
             // A time or a mark under the name: still before the message.
-            Some(lines) if lines.is_empty() && words(line) < 4 => {}
+            Some(lines) if lines.is_empty() && words(line) < 4 && is_mark(line) => {}
             Some(lines) if words(line) >= 4 => lines.push(line),
+            // Anything else short ends it: another sender's name, a button.
             Some(_) => finish(&mut current, &mut found),
             None => {}
         }
@@ -915,6 +927,18 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert_eq!(own_messages(&many, &names).len(), 3);
+        // A short message of the user's, then someone else: nothing of
+        // theirs is taken for the user's.
+        let short = "Anna Example\n· 9:23 AM\nok\nSam Example\n· 9:30 AM\n\
+            Great, closing it now then for you.";
+        assert_eq!(own_messages(short, &names), Vec::<String>::new());
+        // A sign-off with the name, then a quoted mail: not the user's.
+        let mail = "Thanks,\nAnna\n\nOn Tue 14 Oct, Bo Example wrote:\n\
+            Could we go through the design tomorrow at ten?";
+        assert_eq!(own_messages(mail, &names), Vec::<String>::new());
+        // Someone with the same first name isn't the user.
+        let namesake = "Anna Andersson\nI can take the meeting tomorrow instead of you.";
+        assert_eq!(own_messages(namesake, &names), Vec::<String>::new());
         assert_eq!(
             own_messages("No names here at all", &names),
             Vec::<String>::new()
