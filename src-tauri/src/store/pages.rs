@@ -128,7 +128,7 @@ fn page_from_row(row: &Row) -> rusqlite::Result<Page> {
 const PAGE_COLUMNS: &str = "p.id, p.entity_id, p.path, p.state,
     (SELECT block FROM page_versions WHERE id = p.last_version), p.facts, p.kind, p.facts_at";
 
-const PAGES_IN_DATABASE_KEY: &str = "pages_in_database";
+pub(super) const PAGES_IN_DATABASE_KEY: &str = "pages_in_database";
 const OLD_FILES_KEY: &str = "old_page_files";
 
 /// A page as it moves into the database.
