@@ -1074,8 +1074,9 @@ fn a_forgotten_entitys_row_goes_with_the_users_text() {
     store
         .forget_entity(page.entity_id.unwrap(), false, at(11, 14))
         .unwrap();
-    assert_eq!(sync_rows_now(&mut store).removed, 1);
+    // Gone with the forget; the next round has nothing left to take.
     assert_eq!(store.page_text(&page.id).unwrap(), None);
+    assert_eq!(sync_rows_now(&mut store).removed, 0);
     assert!(entity_pages(&store).is_empty());
 }
 
@@ -1324,4 +1325,20 @@ fn an_empty_memory_folder_goes_with_the_old_files() {
         2
     );
     assert!(!folder.0.exists());
+}
+
+#[test]
+fn in_the_database_a_forget_takes_the_page_at_once() {
+    let mut store = in_database();
+    sync_rows_now(&mut store);
+    let page = anna_page(&store);
+    store
+        .forget_entity(page.entity_id.unwrap(), false, at(11, 14))
+        .unwrap();
+    // Gone in the same transaction, before any page round.
+    assert_eq!(store.page_text(&page.id).unwrap(), None);
+    assert!(entity_pages(&store).is_empty());
+    // Forgetting everything the memory noted takes About me too.
+    store.forget_memory().unwrap();
+    assert!(store.pages().unwrap().is_empty());
 }

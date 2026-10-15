@@ -303,6 +303,15 @@ impl Store {
                 params![id, now.timestamp_millis()],
             )?;
         }
+        // Once the pages are in the database (ADR 0011), the page goes in
+        // the same transaction, the user's text on it too: the forget
+        // dialog showed it first. Before, the next page round takes Lax's
+        // part out of the file.
+        tx.execute(
+            "DELETE FROM pages WHERE entity_id = ?1
+             AND EXISTS (SELECT 1 FROM settings WHERE key = 'pages_in_database' AND value = '1')",
+            [id],
+        )?;
         let deleted = tx.execute("DELETE FROM entities WHERE id = ?1", [id])?;
         tx.commit()?;
         if deleted > 0 {
@@ -446,6 +455,12 @@ impl Store {
     /// how many entities were forgotten.
     pub fn forget_memory(&self) -> Result<usize> {
         self.set_memory_enabled(false)?;
+        // Once the pages are in the database (ADR 0011), every page goes now,
+        // About me and the user's text on them included, as the
+        // confirmation says.
+        if self.pages_in_database()? {
+            self.conn.execute("DELETE FROM pages", [])?;
+        }
         let deleted = self.conn.execute("DELETE FROM entities", [])?;
         // about-me.md is something the memory noted too: its facts go, and
         // its page is handed to the next sync like a forgotten entity's, which

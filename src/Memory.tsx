@@ -267,9 +267,12 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
           <div className="confirm" role="alertdialog" aria-label="Confirm">
             <p>
               {status.enabled ? "Turn the memory off and forget" : "Forget"} every name it
-              noted? Lax's part of the pages goes too; anything you wrote on them stays. The
-              journal entries stay, and so does the list of names not to learn. If you turn it
-              on again, it starts with new entries.
+              noted?{" "}
+              {status.pagesInDatabase
+                ? "All its pages go too, your page and what you wrote on them included: export them first if you want to keep them."
+                : "Lax's part of the pages goes too; anything you wrote on them stays."}{" "}
+              The journal entries stay, and so does the list of names not to learn. If you turn
+              it on again, it starts with new entries.
             </p>
             <p className="buttons">
               <button
@@ -701,8 +704,12 @@ function EntityRow({
           <p className="buttons page-problem">
             <span>
               {entity.page.state === "missing"
-                ? "Lax can't find its page in the memory folder. It won't write it again unless you ask."
-                : `Lax's part was removed from ${entity.page.path}, so Lax leaves that file alone.`}
+                ? editable
+                  ? "This page has no text, so Lax doesn't write it. It won't write it again unless you ask."
+                  : "Lax can't find its page in the memory folder. It won't write it again unless you ask."
+                : editable
+                  ? "Lax's part was removed from this page, so Lax leaves it alone."
+                  : `Lax's part was removed from ${entity.page.path}, so Lax leaves that file alone.`}
             </span>
             <button
               type="button"
