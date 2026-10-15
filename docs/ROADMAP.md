@@ -11,12 +11,14 @@ closer to them.
 |---|---|---|
 | 0 | Foundation | ✅ Done |
 | [1](https://github.com/fnyman-ctrl/lax/milestone/1) | Capture | 🚧 Almost done: a workday measurement is left (#11). Reads nothing while you're away |
-| [2](https://github.com/fnyman-ctrl/lax/milestone/2) | Model layer | 🚧 Local models done, quiet in the background and on battery; remote providers after 0.1 |
+| [2](https://github.com/fnyman-ctrl/lax/milestone/2) | Model layer | 🚧 Local models done, quiet in the background and on battery; remote providers in 0.3 |
 | [3](https://github.com/fnyman-ctrl/lax/milestone/3) | Journal | ✅ Done, opt-in; raw text goes 30 days after it's summarized |
 | [4](https://github.com/fnyman-ctrl/lax/milestone/4) | Learning memory ⭐ | ✅ First version: entities, pages with facts and history in the encrypted database, an About me page, edited and exported in Lax; a week of use to judge |
 | [5](https://github.com/fnyman-ctrl/lax/milestone/5) | Ask your memory | ✅ First version: a conversation, answered from the journal and the memory, found by time, name, words and meaning |
 | — | Writing assistant | ✅ First version, pulled forward ([ADR 0009](adr/0009-writing-assistant.md)): call Lax to any text field for a draft |
 | [6](https://github.com/fnyman-ctrl/lax/milestone/6) | Release 0.1 | Planned |
+| [7](https://github.com/fnyman-ctrl/lax/milestone/8) | Release 0.2: Safe to share | Planned |
+| [8](https://github.com/fnyman-ctrl/lax/milestone/7) | Release 0.3: Remote providers | Planned |
 
 ---
 
@@ -131,7 +133,37 @@ Gatekeeper warnings. A signed and notarized `.dmg` comes later.
   memory pages kept in it, edited and exported in Lax
   ([ADR 0011](adr/0011-pages-in-the-database.md)): built
 - Later: signed and notarized `.dmg` built by CI with build provenance
-- After 0.1: the app lock with Touch ID ([ADR 0012](adr/0012-app-lock.md))
+- In 0.2: the app lock with Touch ID ([ADR 0012](adr/0012-app-lock.md))
+
+## Stage 7: Release 0.2: Safe to share
+
+**Goal:** A version a few friends can use every day, and trust with their
+data. Decided with the maintainer (2026-10-15): small, no new features, and
+still built from source. Remote providers come in 0.3.
+
+- The app lock with Touch ID or the login password ([ADR 0012](adr/0012-app-lock.md), #158)
+- Upgrades keep the data: a database made by each release is opened by the
+  next one in CI (#170)
+- The paths for databases from before 0.1 removed: plaintext conversion,
+  pages as files in `~/Lax`, and moving them in (#169)
+- Help for testers: a setup check before the build and a guide for testers
+  (#172), and **Copy details** for a bug report, without anything captured (#171)
+- Loose ends from 0.1: deleting the old database after Start over (#173), and
+  noticing when Allow was chosen instead of Always Allow (#174)
+- Whatever the testers find
+
+**Done when:** 3–5 testers have used it for two weeks, upgraded from 0.1
+without losing anything, and no bug for 0.2 is open.
+
+Not in 0.2: the signed `.dmg` (it needs an Apple Developer account; later),
+and new features such as meetings or time tracking.
+
+## Stage 8: Release 0.3: Remote providers
+
+**Goal:** The model layer's remote half (Stage 2): opt-in providers with a
+consent flow and presets (#16), API keys in the Keychain (#17), redaction and
+the outbox, and per-task routing with a remote indicator (#20). The first time
+data may leave the Mac, so it is a release of its own.
 
 ## Later
 
