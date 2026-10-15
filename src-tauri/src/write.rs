@@ -174,7 +174,8 @@ fn language_hits(line: &str) -> (usize, usize) {
     (count(SWEDISH_WORDS), count(ENGLISH_WORDS))
 }
 
-/// Hits enough to decide from the text nearest the field alone.
+/// Hits enough to decide from the text nearest the field alone, from at
+/// least two lines, so one interface line beside the field can't decide.
 const NEAREST_HITS: usize = 6;
 
 /// The language of the message the user is answering: the sentences right
@@ -189,12 +190,13 @@ pub(crate) fn reply_language(window: &str, instruction: &str) -> Option<&'static
         Some(at) if first.chars().count() >= 3 => &window[..at],
         _ => window,
     };
-    let (mut swedish, mut english) = (0usize, 0usize);
+    let (mut swedish, mut english, mut lines) = (0usize, 0usize, 0usize);
     for line in before.lines().rev() {
         let (sv, en) = language_hits(line);
         swedish += sv;
         english += en;
-        if swedish + english >= NEAREST_HITS {
+        lines += usize::from(sv + en > 0);
+        if swedish + english >= NEAREST_HITS && lines >= 2 {
             break;
         }
     }
@@ -617,13 +619,19 @@ mod tests {
         let empty_field = page.replace("svara att jag inte är intresserad\n", "");
         assert_eq!(reply_language(&empty_field, ""), Some("English"));
         // A Swedish thread stays Swedish.
-        let swedish = "Hi there, could you send the report to me today please?\n\
-            Hej Filip! Kan du skicka rapporten till mig innan fredag så kollar jag den.\n\
+        let swedish = "Hej! Vi har tittat på förslaget och det ser bra ut för oss.\n\
+            Kan du skicka rapporten till mig innan fredag så kollar jag den.\n\
             svara att det går bra";
         assert_eq!(
             reply_language(swedish, "svara att det går bra"),
             Some("Swedish")
         );
+        // One interface line beside the field doesn't decide alone.
+        let hint = "We are opening our new store in Stockholm, and you are invited to the launch.\n\
+            The date is Tuesday 20 October, and we will write again on Saturday.\n\
+            Klicka här för att svara eller för att vidarebefordra det till någon\n\
+            svara att vi kommer";
+        assert_eq!(reply_language(hint, "svara att vi kommer"), Some("English"));
         // Nothing near the field to go by: the whole window decides.
         assert_eq!(
             reply_language(
