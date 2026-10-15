@@ -669,7 +669,7 @@ fn mentions_merged_in_from_older_episodes_make_a_page_stale() {
         .find(|e| e.name == "Bo Exempel")
         .unwrap()
         .id;
-    store.merge_entities(bo, anna).unwrap();
+    store.merge_entities(bo, anna, at(11, 14)).unwrap();
     assert_eq!(store.stale_pages(5).unwrap().len(), 1);
     let unseen = store.unseen_mentions(&page.id, anna, 10).unwrap();
     assert_eq!(unseen.len(), 1);
@@ -987,6 +987,91 @@ fn the_users_text_on_a_row_survives_every_update() {
     assert!(text.contains("My notes: call her on Fridays.  \n"));
     assert!(text.ends_with("<!-- lax:end -->\n\nAnd a line at the end.\n"));
     assert!(text.contains("Ringde Anna."));
+}
+
+fn entity_named(store: &Store, name: &str) -> i64 {
+    store
+        .entities()
+        .unwrap()
+        .into_iter()
+        .find(|e| e.name == name)
+        .unwrap()
+        .id
+}
+
+#[test]
+fn a_merge_keeps_what_the_user_wrote_on_the_merged_page() {
+    let mut store = in_database();
+    let bo = entity_named(&store, "Bo Exempel");
+    store.keep_entity(bo).unwrap();
+    sync_rows_now(&mut store);
+    let bo_page = store.page_of(bo).unwrap().unwrap();
+    let before = store.page_text(&bo_page.id).unwrap().unwrap();
+    let mine = before.replace(
+        "# Bo Exempel\n",
+        "# Bo Exempel\n\nMy notes: Bo is Anna's nickname.\n",
+    );
+    assert!(
+        store
+            .set_page_text(&bo_page.id, Some(&before), &mine)
+            .unwrap()
+    );
+
+    let anna = entity_named(&store, "Anna Example");
+    store.merge_entities(bo, anna, at(11, 14)).unwrap();
+    sync_rows_now(&mut store);
+    // Bo's page is gone, and the user's text on it is on Anna's, theirs.
+    assert!(store.page_text(&bo_page.id).unwrap().is_none());
+    let text = anna_text(&store);
+    assert!(text.ends_with(
+        "<!-- lax:end -->\n\n## From the page of Bo Exempel\n\nMy notes: Bo is Anna's nickname.\n"
+    ));
+    // Saved as a version of theirs.
+    let edits = store.page_edits(&anna_page(&store).id).unwrap();
+    assert_eq!(edits.len(), 1);
+    assert!(edits[0].ends_with("My notes: Bo is Anna's nickname.\n"));
+    // Lax's next update keeps it.
+    let later = episode(&mut store, at(11, 9), "Mail", "Ringde Anna.");
+    mention(&mut store, later, "Anna Example");
+    sync_rows_now(&mut store);
+    assert!(anna_text(&store).contains("My notes: Bo is Anna's nickname.\n"));
+}
+
+#[test]
+fn a_merge_into_a_name_without_a_page_gives_it_the_page() {
+    let mut store = in_database();
+    sync_rows_now(&mut store);
+    let page = anna_page(&store);
+    let before = anna_text(&store);
+    let mine = format!("{before}\nMine.\n");
+    assert!(store.set_page_text(&page.id, Some(&before), &mine).unwrap());
+
+    let anna = entity_named(&store, "Anna Example");
+    let bo = entity_named(&store, "Bo Exempel");
+    store.merge_entities(anna, bo, at(11, 14)).unwrap();
+    sync_rows_now(&mut store);
+    let moved = store.page_of(bo).unwrap().unwrap();
+    assert_eq!(moved.id, page.id);
+    assert!(
+        store
+            .page_text(&page.id)
+            .unwrap()
+            .unwrap()
+            .contains("\nMine.\n")
+    );
+}
+
+#[test]
+fn a_merge_of_a_page_with_only_a_title_adds_nothing() {
+    let mut store = in_database();
+    let bo = entity_named(&store, "Bo Exempel");
+    store.keep_entity(bo).unwrap();
+    sync_rows_now(&mut store);
+    let before = anna_text(&store);
+    let anna = entity_named(&store, "Anna Example");
+    store.merge_entities(bo, anna, at(11, 14)).unwrap();
+    assert_eq!(anna_text(&store), before);
+    assert!(store.page_edits(&anna_page(&store).id).unwrap().is_empty());
 }
 
 #[test]

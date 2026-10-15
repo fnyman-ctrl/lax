@@ -51,7 +51,8 @@ choose.
 - **Journal:** what you did, a few lines every 15 minutes or so.
 - **Memory:** the people, projects and organisations Lax has learned about. You
   can rename them, merge duplicates, keep them, forget them, or tell Lax never
-  to learn about someone. Each has a page you can edit and export (see
+  to learn about someone. When you merge, what you wrote on the merged one's
+  page moves to the other's page. Each has a page you can edit and export (see
   [Your memory pages](#your-memory-pages)). Under **About you**, add the names
   you go by and edit your own page.
 - **Captures:** everything Lax has read. Search it, forget a time or an app, or

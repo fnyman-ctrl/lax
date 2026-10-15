@@ -14,7 +14,8 @@ The first version. Everything runs on your Mac; nothing leaves it.
 - **Memory** (opt-in): the people, projects and organisations you work with,
   each with a page you edit in Lax, plus an About me page, with history. The
   pages are kept in the encrypted database (see below). Forgetting a name deletes
-  its page, after showing you what you wrote on it.
+  its page, after showing you what you wrote on it; merging two keeps what you
+  wrote on both.
 - **Ask:** a conversation about your work, answered from the journal and the
   memory, with the entries each answer is based on.
 - **Writing assistant** (opt-in): double-tap ⌥ Option (or a key you pick) in any

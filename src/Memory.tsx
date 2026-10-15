@@ -794,8 +794,8 @@ function EntityRow({
           )}
           {others.length > 0 && (
             <p className="muted hint">
-              Merging keeps the chosen name, and {entity.name} becomes one of its names. You can
-              rename it afterwards.
+              Merging keeps the chosen name, and {entity.name} becomes one of its names. What you
+              wrote on its page moves to the chosen one's page. You can rename it afterwards.
             </p>
           )}
           <p className="buttons">
