@@ -1257,6 +1257,21 @@ fn moving_in_follows_the_rules_for_missing_detached_copied_and_unknown_files() {
 }
 
 #[test]
+fn a_move_that_fails_halfway_changes_nothing() {
+    let folder = Folder::new();
+    let mut store = written_to_folder(&folder);
+    // Pages go in by path: About me first, then Anna's, which fails.
+    let about = store.about_me_page().unwrap().unwrap();
+    store.fail_text_updates_of(&anna_page(&store).id).unwrap();
+    assert!(moving::move_in(&mut store, &folder.0).is_err());
+    assert!(!store.pages_in_database().unwrap());
+    assert_eq!(store.page_text(&about.id).unwrap(), None);
+    assert!(store.moved_page_files().unwrap().is_empty());
+    // The files are untouched, and the folder round goes on as before.
+    assert!(folder.read(ANNA).starts_with("# Anna Example\n"));
+}
+
+#[test]
 fn a_page_whose_file_is_gone_moves_in_missing() {
     let folder = Folder::new();
     let mut store = written_to_folder(&folder);

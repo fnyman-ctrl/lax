@@ -674,6 +674,17 @@ impl Store {
         Ok(())
     }
 
+    /// For tests: makes setting the text of page `id` fail, as a full disk
+    /// would halfway through a move.
+    #[cfg(test)]
+    pub fn fail_text_updates_of(&self, id: &str) -> Result<()> {
+        self.conn.execute_batch(&format!(
+            "CREATE TRIGGER fail_text BEFORE UPDATE OF text ON pages WHEN new.id = '{id}'
+             BEGIN SELECT RAISE(ABORT, 'disk full'); END"
+        ))?;
+        Ok(())
+    }
+
     /// The page files moved in and not dealt with yet.
     pub fn moved_page_files(&self) -> Result<Vec<MovedFile>> {
         let mut statement = self

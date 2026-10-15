@@ -552,7 +552,12 @@ export function OldPageFiles({
             className="secondary"
             disabled={busy}
             onClick={() =>
-              invoke<MemoryStatus>("keep_old_page_files").then(onKept, () => undefined)
+              run(
+                invoke<MemoryStatus>("keep_old_page_files").then((status) => {
+                  onKept(status);
+                  return "Kept the old files. You can still delete them here.";
+                }),
+              )
             }
           >
             Keep them
