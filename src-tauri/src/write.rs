@@ -137,12 +137,57 @@ pub(crate) fn participants(window: &str) -> Vec<String> {
 const SWEDISH_WORDS: &[&str] = &[
     "och", "att", "det", "är", "för", "med", "på", "jag", "inte", "som", "en", "ett", "vi", "du",
     "har", "kan", "till", "av", "om", "den", "vill", "eller", "när", "så", "hej", "tack", "mig",
-    "min", "kunde", "skulle", "ni", "er", "vad", "vem", "hur", "gjorde", "gjort",
+    "min", "kunde", "skulle", "ni", "er", "vad", "vem", "hur", "gjorde", "gjort", "vilka",
+    "vilken", "igår", "förra", "sedan",
 ];
 const ENGLISH_WORDS: &[&str] = &[
-    "the", "and", "to", "of", "is", "for", "with", "you", "we", "your", "are", "this", "that",
-    "have", "be", "on", "in", "will", "our", "it", "at", "or", "if", "can", "hi", "thanks",
-    "could", "would", "please", "my", "me", "what", "who", "how", "did", "do", "about",
+    "the",
+    "and",
+    "to",
+    "of",
+    "is",
+    "for",
+    "with",
+    "you",
+    "we",
+    "your",
+    "are",
+    "this",
+    "that",
+    "have",
+    "be",
+    "on",
+    "in",
+    "will",
+    "our",
+    "it",
+    "at",
+    "or",
+    "if",
+    "can",
+    "hi",
+    "thanks",
+    "could",
+    "would",
+    "please",
+    "my",
+    "me",
+    "what",
+    "who",
+    "how",
+    "did",
+    "do",
+    "about",
+    "was",
+    "were",
+    "has",
+    "been",
+    "ago",
+    "when",
+    "where",
+    "which",
+    "any",
+    "yesterday",
 ];
 
 /// The language of a window's sentences, or of a question, Swedish or
@@ -158,6 +203,28 @@ pub(crate) fn window_language(window: &str) -> Option<&'static str> {
         english += en;
     }
     leading_language(swedish, english)
+}
+
+/// The language of a question to Ask, Swedish or English, if one leads by
+/// two to one with at least two hits. A question is short, so every word
+/// counts, unlike in a window, where short lines are menus.
+pub(crate) fn question_language(question: &str) -> Option<&'static str> {
+    let words: Vec<String> = question
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+    let count = |list: &[&str]| words.iter().filter(|w| list.contains(&w.as_str())).count();
+    let (swedish, english) = (count(SWEDISH_WORDS), count(ENGLISH_WORDS));
+    if swedish + english < 2 {
+        None
+    } else if english >= 2 * swedish {
+        Some("English")
+    } else if swedish >= 2 * english {
+        Some("Swedish")
+    } else {
+        None
+    }
 }
 
 /// Hits for Swedish and English in one line of at least five words; none
@@ -706,6 +773,21 @@ mod tests {
         assert!(due(None, start));
         assert!(!due(Some(start), start + Duration::from_secs(60)));
         assert!(due(Some(start), start + WAKE_AGAIN_AFTER));
+    }
+
+    #[test]
+    fn a_short_question_has_a_language_too() {
+        assert_eq!(
+            question_language("have i worked with legal aspects 2 days ago?"),
+            Some("English")
+        );
+        assert_eq!(question_language("What about Example AB?"), Some("English"));
+        assert_eq!(
+            question_language("har jag jobbat med juridik?"),
+            Some("Swedish")
+        );
+        assert_eq!(question_language("Och vad mer?"), Some("Swedish"));
+        assert_eq!(question_language("Example AB?"), None);
     }
 
     #[test]

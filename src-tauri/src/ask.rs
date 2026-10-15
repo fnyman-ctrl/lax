@@ -860,7 +860,7 @@ where
 {
     // A small model otherwise answers in the entries' language. A language
     // the question names wins.
-    let language = crate::write::window_language(question)
+    let language = crate::write::question_language(question)
         .filter(|_| !crate::write::names_a_language(question))
         .map(|language| format!("\n\nAnswer in {language}."))
         .unwrap_or_default();
@@ -2324,7 +2324,11 @@ mod tests {
         let conversation = second.content.find("The conversation so far").unwrap();
         assert!(conversation > second.content.find("Ringde Anna").unwrap());
         assert!(second.content.find("Request from the user:").unwrap() > conversation);
-        assert!(second.content.ends_with("Question: Och vad mer?"));
+        assert!(
+            second
+                .content
+                .ends_with("Question: Och vad mer?\n\nAnswer in Swedish.")
+        );
     }
 
     #[test]
