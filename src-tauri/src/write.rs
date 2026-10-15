@@ -6,13 +6,14 @@
 //! text, not the draft. Logs hold counts and timings only.
 
 use std::sync::{Mutex, PoisonError};
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
 use crate::logging::{self, ErrorKind, Field};
 use crate::models::structured::{self, Captured, StructuredError, Validate, is_invisible};
-use crate::models::{Endpoint, ModelClient, ModelTurn};
+use crate::models::{Endpoint, Locality, ModelClient, ModelTurn};
 use crate::pause::Pause;
 use crate::store::{ModelTask, Store};
 use crate::summon::{MAX_INSTRUCTION_CHARS, PANEL, Rect, Summoned};
@@ -231,6 +232,63 @@ fn request_for(instruction: &str, language: Option<&str>, selected: bool) -> Str
         }
         _ => instruction.to_string(),
     }
+}
+
+/// When the chat model was last woken for a draft.
+static WOKEN: Mutex<Option<Instant>> = Mutex::new(None);
+/// A model woken this recently is still loaded: no need to wake it again.
+const WAKE_AGAIN_AFTER: Duration = Duration::from_secs(120);
+
+/// Wakes the chat model while the user types the instruction. A local model
+/// server unloads a model it hasn't used for a while and loads it again on
+/// the next request, which takes 10 to 20 seconds; this starts that load
+/// when the salmon comes instead of when the user presses Enter. It sends
+/// the start of a draft's prompt (the rules and the user's first name,
+/// nothing read from the screen) and asks for one token, so the server also
+/// has that start ready to reuse. Only for a model on this Mac, not while
+/// paused, and at most every two minutes.
+pub fn wake_model(app: &AppHandle) {
+    let now = Instant::now();
+    {
+        let mut woken = WOKEN.lock().unwrap_or_else(PoisonError::into_inner);
+        if !due(*woken, now) {
+            return;
+        }
+        *woken = Some(now);
+    }
+    let Some(store) = app.try_state::<Mutex<Store>>() else {
+        return;
+    };
+    let (choice, own_names) = {
+        let store = store.lock().unwrap_or_else(PoisonError::into_inner);
+        let Ok(Some(choice)) = store.model_choice(ModelTask::Chat) else {
+            return;
+        };
+        (choice, store.own_names().unwrap_or_default())
+    };
+    let Ok(endpoint) = Endpoint::parse(&choice.base_url) else {
+        return;
+    };
+    if endpoint.locality() != Locality::Local {
+        return;
+    }
+    let name = name_block(&crate::memory::account_name(), &own_names);
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let Ok(client) = ModelClient::new(endpoint) else {
+            return;
+        };
+        let client = client.without_reasoning().without_retries();
+        let captured: Vec<Captured> = name.iter().map(|t| Captured(t.as_str())).collect();
+        let messages = structured::messages(TASK, SHAPE, None, &captured);
+        let woke = client.chat(&choice.model, &messages, Some(1));
+        let _ = app.state::<Pause>().unless_paused(woke).await;
+    });
+}
+
+/// Whether the model should be woken now, last woken at `last`.
+fn due(last: Option<Instant>, now: Instant) -> bool {
+    last.is_none_or(|at| now.duration_since(at) >= WAKE_AGAIN_AFTER)
 }
 
 /// The user's first name, for a draft's sign-off: from their macOS
@@ -640,6 +698,14 @@ mod tests {
             ),
             Some("English")
         );
+    }
+
+    #[test]
+    fn the_model_is_woken_at_most_every_two_minutes() {
+        let start = Instant::now();
+        assert!(due(None, start));
+        assert!(!due(Some(start), start + Duration::from_secs(60)));
+        assert!(due(Some(start), start + WAKE_AGAIN_AFTER));
     }
 
     #[test]

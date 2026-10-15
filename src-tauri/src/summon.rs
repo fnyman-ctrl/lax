@@ -622,6 +622,8 @@ fn come(app: &AppHandle, app_decision: Decision) {
         if let Some(found) = macos::locate(&app) {
             let (pid, front) = (found.call.pid, found.front.clone());
             show(&app, found.call, found.caret, found.field);
+            // Loads the model while the user types, if it was unloaded.
+            crate::write::wake_model(&app);
             // The window is read after the salmon is on its way: under the
             // same rules as capture, for the app Lax was called to (Lax's
             // own panel is in front by now). If it turns out to be a site
