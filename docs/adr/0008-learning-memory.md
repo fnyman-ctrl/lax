@@ -49,7 +49,8 @@ What is still open is how that works in practice:
   Duplicates are cheaper to fix than wrong merges: merging is one click in the
   Memory view, and adds the other names as aliases, so it sticks. Suggesting
   merges with embeddings comes later, with Stage 5's local embeddings, and stays
-  a suggestion.
+  a suggestion. ([ADR 0013](0013-tidying-the-memory.md) builds the
+  suggestions, from names rather than embeddings.)
 - **An entity earns a page.** A new entity is a *candidate* until it has been
   mentioned in episodes on at least two different days. Only then does Lax write
   its page. The user can promote a candidate early, or dismiss it.

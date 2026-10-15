@@ -23,3 +23,4 @@ chat logs.
 | [0010](0010-encrypted-database.md) | Encrypt the database with SQLCipher, keyed from the Keychain | Accepted |
 | [0011](0011-pages-in-the-database.md) | Keep the memory pages in the encrypted database | Accepted |
 | [0012](0012-app-lock.md) | Lock Lax's window with Touch ID or the login password | Accepted |
+| [0013](0013-tidying-the-memory.md) | Tidying the memory: less noise, suggested merges, projects in parts | Accepted |

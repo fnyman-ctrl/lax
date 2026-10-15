@@ -138,10 +138,15 @@ Gatekeeper warnings. A signed and notarized `.dmg` comes later.
 ## Stage 7: Release 0.2: Safe to share
 
 **Goal:** A version a few friends can use every day, and trust with their
-data. Decided with the maintainer (2026-10-15): small, no new features, and
-still built from source. Remote providers come in 0.3.
+data. Decided with the maintainer (2026-10-15): small, still built from
+source, and a memory that tidies itself, since the list of names was the
+biggest chore in the first week. Remote providers come in 0.3.
 
 - The app lock with Touch ID or the login password ([ADR 0012](adr/0012-app-lock.md), #158)
+- A memory that tidies itself ([ADR 0013](adr/0013-tidying-the-memory.md)):
+  names the user works with told from names only mentioned (#178), new names
+  that fade and a folded New list (#179), suggested merges (#180), and
+  projects in parts (#181)
 - Upgrades keep the data: a database made by each release is opened by the
   next one in CI (#170)
 - The paths for databases from before 0.1 removed: plaintext conversion,
@@ -156,7 +161,7 @@ still built from source. Remote providers come in 0.3.
 without losing anything, and no bug for 0.2 is open.
 
 Not in 0.2: the signed `.dmg` (it needs an Apple Developer account; later),
-and new features such as meetings or time tracking.
+and other new features such as meetings or time tracking.
 
 ## Stage 8: Release 0.3: Remote providers
 

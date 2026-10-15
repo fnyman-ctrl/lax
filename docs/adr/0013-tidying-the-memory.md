@@ -1,6 +1,6 @@
-# 0013. Tidying the memory: less noise, suggested merges
+# 0013. Tidying the memory: less noise, suggested merges, projects in parts
 
-- **Status:** Proposed
+- **Status:** Accepted (maintainer, 2026-10-15)
 - **Date:** 2026-10-15
 
 ## Summary
@@ -22,13 +22,16 @@ of the tidying:
    Pairs that differ only by a legal suffix ("Nyterio" and "Nyterio AB") are
    listed together, with **Merge all**.
 4. **A better merge picker:** the likely names first, and a search.
+5. **Projects in parts.** A project can be part of another ("the writing
+   assistant" in "Lax"). Lax suggests it, the user accepts, and the part is
+   shown under its project; Ask and the writing assistant read the parts'
+   pages when the project is named.
 
-Nothing is merged without the user. This builds the merge suggestions
+Nothing is merged or joined without the user. This builds the merge suggestions
 [ADR 0008](0008-learning-memory.md) promised for later, and keeps its rule
 that a wrong merge is worse than a duplicate.
 
-Deferred, with reasons below: undoing a merge, automatic merges, and
-projects that are part of other projects.
+Deferred, with reasons below: undoing a merge, and automatic merges.
 
 ## Context
 
@@ -199,6 +202,50 @@ The **Same as** list in the Change panel puts the likely names first: the
 pairs from point 3 for this entity, then names that share a word with it.
 With more than about 15 names, it can be searched.
 
+### 5. Projects in parts
+
+Some projects are neither the same nor unrelated: one belongs to the other,
+like "Lax encryption" and "the writing assistant" in "Lax", or "the LinkedIn
+series" in "Nyterio". Merging them would mix pages that should stay apart.
+
+**The relation.** A project can be **part of** one other project. One level
+only: a project that has parts can't be a part, and a part can't have parts.
+Stored as `entities.part_of` (a project's id, `ON DELETE SET NULL`), so
+forgetting the whole leaves its parts as projects of their own. People and
+organisations have no parts.
+
+**Suggesting it.** Two ways a pair of projects comes up:
+
+- the pair finder of point 3: one name contains the other ("Lax" and "Lax
+  encryption");
+- for parts named differently, two projects that are both kept or seen on
+  two days, and are named in the same entries on **two or more different
+  days**. One entry naming both is noise (point 3); the same two names
+  together on several days is how a project and its part show up.
+
+For pairs of projects the judge answers
+`{"relation": "same" | "part_of" | "neither" | "unsure", "whole": 1 | 2,
+"reason": string}`, schema-validated, with the same inputs and the same
+untrusted-reason rules as point 3. "same" becomes a merge suggestion;
+"part_of" becomes *"The writing assistant looks like part of Lax"*, with
+**Yes**, **No** and **They're the same** (which merges). The user's **No** is
+final, kept with the pair like **Not the same**; the model's "neither" and
+"unsure" are judged again under the rules of point 3.
+
+**By hand.** The Change panel of a project has **Part of** with a picker of
+the other projects, and a part has **Take out**.
+
+**Showing it.** In the Memory view, a project's parts are listed under it,
+indented. The project's page gets a line in Lax's block, *"Parts: Lax
+encryption, the writing assistant."*, and each part's block gets *"Part
+of: Lax."* (names defused, as every name in a block).
+
+**Using it.** When a question to Ask, or the text around the writing
+assistant, names a project, the pages of up to three of its parts are read
+too, the most mentioned first, within the same context budget as today.
+When it names a part, the line about its whole is enough; the whole's page
+isn't added.
+
 ### What stays
 
 - A wrong merge is worse than a duplicate: every merge is the user's click.
@@ -218,11 +265,6 @@ With more than about 15 names, it can be searched.
   suggestions are in use.
 - **Automatic merges**, even for legal suffixes. **Merge all** gives the
   same saving without a silent wrong merge, and needs no notice afterwards.
-- **Projects that are part of other projects.** A relation, a tree in the
-  Memory view, a line in Lax's block, and Ask and the writing assistant
-  following it. Much of the "similar projects" pain is the same work named
-  differently, which point 3 covers by name ("Lax" and "Lax development").
-  Decided after a week with suggestions.
 
 ## Rollout
 
@@ -235,7 +277,11 @@ Each step is its own PR, usable on its own:
    projects, with `not_same` and the re-judge rules (point 3).
 4. **Obvious pairs and Merge all** (point 3).
 5. **The merge picker** (point 4).
-6. **Docs:** USER-GUIDE, ARCHITECTURE, ADR 0008's note, CLAIMS if needed.
+6. **Projects in parts:** the relation, Part of and Take out by hand, the
+   list and the lines in the blocks (point 5).
+7. **Suggesting parts**, and Ask and the writing assistant reading them
+   (point 5).
+8. **Docs:** USER-GUIDE, ARCHITECTURE, ADR 0008's note, CLAIMS if needed.
 
 Steps 1 and 2 address the noise, the maintainer's biggest cost, and come
 first.
@@ -257,6 +303,10 @@ first.
   mentions double or 30 days.
 - Obvious pairs: each suffix; nothing left after the suffix is no pair;
   different suffixes are no obvious pair.
+- Parts: one level only (a whole can't be a part, a part can't have parts);
+  only projects; forgetting the whole leaves the parts; a pair named
+  together in one entry, or on one day, isn't suggested; on two days it is;
+  the lines in the blocks; Ask reads at most three parts' pages.
 - Live tests: the prompt's noise before and after; the judge on synthetic
   pairs that are and aren't the same.
 
@@ -270,6 +320,8 @@ first.
   folded, and can be kept; the measurements guard against it too.
 - A name seen once that the user wanted leaves after two weeks unless they
   keep it.
+- Projects get one level of structure, a column, and a little more for Ask
+  and the writing assistant to read when a project with parts is named.
 
 ## Alternatives considered
 
@@ -300,4 +352,4 @@ first.
    not the journal entries that named it (see point 2).
 2. **Names only mentioned:** **kept, folded under New**, rather than dropped
    (point 1 says how).
-3. **"Part of" for projects:** to be answered.
+3. **"Part of" for projects:** **in 0.2** (point 5).
