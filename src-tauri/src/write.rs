@@ -152,19 +152,59 @@ const ENGLISH_WORDS: &[&str] = &[
 pub(crate) fn window_language(window: &str) -> Option<&'static str> {
     let (mut swedish, mut english) = (0usize, 0usize);
     for line in window.lines() {
-        let words: Vec<String> = line
-            .split(|c: char| !c.is_alphanumeric())
-            .filter(|w| !w.is_empty())
-            .map(str::to_lowercase)
-            .collect();
-        if words.len() < 5 {
-            continue;
-        }
-        for word in &words {
-            swedish += usize::from(SWEDISH_WORDS.contains(&word.as_str()));
-            english += usize::from(ENGLISH_WORDS.contains(&word.as_str()));
+        let (sv, en) = language_hits(line);
+        swedish += sv;
+        english += en;
+    }
+    leading_language(swedish, english)
+}
+
+/// Hits for Swedish and English in one line of at least five words; none
+/// for a shorter one.
+fn language_hits(line: &str) -> (usize, usize) {
+    let words: Vec<String> = line
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect();
+    if words.len() < 5 {
+        return (0, 0);
+    }
+    let count = |list: &[&str]| words.iter().filter(|w| list.contains(&w.as_str())).count();
+    (count(SWEDISH_WORDS), count(ENGLISH_WORDS))
+}
+
+/// Hits enough to decide from the text nearest the field alone, from at
+/// least two lines, so one interface line beside the field can't decide.
+const NEAREST_HITS: usize = 6;
+
+/// The language of the message the user is answering: the sentences right
+/// before the field (found by the instruction in the window, otherwise the
+/// window's end), read backwards until there is enough to tell. Other
+/// parts of a page can be in another language, such as a messaging site's
+/// list of other conversations. If the nearest sentences don't decide it,
+/// the whole window does.
+pub(crate) fn reply_language(window: &str, instruction: &str) -> Option<&'static str> {
+    let first = instruction.lines().next().unwrap_or_default().trim();
+    let before = match window.rfind(first) {
+        Some(at) if first.chars().count() >= 3 => &window[..at],
+        _ => window,
+    };
+    let (mut swedish, mut english, mut lines) = (0usize, 0usize, 0usize);
+    for line in before.lines().rev() {
+        let (sv, en) = language_hits(line);
+        swedish += sv;
+        english += en;
+        lines += usize::from(sv + en > 0);
+        if swedish + english >= NEAREST_HITS && lines >= 2 {
+            break;
         }
     }
+    leading_language(swedish, english).or_else(|| window_language(window))
+}
+
+/// Swedish or English if one leads by two to one, with at least four hits.
+fn leading_language(swedish: usize, english: usize) -> Option<&'static str> {
     if swedish + english < 4 {
         None
     } else if english >= 2 * swedish {
@@ -329,11 +369,11 @@ pub async fn write_draft(app: AppHandle, instruction: String) -> Result<Draft, S
     // message rather than a webmail's menus or the request's language.
     // The language to write in: the selection's when text is selected,
     // otherwise the window's.
-    let language = call
-        .selection
-        .as_deref()
-        .or(call.context.as_deref())
-        .and_then(window_language);
+    let language = match (&call.selection, &call.context) {
+        (Some(selection), _) => window_language(selection),
+        (None, Some(window)) => reply_language(window, &call.instruction),
+        (None, None) => None,
+    };
     // First, as it rarely changes: the user's name, for a sign-off. A
     // selection is changed in place and never signed.
     let name =
@@ -551,6 +591,55 @@ mod tests {
             Some("The user's first name: Annie")
         );
         assert_eq!(name_block(" ", &[]), None);
+    }
+
+    #[test]
+    fn a_reply_follows_the_message_next_to_the_field() {
+        // A messaging page: other conversations in Swedish, the thread
+        // being answered in English, then the field with a Swedish
+        // instruction.
+        let page = "Messaging\n\
+            Anna Example · Tack för senast, vi hörs nästa vecka om offerten och priset\n\
+            Bo Example · Hej! Kan du skicka underlaget till mig innan fredag så kollar jag\n\
+            Karin Example · Jag har pratat med styrelsen och de är positiva till förslaget\n\
+            Sam Example\n\
+            Want me to close the loop here or leave the trial running for when you get to it?\n\
+            Closing it, no stress. The trial stays on your side, so ping me when you are ready.\n\
+            svara att jag inte är intresserad\n\
+            About\nPrivacy & Terms";
+        // The whole page doesn't tell, so the draft would follow the
+        // Swedish instruction.
+        assert_ne!(window_language(page), Some("English"));
+        assert_eq!(
+            reply_language(page, "svara att jag inte är intresserad"),
+            Some("English")
+        );
+        // An instruction typed in the panel isn't in the field or the
+        // window: the window's end is nearest the field.
+        let empty_field = page.replace("svara att jag inte är intresserad\n", "");
+        assert_eq!(reply_language(&empty_field, ""), Some("English"));
+        // A Swedish thread stays Swedish.
+        let swedish = "Hej! Vi har tittat på förslaget och det ser bra ut för oss.\n\
+            Kan du skicka rapporten till mig innan fredag så kollar jag den.\n\
+            svara att det går bra";
+        assert_eq!(
+            reply_language(swedish, "svara att det går bra"),
+            Some("Swedish")
+        );
+        // One interface line beside the field doesn't decide alone.
+        let hint = "We are opening our new store in Stockholm, and you are invited to the launch.\n\
+            The date is Tuesday 20 October, and we will write again on Saturday.\n\
+            Klicka här för att svara eller för att vidarebefordra det till någon\n\
+            svara att vi kommer";
+        assert_eq!(reply_language(hint, "svara att vi kommer"), Some("English"));
+        // Nothing near the field to go by: the whole window decides.
+        assert_eq!(
+            reply_language(
+                "Hi Sam, could we go through the design tomorrow at 10?\nOk",
+                "Ok"
+            ),
+            Some("English")
+        );
     }
 
     #[test]
