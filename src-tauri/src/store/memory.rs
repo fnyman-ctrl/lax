@@ -579,6 +579,11 @@ fn carry_page(
                 "INSERT INTO page_edits (page_id, saved_at, text) VALUES (?1, ?2, ?3)",
                 params![into_page, now.timestamp_millis(), text],
             )?;
+            tx.execute(
+                "DELETE FROM page_edits WHERE page_id = ?1 AND id NOT IN
+                 (SELECT id FROM page_edits WHERE page_id = ?1 ORDER BY id DESC LIMIT ?2)",
+                params![into_page, super::pages::USER_EDITS_KEPT],
+            )?;
         }
     }
     Ok(())
