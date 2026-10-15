@@ -11,8 +11,8 @@ named a little differently in different entries. This ADR makes Lax do most
 of the tidying:
 
 1. **Less noise at the source.** The model says, for each name, whether the
-   user deals with it or it was only mentioned, and only the first kind is
-   learned.
+   user deals with it or it was only mentioned. Only the first kind earns a
+   page; names only mentioned wait, folded, under New.
 2. **New names fade, and don't ask for attention.** A name seen on one day
    that doesn't come back leaves by itself. The New list is folded away and
    sorted by how often a name is seen.
@@ -83,9 +83,13 @@ Its findings are reflected below.
   companies in the news, names on a page the user only looked at, topics,
   articles, documents and one-off tasks.
 
-Only `works_with` names are recorded. A small model classifies better than
-it leaves things out, and the flag lets the threshold be tuned later without
-a new prompt. The shape is schema-validated as today, with `deny_unknown_fields`
+Both kinds are recorded, and each mention keeps its flag. Only `works_with`
+mentions count toward a page: a name earns one when it is seen as
+`works_with` on two days, as today. A name only ever `mentioned` stays new,
+in its own folded group under New (*"Only mentioned"*), can be kept or
+merged like any other, and fades like any other new name. A small model
+classifies better than it leaves things out, and keeping both lets the
+threshold be tuned later without a new prompt. The shape is schema-validated as today, with `deny_unknown_fields`
 and the same limits on names.
 
 Measured before it ships:
@@ -103,7 +107,7 @@ It ships only if it cuts the noise without losing the names that matter.
 
 **Fading.** A candidate fades when all of these hold:
 
-- it is not kept, and was seen on fewer than two days;
+- it is not kept, and was seen as `works_with` on fewer than two days;
 - it has **no page** (a name whose episodes were forgotten can drop under
   two days and still have one; it doesn't fade);
 - it hasn't been mentioned for **14 days**, or **28 days** if it was
@@ -118,7 +122,13 @@ It is deleted through the same path as a forget (mentions, aliases, the
 
 **The New list.** Folded by default, as *"Lax is watching 23 new names. They
 get a page when they come back on another day, and leave after two weeks if
-they don't."* Opened, it lists them by mentions, most first.
+they don't."* Opened, it lists them by mentions, most first, with the names
+only mentioned in a group of their own, folded too.
+
+**What fading removes.** The name in the memory: the entity, its names and
+which entries mention it. The journal entries themselves stay, so Ask and
+search still find the text; only the memory's link from the name to them
+goes. A name the user wants to keep, they keep.
 
 ### 3. Merge suggestions
 
@@ -232,7 +242,8 @@ first.
 
 ## Tests
 
-- Involvement: `mentioned` names are not recorded; a malformed flag fails
+- Involvement: `mentioned` names are recorded but never earn a page, and
+  are listed in their own group; a malformed flag fails
   validation; the old shape fails validation.
 - Fading: a candidate past its days goes, with its mentions and `not_same`
   rows; a kept one, one seen on two days, one with a page, or one seen again
@@ -255,8 +266,8 @@ first.
 - More model calls in the background: a few pair judgments per round, only
   when idle and on power.
 - A new table (`not_same`) and the model's verdicts with their dates.
-- The involvement flag may drop a name the user cares about. The measurements
-  guard against it, and the threshold can be moved.
+- A name the user cares about may be flagged `mentioned`. It is still listed,
+  folded, and can be kept; the measurements guard against it too.
 - A name seen once that the user wanted leaves after two weeks unless they
   keep it.
 
@@ -282,11 +293,11 @@ first.
 - **Topics as a fourth kind.** Topics are where most of the noise comes
   from; a kind of their own would grow the list, not shrink it.
 
-## Open questions for the maintainer
+## Maintainer's answers (2026-10-15)
 
 1. **Fading after 14 days** (28 for names seen 3 times or more), counted
-   from the newest entry: right?
-2. **The involvement flag** drops names that were only mentioned. Fine, or
-   keep them, folded, under New?
-3. **"Part of" for projects** after a week with suggestions, rather than in
-   0.2?
+   from the newest entry: **yes**. Fading removes the name from the memory,
+   not the journal entries that named it (see point 2).
+2. **Names only mentioned:** **kept, folded under New**, rather than dropped
+   (point 1 says how).
+3. **"Part of" for projects:** to be answered.
