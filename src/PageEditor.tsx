@@ -15,7 +15,9 @@ type Saved = { saved: boolean; current: string | null };
  */
 export function PageEditor({ entity, onClose }: { entity: number | null; onClose: () => void }) {
   const [text, setText] = useState<string | null>(null);
-  const [conflict, setConflict] = useState<string | null>(null);
+  // What the page holds now when a save found it changed; `undefined` when
+  // the page is gone.
+  const [conflict, setConflict] = useState<string | null | undefined>(null);
   const [error, setError] = useState<string | null>(null);
   const [state, setState] = useState<"saved" | "saving" | "unsaved">("saved");
   // What the page held when last loaded or saved: a save goes only over it.
@@ -44,7 +46,7 @@ export function PageEditor({ entity, onClose }: { entity: number | null; onClose
           loaded.current = value;
           setState(latest.current === value ? "saved" : "unsaved");
         } else {
-          setConflict(result.current);
+          setConflict(result.current ?? undefined);
           setState("unsaved");
         }
       } catch (e) {
@@ -70,7 +72,7 @@ export function PageEditor({ entity, onClose }: { entity: number | null; onClose
     return () => {
       closed = true;
       // Whatever is still unsaved is saved before Lax may write the page.
-      void save().finally(() => invoke("close_page"));
+      void save().finally(() => invoke("close_page", { entity }));
     };
   }, [entity, save]);
 
@@ -85,16 +87,20 @@ export function PageEditor({ entity, onClose }: { entity: number | null; onClose
 
   const keepMine = () => {
     // The page now holds `conflict`; save the user's text over it.
-    loaded.current = conflict;
-    setConflict(null);
-    void save();
+    if (typeof conflict === "string") {
+      loaded.current = conflict;
+      setConflict(null);
+      void save();
+    }
   };
   const usePages = () => {
-    loaded.current = conflict;
-    latest.current = conflict;
-    setText(conflict);
-    setConflict(null);
-    setState("saved");
+    if (typeof conflict === "string") {
+      loaded.current = conflict;
+      latest.current = conflict;
+      setText(conflict);
+      setConflict(null);
+      setState("saved");
+    }
   };
 
   if (error && text === null) {
@@ -124,7 +130,16 @@ export function PageEditor({ entity, onClose }: { entity: number | null; onClose
         Everything else is yours, and Lax never changes it. A line you change between them becomes
         yours too. {state === "saving" ? "Saving…" : state === "saved" ? "Saved." : ""}
       </p>
-      {conflict !== null && (
+      {conflict === undefined && (
+        <section className="card confirm" role="alert">
+          <h3>The page is gone</h3>
+          <p>
+            Its name was forgotten meanwhile, and the page with it. Your text is still in the box
+            above: copy it if you want to keep it.
+          </p>
+        </section>
+      )}
+      {typeof conflict === "string" && (
         <section className="card confirm" role="alertdialog" aria-label="The page changed">
           <h3>The page changed while you were editing</h3>
           <p>Your text is still in the box above. The page now says:</p>

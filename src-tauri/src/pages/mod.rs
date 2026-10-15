@@ -43,21 +43,39 @@ const LATEST: usize = 10;
 /// bigger.
 pub const MAX_PAGE_BYTES: u64 = 1 << 20;
 
-/// The page open in the Memory view's editor, by id. Lax doesn't write it
-/// while it is open, so a save rarely finds it changed (ADR 0011).
+/// The pages open in the Memory view's editors, by id, with how many
+/// editors have each open. Lax doesn't write a page while it is open, so a
+/// save rarely finds it changed (ADR 0011).
 #[derive(Default)]
-pub struct OpenPage(Mutex<Option<String>>);
+pub struct OpenPages(Mutex<HashMap<String, usize>>);
 
-impl OpenPage {
-    pub fn set(&self, id: Option<String>) {
-        *self.0.lock().unwrap_or_else(PoisonError::into_inner) = id;
+impl OpenPages {
+    pub fn open(&self, id: &str) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(id.to_string())
+            .or_default() += 1;
     }
 
-    fn get(&self) -> Option<String> {
+    pub fn close(&self, id: &str) {
+        let mut open = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(count) = open.get_mut(id) {
+            *count -= 1;
+            if *count == 0 {
+                open.remove(id);
+            }
+        }
+    }
+
+    fn ids(&self) -> HashSet<String> {
         self.0
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+            .keys()
+            .cloned()
+            .collect()
     }
 }
 /// How deep below the folder pages are looked for.
@@ -503,14 +521,14 @@ where
         dir,
         on_disk: scan(dir, cache),
     };
-    sync_shelf(store, &shelf, None, now, tz)
+    sync_shelf(store, &shelf, &HashSet::new(), now, tz)
 }
 
-/// Brings the pages in the database up to date, except the page `open` in
-/// the editor. See [`sync_shelf`].
+/// Brings the pages in the database up to date, except the pages `open`
+/// in an editor. See [`sync_shelf`].
 pub fn sync_rows<Tz: TimeZone>(
     store: &mut Store,
-    open: Option<&str>,
+    open: &HashSet<String>,
     now: DateTime<Utc>,
     tz: &Tz,
 ) -> crate::store::Result<Synced>
@@ -526,7 +544,7 @@ where
 fn sync_shelf<Tz: TimeZone>(
     store: &mut Store,
     shelf: &Shelf,
-    open: Option<&str>,
+    open: &HashSet<String>,
     now: DateTime<Utc>,
     tz: &Tz,
 ) -> crate::store::Result<Synced>
@@ -541,7 +559,7 @@ where
     for page in store.pages()? {
         // About me is done below; the page open in the editor waits until
         // it is closed. A forgotten entity's page waits too.
-        if page.kind == PageKind::AboutMe || open == Some(page.id.as_str()) {
+        if page.kind == PageKind::AboutMe || open.contains(&page.id) {
             continue;
         }
         let found = shelf.find(store, &page)?;
@@ -825,7 +843,7 @@ fn lately(store: &Store, now: DateTime<Utc>) -> crate::store::Result<AboutMe> {
 fn about_me(
     store: &mut Store,
     shelf: &Shelf,
-    open: Option<&str>,
+    open: &HashSet<String>,
     now: DateTime<Utc>,
     done: &mut Synced,
 ) -> crate::store::Result<()> {
@@ -848,7 +866,7 @@ fn about_me(
                 done.created += 1;
             }
         }
-        Some(page) if open == Some(page.id.as_str()) => {}
+        Some(page) if open.contains(&page.id) => {}
         Some(page) => {
             let found = shelf.find(store, &page)?;
             refresh(
@@ -894,8 +912,11 @@ pub fn sync_now(app: &AppHandle) {
     let mut store = store.lock().unwrap_or_else(PoisonError::into_inner);
     // Moved into the database: no folder to prepare.
     if store.pages_in_database().unwrap_or(false) {
-        let open = app.try_state::<OpenPage>().and_then(|open| open.get());
-        if sync_rows(&mut store, open.as_deref(), Utc::now(), &Local).is_err() {
+        let open = app
+            .try_state::<OpenPages>()
+            .map(|open| open.ids())
+            .unwrap_or_default();
+        if sync_rows(&mut store, &open, Utc::now(), &Local).is_err() {
             logging::warn("pages.failed", &[Field::Error(ErrorKind::Database)]);
         }
         return;

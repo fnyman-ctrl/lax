@@ -571,7 +571,7 @@ fn page_to_edit(store: &Store, entity: Option<i64>) -> Result<Page, String> {
 }
 
 /// A page's whole text, for the editor. While it is open, Lax doesn't
-/// write it (`pages::OpenPage`). Shown as text, never as HTML: Lax's block
+/// write it (`pages::OpenPages`). Shown as text, never as HTML: Lax's block
 /// is written from captured text.
 #[tauri::command(async)]
 pub fn page_text(app: AppHandle, entity: Option<i64>) -> Result<String, String> {
@@ -583,7 +583,7 @@ pub fn page_text(app: AppHandle, entity: Option<i64>) -> Result<String, String> 
             .ok_or("This page has no text. Recreate it first.")?;
         Ok((page.id, text))
     })?;
-    app.state::<pages::OpenPage>().set(Some(id));
+    app.state::<pages::OpenPages>().open(&id);
     Ok(text)
 }
 
@@ -630,11 +630,17 @@ pub fn save_page(
     })
 }
 
-/// The editor closed: Lax may write the page again, and brings it up to
-/// date now, taking in what the user changed in its block.
+/// An editor closed the page of `entity` (`None`: About me): Lax may
+/// write it again once no other editor has it open, and brings the pages
+/// up to date now, taking in what the user changed in its block.
 #[tauri::command(async)]
-pub fn close_page(app: AppHandle) {
-    app.state::<pages::OpenPage>().set(None);
+pub fn close_page(app: AppHandle, entity: Option<i64>) {
+    let id = command(&app, |store| {
+        page_to_edit(store, entity).map(|page| page.id)
+    });
+    if let Ok(id) = id {
+        app.state::<pages::OpenPages>().close(&id);
+    }
     pages::sync_now(&app);
 }
 

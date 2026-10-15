@@ -70,5 +70,16 @@ describe("the page editor", () => {
     await act(async () => view.unmount());
     const order = mocked.mock.calls.map(([command]) => command);
     expect(order.slice(-2)).toEqual(["save_page", "close_page"]);
+    expect(mocked).toHaveBeenLastCalledWith("close_page", { entity: 7 });
+  });
+
+  test("a page that is gone says so, and the user's text stays", async () => {
+    await open(() => ({ saved: false, current: null }));
+    await type(`${PAGE}Mine.\n`);
+    expect(screen.getByText("The page is gone")).toBeTruthy();
+    expect((screen.getByRole("textbox", { name: "Page text" }) as HTMLTextAreaElement).value).toBe(
+      `${PAGE}Mine.\n`,
+    );
+    expect(screen.queryByRole("button", { name: "Use the page's text" })).toBeNull();
   });
 });

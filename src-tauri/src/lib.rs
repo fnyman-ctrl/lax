@@ -48,7 +48,7 @@ pub fn run() {
         .manage(exclusions::Current::default())
         .manage(summon::Summoned::default())
         .manage(database::Database::default())
-        .manage(pages::OpenPage::default())
+        .manage(pages::OpenPages::default())
         .invoke_handler(tauri::generate_handler![
             accessibility::accessibility_status,
             accessibility::open_accessibility_settings,

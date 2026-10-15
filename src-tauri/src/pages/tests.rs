@@ -938,7 +938,7 @@ fn in_database() -> Store {
 }
 
 fn sync_rows_now(store: &mut Store) -> Synced {
-    sync_rows(store, None, at(11, 13), &stockholm()).unwrap()
+    sync_rows(store, &HashSet::new(), at(11, 13), &stockholm()).unwrap()
 }
 
 fn anna_text(store: &Store) -> String {
@@ -1132,7 +1132,10 @@ fn the_editor_saves_only_over_what_it_loaded_and_keeps_versions() {
             .save_page_text(&page.id, &one, &two, false, at(11, 14))
             .unwrap()
     );
-    assert_eq!(store.page_edits(&page.id).unwrap(), std::slice::from_ref(&two));
+    assert_eq!(
+        store.page_edits(&page.id).unwrap(),
+        std::slice::from_ref(&two)
+    );
     // A save over text that changed meanwhile saves nothing.
     assert!(
         !store
@@ -1171,7 +1174,8 @@ fn a_page_open_in_the_editor_is_left_alone() {
     let before = anna_text(&store);
     let later = episode(&mut store, at(11, 9), "Mail", "Ringde Anna.");
     mention(&mut store, later, "Anna Example");
-    let done = sync_rows(&mut store, Some(&page.id), at(11, 13), &stockholm()).unwrap();
+    let open = HashSet::from([page.id.clone()]);
+    let done = sync_rows(&mut store, &open, at(11, 13), &stockholm()).unwrap();
     assert_eq!(done.written, 0);
     assert_eq!(anna_text(&store), before);
     // Closed: brought up to date.
