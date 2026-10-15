@@ -76,11 +76,24 @@ By hand:
    away, gone (nothing read) and on battery, and the slowest round. A `slowest` near one second or
    a `largest_window_elements` at 3,000 point to a window that hits the limits.
 
-## Not yet measured
+## Measured
 
-The budget hasn't been checked against a full workday yet. Until it has, treat
-it as a target, not a promise.
+**2026-10-15, the maintainer's MacBook, a normal workday** (`npm run perf`
+after 10.6 hours, with the journal, memory, Ask and the writing assistant on):
 
-Ideas if it isn't met: watch for accessibility notifications instead of
+| Resource | Measured | Budget |
+|---|---|---|
+| CPU | 0.13% of one core, average | Under 2% |
+| Memory | 39 MB | Under 150 MB |
+| Disk | 25 MB data folder after a week | Grows until retention |
+| Energy | Not yet read from Activity Monitor | "Low" |
+
+Capture over the week (2026-10-10 to 10-15): up to about 2,900 reads and 670
+stored captures a day, with most rounds while away reading nothing. The
+slowest round was about one second and the largest window 3,000 elements on
+most days: some windows hit the limits above, which is what the limits are
+for. Nothing suggests the reading itself needs to change yet.
+
+Ideas if a later measurement doesn't meet it: watch for accessibility notifications instead of
 reading on a timer, read only the part of a window that changed, and skip
 reading entirely while the screen is locked or asleep.
