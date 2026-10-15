@@ -251,4 +251,21 @@ describe("Ask", () => {
     expect(points).toEqual(["<b>bold</b>", "**two**"]);
     expect(document.querySelector(".answer b")).toBeNull();
   });
+
+  test("a new conversation is in plain sight, and suggested when it gets long", async () => {
+    render(<Ask onShowJournal={() => {}} />);
+    expect(screen.queryByRole("button", { name: "New conversation" })).toBeNull();
+    for (let i = 1; i <= 4; i++) {
+      const question = pending();
+      await act(async () => ask(`Question ${i}?`));
+      await act(async () => question.answer(answer(`Answer ${i}.`)));
+      const tip = screen.queryByText(/keeps at most the last 4 questions/);
+      expect(tip === null).toBe(i < 4);
+    }
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "New conversation" })),
+    );
+    expect(screen.queryByText("Answer 1.")).toBeNull();
+    expect(screen.queryByRole("button", { name: "New conversation" })).toBeNull();
+  });
 });

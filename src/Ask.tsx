@@ -25,6 +25,10 @@ const EXAMPLES = [
   "What did I work on last week?",
 ];
 
+/** The earlier questions that go along with a follow-up; must match
+ * MAX_EARLIER_TURNS in src-tauri/src/ask.rs. */
+const REMEMBERED_TURNS = 4;
+
 /**
  * Ask your memory: a conversation with the model on this Mac about your
  * journal and memory. Follow-up questions go with the turns before them.
@@ -262,36 +266,48 @@ export function Ask({ onShowJournal }: { onShowJournal: () => void }) {
           ask(question);
         }}
       >
-        <textarea
-          ref={input}
-          value={question}
-          rows={1}
-          maxLength={1000}
-          placeholder={turns.length > 0 ? "Ask on…" : "Ask about your days, people and projects"}
-          aria-label="Question"
-          onChange={(e) => setQuestion(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-              e.preventDefault();
-              ask(question);
-            }
-          }}
-        />
-        <button type="submit" disabled={asking !== null || question.trim() === ""}>
-          Ask
-        </button>
+        {turns.length > 0 && (
+          <div className="conversation">
+            {turns.length >= REMEMBERED_TURNS && (
+              <p className="muted">
+                Lax keeps at most the last {REMEMBERED_TURNS} questions in mind. For a new subject,
+                start a new conversation.
+              </p>
+            )}
+            <button
+              type="button"
+              className="secondary"
+              onClick={startOver}
+              disabled={asking !== null}
+            >
+              New conversation
+            </button>
+          </div>
+        )}
+        <div className="ask-row">
+          <textarea
+            ref={input}
+            value={question}
+            rows={1}
+            maxLength={1000}
+            placeholder={turns.length > 0 ? "Ask on…" : "Ask about your days, people and projects"}
+            aria-label="Question"
+            onChange={(e) => setQuestion(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                ask(question);
+              }
+            }}
+          />
+          <button type="submit" disabled={asking !== null || question.trim() === ""}>
+            Ask
+          </button>
+        </div>
       </form>
       <p className="muted hint">
         Lax answers from the journal and memory, with the model on this Mac. Nothing leaves this
         Mac, and nothing you ask is saved.
-        {turns.length > 0 && (
-          <>
-            {" "}
-            <button type="button" className="link" onClick={startOver} disabled={asking !== null}>
-              New conversation
-            </button>
-          </>
-        )}
       </p>
     </section>
   );

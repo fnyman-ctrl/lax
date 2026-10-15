@@ -891,7 +891,9 @@ pub struct Earlier {
     answer: String,
 }
 
-/// At most this many earlier turns, and characters of them, go along.
+/// At most this many earlier turns, and characters of them, go along. The
+/// window says so after as many questions (`REMEMBERED_TURNS` in
+/// src/Ask.tsx), and offers a new conversation.
 const MAX_EARLIER_TURNS: usize = 4;
 const MAX_EARLIER_CHARS: usize = 3000;
 
