@@ -815,7 +815,7 @@ pub fn rename_entity(app: AppHandle, id: i64, name: String) -> Result<(), String
 pub fn merge_entities(app: AppHandle, from: i64, into: i64) -> Result<(), String> {
     command(&app, |store| {
         match store
-            .merge_entities(from, into)
+            .merge_entities(from, into, Utc::now())
             .map_err(|_| "Lax couldn't merge them.".to_string())?
         {
             Merged::Done => Ok(()),

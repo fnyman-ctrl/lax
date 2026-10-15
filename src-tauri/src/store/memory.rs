@@ -382,7 +382,7 @@ impl Store {
     /// Merges entity `from` into `into`: its names become `into`'s other
     /// names, its mentions become `into`'s, and `from` is gone. Kept if
     /// either was.
-    pub fn merge_entities(&mut self, from: i64, into: i64) -> Result<Merged> {
+    pub fn merge_entities(&mut self, from: i64, into: i64, now: DateTime<Utc>) -> Result<Merged> {
         if from == into {
             return Ok(Merged::NotFound);
         }
@@ -413,6 +413,7 @@ impl Store {
              WHERE id = ?2",
             [from, into],
         )?;
+        carry_page(&tx, from, into, now)?;
         tx.execute("DELETE FROM entities WHERE id = ?1", [from])?;
         tx.commit()?;
         Ok(Merged::Done)
@@ -506,6 +507,86 @@ impl Store {
         }
         Ok(forgotten)
     }
+}
+
+/// What the user wrote on the page of `from`, kept when `from` is merged
+/// into `into`: the merged entity is deleted, and its page would go with
+/// it as a forgotten one's does. If `into` has no page with text, `from`'s
+/// page becomes its page, whole. Otherwise the user's text on it (outside
+/// Lax's block, the title left out) is added at the end of `into`'s page,
+/// under a heading, and saved as a version of theirs.
+fn carry_page(
+    tx: &rusqlite::Transaction<'_>,
+    from: i64,
+    into: i64,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    let page_of = |entity: i64| {
+        tx.query_row(
+            "SELECT id, text FROM pages WHERE entity_id = ?1",
+            [entity],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .optional()
+    };
+    let Some((from_page, from_text)) = page_of(from)? else {
+        return Ok(());
+    };
+    let move_page = |tx: &rusqlite::Transaction<'_>| -> Result<()> {
+        tx.execute(
+            "UPDATE pages SET entity_id = ?2 WHERE id = ?1",
+            params![from_page, into],
+        )?;
+        Ok(())
+    };
+    match page_of(into)? {
+        None => move_page(tx)?,
+        // Pages still in files: the file keeps the user's text when Lax
+        // takes its block out.
+        Some(_) if from_text.is_none() => {}
+        // A page without text has nothing of the user's on it.
+        Some((into_page, None)) => {
+            tx.execute("DELETE FROM pages WHERE id = ?1", [&into_page])?;
+            move_page(tx)?;
+        }
+        Some((into_page, Some(into_text))) => {
+            let from_text = from_text.unwrap_or_default();
+            let notes =
+                crate::pages::block::without_block(&from_text, &from_page).unwrap_or(from_text);
+            if crate::pages::block::only_a_title(&notes) {
+                return Ok(());
+            }
+            let mut lines = notes.trim().lines().peekable();
+            if lines.peek().is_some_and(|line| line.starts_with("# ")) {
+                lines.next();
+            }
+            let notes = lines.collect::<Vec<_>>().join("\n");
+            let name: String =
+                tx.query_row("SELECT name FROM entities WHERE id = ?1", [from], |row| {
+                    row.get(0)
+                })?;
+            let heading = crate::pages::block::defuse(&name.replace(['\n', '\r'], " "));
+            let text = format!(
+                "{}\n\n## From the page of {heading}\n\n{}\n",
+                into_text.trim_end(),
+                crate::pages::block::defuse(notes.trim())
+            );
+            tx.execute(
+                "UPDATE pages SET text = ?2 WHERE id = ?1",
+                params![into_page, text],
+            )?;
+            tx.execute(
+                "INSERT INTO page_edits (page_id, saved_at, text) VALUES (?1, ?2, ?3)",
+                params![into_page, now.timestamp_millis(), text],
+            )?;
+            tx.execute(
+                "DELETE FROM page_edits WHERE page_id = ?1 AND id NOT IN
+                 (SELECT id FROM page_edits WHERE page_id = ?1 ORDER BY id DESC LIMIT ?2)",
+                params![into_page, super::pages::USER_EDITS_KEPT],
+            )?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -952,7 +1033,10 @@ mod tests {
         let short = id_of(&store, "Anna");
         store.keep_entity(short).unwrap();
 
-        assert_eq!(store.merge_entities(short, full).unwrap(), Merged::Done);
+        assert_eq!(
+            store.merge_entities(short, full, at(50)).unwrap(),
+            Merged::Done
+        );
         let entities = store.entities().unwrap();
         assert_eq!(entities.len(), 1);
         let anna = &entities[0];
@@ -969,8 +1053,14 @@ mod tests {
             .record_mentions(third, &[person("anna")], at(40))
             .unwrap();
         assert_eq!(store.entities().unwrap()[0].mentions, 3);
-        assert_eq!(store.merge_entities(short, full).unwrap(), Merged::NotFound);
-        assert_eq!(store.merge_entities(full, full).unwrap(), Merged::NotFound);
+        assert_eq!(
+            store.merge_entities(short, full, at(50)).unwrap(),
+            Merged::NotFound
+        );
+        assert_eq!(
+            store.merge_entities(full, full, at(50)).unwrap(),
+            Merged::NotFound
+        );
     }
 
     #[test]
@@ -990,7 +1080,7 @@ mod tests {
         let anna = id_of(&store, "Anna Example");
         let project = id_of(&store, "Q3 lansering");
         assert_eq!(
-            store.merge_entities(anna, project).unwrap(),
+            store.merge_entities(anna, project, at(50)).unwrap(),
             Merged::DifferentKinds
         );
         assert_eq!(store.entities().unwrap().len(), 2);
