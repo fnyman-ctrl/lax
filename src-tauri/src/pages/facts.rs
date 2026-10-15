@@ -243,7 +243,7 @@ fn gather(store: &Store, dir: &std::path::Path) -> Vec<Work> {
             if entries.is_empty() {
                 continue;
             }
-            let notes = notes_of(dir, page);
+            let notes = notes_of(store, dir, page);
             let rejected = store.rejected_facts(&page.id)?;
             let note_lines = note_lines(&notes);
             let current = page.facts.clone().unwrap_or_default();
@@ -282,7 +282,7 @@ fn gather(store: &Store, dir: &std::path::Path) -> Vec<Work> {
             let mut entries = store.episodes(None, ABOUT_ME_ENTRIES)?;
             entries.reverse();
             if !entries.is_empty() {
-                let notes = notes_of(dir, &page);
+                let notes = notes_of(store, dir, &page);
                 let rejected = store.rejected_facts(&page.id)?;
                 let current = page.facts.clone().unwrap_or_default();
                 let mut texts = vec![
@@ -308,11 +308,16 @@ fn gather(store: &Store, dir: &std::path::Path) -> Vec<Work> {
     gathered().unwrap_or_default()
 }
 
-/// The user's notes on a page: everything outside Lax's block.
-fn notes_of(dir: &std::path::Path, page: &crate::store::Page) -> String {
-    inside(dir, &page.path)
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .and_then(|text| block::without_block(&text, &page.id))
+/// The user's notes on a page: everything outside Lax's block, from the
+/// page's row once the pages are in the database (ADR 0011), until then
+/// from its file.
+fn notes_of(store: &Store, dir: &std::path::Path, page: &crate::store::Page) -> String {
+    let text = if store.pages_in_database().unwrap_or(false) {
+        store.page_text(&page.id).ok().flatten()
+    } else {
+        inside(dir, &page.path).and_then(|path| std::fs::read_to_string(path).ok())
+    };
+    text.and_then(|text| block::without_block(&text, &page.id))
         .map(|notes| notes.chars().take(MAX_NOTES_CHARS).collect::<String>())
         .unwrap_or_default()
 }

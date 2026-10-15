@@ -92,7 +92,7 @@ pub fn defuse(text: &str) -> String {
 }
 
 /// Lax's block with `content` (already defused), as it is written.
-fn block(id: &str, content: &str) -> String {
+pub fn block(id: &str, content: &str) -> String {
     let content = normalize(content);
     if content.is_empty() {
         format!("{BEGIN}{id}{BEGIN_TAIL}\n{END}")

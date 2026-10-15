@@ -53,6 +53,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0009_page_facts.sql"),
     include_str!("../migrations/0010_about_me.sql"),
     include_str!("../migrations/0011_episode_vectors.sql"),
+    include_str!("../migrations/0012_page_text.sql"),
 ];
 
 /// How long raw captures are kept unless the user chooses otherwise
@@ -1608,6 +1609,7 @@ mod tests {
         15278673770390570042, // 0009 page facts
         2814010323252384379,  // 0010 about me
         1465373273103624669,  // 0011 episode vectors
+        5724453071597441843,  // 0012 page text
     ];
 
     #[test]

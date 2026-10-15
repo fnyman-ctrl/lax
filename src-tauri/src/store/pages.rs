@@ -128,6 +128,8 @@ fn page_from_row(row: &Row) -> rusqlite::Result<Page> {
 const PAGE_COLUMNS: &str = "p.id, p.entity_id, p.path, p.state,
     (SELECT block FROM page_versions WHERE id = p.last_version), p.facts, p.kind, p.facts_at";
 
+const PAGES_IN_DATABASE_KEY: &str = "pages_in_database";
+
 /// How many of Lax's versions of a page are kept.
 pub const LAX_VERSIONS_KEPT: i64 = 20;
 
@@ -510,6 +512,46 @@ impl Store {
             )?,
         };
         Ok(())
+    }
+
+    /// Whether the pages live in the database (ADR 0011), not in files.
+    pub fn pages_in_database(&self) -> Result<bool> {
+        Ok(self.setting(PAGES_IN_DATABASE_KEY)?.as_deref() == Some("1"))
+    }
+
+    /// Records that the pages now live in the database. Set once, by the
+    /// move; never unset.
+    pub fn set_pages_in_database(&self) -> Result<()> {
+        self.set_setting(PAGES_IN_DATABASE_KEY, "1")
+    }
+
+    /// A page's whole text, if it has moved into the database.
+    pub fn page_text(&self, id: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row("SELECT text FROM pages WHERE id = ?1", [id], |row| {
+                row.get::<_, Option<String>>(0)
+            })
+            .optional()?
+            .flatten())
+    }
+
+    /// Sets a page's text to `text` if it still holds `expected` (`None`:
+    /// no text yet). `false` if it changed meanwhile, for example because
+    /// the user saved, so nothing of theirs is overwritten.
+    pub fn set_page_text(&self, id: &str, expected: Option<&str>, text: &str) -> Result<bool> {
+        let changed = self.conn.execute(
+            "UPDATE pages SET text = ?3 WHERE id = ?1 AND text IS ?2",
+            params![id, expected, text],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// The paths pages have, for naming a new one.
+    pub fn page_paths(&self) -> Result<HashSet<String>> {
+        let mut statement = self.conn.prepare("SELECT path FROM pages")?;
+        let paths = statement.query_map([], |row| row.get(0))?;
+        Ok(paths.collect::<rusqlite::Result<_>>()?)
     }
 
     /// Stops keeping track of a page and deletes its versions.

@@ -916,8 +916,192 @@ fn name_clashes_get_a_number() {
     let folder = Folder::new();
     fs::create_dir_all(folder.0.join("people")).unwrap();
     folder.put(ANNA, "someone else's");
+    let store = Store::open_in_memory().unwrap();
+    let shelf = Shelf::Folder {
+        dir: &folder.0,
+        on_disk: HashMap::new(),
+    };
     assert_eq!(
-        free_path(&folder.0, EntityKind::Person, "Anna Example"),
+        shelf
+            .new_path(&store, Some(EntityKind::Person), "Anna Example")
+            .unwrap(),
+        "people/anna-example-2.md"
+    );
+}
+
+// In the database (ADR 0011): the same rules, on the pages' rows.
+
+fn in_database() -> Store {
+    let store = sample();
+    store.set_pages_in_database().unwrap();
+    store
+}
+
+fn sync_rows_now(store: &mut Store) -> Synced {
+    sync_rows(store, at(11, 13), &stockholm()).unwrap()
+}
+
+fn anna_text(store: &Store) -> String {
+    store.page_text(&anna_page(store).id).unwrap().unwrap()
+}
+
+#[test]
+fn in_the_database_pages_are_rows() {
+    let mut store = in_database();
+    let done = sync_rows_now(&mut store);
+    assert_eq!(done.created, 2);
+    let text = anna_text(&store);
+    assert!(text.starts_with("# Anna Example\n\n<!-- lax:begin "));
+    assert!(text.contains("- 2026-10-10 14:00 (Slack): Planerade lanseringen med Anna."));
+    // The path only names the file an export would write.
+    assert_eq!(anna_page(&store).path, ANNA);
+    let about = store.about_me_page().unwrap().unwrap();
+    assert_eq!(about.path, "about-me.md");
+    assert!(
+        store
+            .page_text(&about.id)
+            .unwrap()
+            .unwrap()
+            .starts_with("# About me\n")
+    );
+    // Nothing changed: nothing written.
+    assert_eq!(sync_rows_now(&mut store), Synced::default());
+}
+
+#[test]
+fn the_users_text_on_a_row_survives_every_update() {
+    let mut store = in_database();
+    sync_rows_now(&mut store);
+    let page = anna_page(&store);
+    let before = anna_text(&store);
+    let mine = before.replace(
+        "# Anna Example\n",
+        "# Anna Example\n\nMy notes: call her on Fridays.  \n",
+    ) + "\nAnd a line at the end.\n";
+    assert!(store.set_page_text(&page.id, Some(&before), &mine).unwrap());
+
+    let later = episode(&mut store, at(11, 9), "Mail", "Ringde Anna.");
+    mention(&mut store, later, "Anna Example");
+    assert_eq!(sync_rows_now(&mut store).written, 1);
+    let text = anna_text(&store);
+    assert!(text.contains("My notes: call her on Fridays.  \n"));
+    assert!(text.ends_with("<!-- lax:end -->\n\nAnd a line at the end.\n"));
+    assert!(text.contains("Ringde Anna."));
+}
+
+#[test]
+fn an_edit_saved_while_lax_writes_is_kept() {
+    let mut store = in_database();
+    sync_rows_now(&mut store);
+    let page = anna_page(&store);
+    let read = anna_text(&store);
+    // The user saves after Lax read the page and before it writes.
+    let saved = format!("{read}\nSaved meanwhile.\n");
+    assert!(store.set_page_text(&page.id, Some(&read), &saved).unwrap());
+    assert!(!Shelf::Rows.write(&store, &page.id, &Spot::Row, &read, "Lax's text"));
+    assert_eq!(anna_text(&store), saved);
+}
+
+#[test]
+fn an_edit_to_laxs_block_on_a_row_becomes_the_users() {
+    let mut store = in_database();
+    sync_rows_now(&mut store);
+    let page = anna_page(&store);
+    let before = anna_text(&store);
+    let edited = before.replace(
+        "Mailade Anna om Q3-offerten.",
+        "Mailade Anna om Q4-offerten (rättat).",
+    );
+    store
+        .set_page_text(&page.id, Some(&before), &edited)
+        .unwrap();
+
+    let done = sync_rows_now(&mut store);
+    assert_eq!((done.adopted, done.written), (1, 1));
+    let text = anna_text(&store);
+    let (user, ours) = text.split_at(text.find("<!-- lax:begin").unwrap());
+    assert!(user.contains("Mailade Anna om Q4-offerten (rättat)."));
+    assert!(ours.contains("Mailade Anna om Q3-offerten."));
+    assert_eq!(store.page_versions(&page.id).unwrap(), (2, 1));
+    assert_eq!(sync_rows_now(&mut store), Synced::default());
+}
+
+#[test]
+fn a_fact_deleted_from_a_row_is_rejected() {
+    let mut store = in_database();
+    sync_rows_now(&mut store);
+    let page = anna_page(&store);
+    let sources: Vec<i64> = store
+        .episodes_mentioning(&[page.entity_id.unwrap()], None, 10)
+        .unwrap()
+        .iter()
+        .map(|e| e.id)
+        .collect();
+    store
+        .set_facts(
+            &page.id,
+            &facts(&["Leder Q3-lanseringen.", "Jobbar på Exempelbolaget AB."]),
+            &sources,
+            at(11, 13),
+        )
+        .unwrap();
+    sync_rows_now(&mut store);
+    let text = anna_text(&store);
+    assert!(text.contains("- Jobbar på Exempelbolaget AB.\n"));
+    let without = text.replace("- Jobbar på Exempelbolaget AB.\n", "");
+    store
+        .set_page_text(&page.id, Some(&text), &without)
+        .unwrap();
+    assert_eq!(sync_rows_now(&mut store).rejected, 1);
+    assert!(!anna_text(&store).contains("Exempelbolaget"));
+}
+
+#[test]
+fn a_forgotten_entitys_row_goes_with_the_users_text() {
+    let mut store = in_database();
+    sync_rows_now(&mut store);
+    let page = anna_page(&store);
+    let text = anna_text(&store);
+    store
+        .set_page_text(&page.id, Some(&text), &format!("{text}\nMy own note.\n"))
+        .unwrap();
+    store
+        .forget_entity(page.entity_id.unwrap(), false, at(11, 14))
+        .unwrap();
+    assert_eq!(sync_rows_now(&mut store).removed, 1);
+    assert_eq!(store.page_text(&page.id).unwrap(), None);
+    assert!(entity_pages(&store).is_empty());
+}
+
+#[test]
+fn a_row_without_markers_is_detached_and_recreated_below_the_users_text() {
+    let mut store = in_database();
+    sync_rows_now(&mut store);
+    let page = anna_page(&store);
+    let text = anna_text(&store);
+    let mine = "# Anna\n\nOnly my own words now.\n";
+    store.set_page_text(&page.id, Some(&text), mine).unwrap();
+    sync_rows_now(&mut store);
+    assert_eq!(anna_page(&store).state, PageState::Detached);
+    assert_eq!(anna_text(&store), mine);
+
+    store
+        .set_page_state(&page.id, PageState::Recreate, None)
+        .unwrap();
+    assert_eq!(sync_rows_now(&mut store).created, 1);
+    let text = anna_text(&store);
+    assert!(text.starts_with("# Anna\n\nOnly my own words now.\n\n<!-- lax:begin "));
+    assert_eq!(anna_page(&store).state, PageState::Ok);
+}
+
+#[test]
+fn names_on_rows_get_a_number_too() {
+    let mut store = in_database();
+    sync_rows_now(&mut store);
+    assert_eq!(
+        Shelf::Rows
+            .new_path(&store, Some(EntityKind::Person), "Anna Example")
+            .unwrap(),
         "people/anna-example-2.md"
     );
 }

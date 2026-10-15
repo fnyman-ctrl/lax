@@ -18,7 +18,7 @@
 pub mod block;
 pub mod facts;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, DirBuilder, OpenOptions, Permissions};
 use std::io::Write as _;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
@@ -237,18 +237,6 @@ fn kind_folder(kind: EntityKind) -> &'static str {
     }
 }
 
-/// A path for a new page that no file has yet.
-fn free_path(root: &Path, kind: EntityKind, name: &str) -> String {
-    let base = block::slug(name);
-    let mut candidate = format!("{}/{base}.md", kind_folder(kind));
-    let mut n = 2;
-    while root.join(&candidate).exists() {
-        candidate = format!("{}/{base}-{n}.md", kind_folder(kind));
-        n += 1;
-    }
-    candidate
-}
-
 /// What Lax writes on a page, before the model writes facts (step 4): the
 /// names, how often and when it was mentioned, and the latest entries.
 /// Defused, since summaries come from captured text.
@@ -305,9 +293,178 @@ pub struct Synced {
     pub rejected: usize,
 }
 
-/// Brings the pages in `dir` up to date with the memory: new pages for
-/// entities Lax keeps, blocks rewritten when what they say changed, blocks
-/// taken out for forgotten entities. Never deletes the user's text.
+/// Where the pages are kept: files in the memory folder until they have
+/// moved into the database (ADR 0011), then the pages' rows. The same rules
+/// hold for both: Lax changes a page only through `block::update`, and only
+/// if the page still holds what Lax read.
+pub enum Shelf<'a> {
+    /// `~/Lax`, its files found by the page ids in their markers.
+    Folder {
+        dir: &'a Path,
+        on_disk: HashMap<String, Vec<PathBuf>>,
+    },
+    /// The `text` of each page's row.
+    Rows,
+}
+
+/// Where one page's text was found.
+#[derive(Debug, Clone)]
+enum Spot {
+    /// A file, relative to the memory folder.
+    File(PathBuf),
+    /// The page's row.
+    Row,
+}
+
+impl Shelf<'_> {
+    /// Where the page's text is: for files, the one at the page's path if
+    /// it still carries the page's id, otherwise the first other that does.
+    fn find(&self, store: &Store, page: &Page) -> crate::store::Result<Option<Spot>> {
+        Ok(match self {
+            Shelf::Folder { on_disk, .. } => on_disk
+                .get(&page.id)
+                .and_then(|paths| {
+                    paths
+                        .iter()
+                        .find(|p| p.to_string_lossy() == page.path)
+                        .or_else(|| paths.first())
+                        .cloned()
+                })
+                .map(Spot::File),
+            Shelf::Rows => store.page_text(&page.id)?.map(|_| Spot::Row),
+        })
+    }
+
+    fn read(&self, store: &Store, id: &str, spot: &Spot) -> Option<String> {
+        match (self, spot) {
+            (Shelf::Folder { dir, .. }, Spot::File(relative)) => {
+                fs::read_to_string(dir.join(relative)).ok()
+            }
+            (Shelf::Rows, Spot::Row) => store.page_text(id).ok().flatten(),
+            _ => None,
+        }
+    }
+
+    /// Replaces the page's text with `text` if it still is `expected`.
+    fn write(&self, store: &Store, id: &str, spot: &Spot, expected: &str, text: &str) -> bool {
+        match (self, spot) {
+            (Shelf::Folder { dir, .. }, Spot::File(relative)) => {
+                write_inside(dir, &dir.join(relative), Some(expected), text).unwrap_or(false)
+            }
+            (Shelf::Rows, Spot::Row) => store
+                .set_page_text(id, Some(expected), text)
+                .unwrap_or(false),
+            _ => false,
+        }
+    }
+
+    /// The page's path, where its text was found.
+    fn path(page: &Page, spot: &Spot) -> String {
+        match spot {
+            Spot::File(relative) => relative.to_string_lossy().to_string(),
+            Spot::Row => page.path.clone(),
+        }
+    }
+
+    /// A path no other page has, for a new page: `people/anna-example.md`,
+    /// or `about-me.md` for `None`. In the database it only names the file
+    /// an export writes.
+    fn new_path(
+        &self,
+        store: &Store,
+        kind: Option<EntityKind>,
+        name: &str,
+    ) -> crate::store::Result<String> {
+        let taken = match self {
+            Shelf::Folder { .. } => HashSet::new(),
+            Shelf::Rows => store.page_paths()?,
+        };
+        let free = |candidate: &str| match self {
+            Shelf::Folder { dir, .. } => !dir.join(candidate).exists(),
+            Shelf::Rows => !taken.contains(candidate),
+        };
+        let (folder, base) = match kind {
+            Some(kind) => (format!("{}/", kind_folder(kind)), block::slug(name)),
+            None => (String::new(), "about-me".to_string()),
+        };
+        let mut candidate = format!("{folder}{base}.md");
+        let mut n = 2;
+        while !free(&candidate) {
+            candidate = format!("{folder}{base}-{n}.md");
+            n += 1;
+        }
+        Ok(candidate)
+    }
+
+    /// Puts a new page's `text` in place for the page `add` records: the
+    /// file first and then the row, so no row points at a file that wasn't
+    /// written; or the row, then its text.
+    fn put_new(
+        &self,
+        store: &mut Store,
+        id: &str,
+        path: &str,
+        text: &str,
+        add: impl FnOnce(&mut Store) -> crate::store::Result<()>,
+    ) -> crate::store::Result<bool> {
+        match self {
+            Shelf::Folder { dir, .. } => {
+                let Some(full) = inside(dir, path) else {
+                    return Ok(false);
+                };
+                if !write_inside(dir, &full, None, text).unwrap_or(false) {
+                    return Ok(false);
+                }
+                add(store)?;
+                Ok(true)
+            }
+            Shelf::Rows => {
+                add(store)?;
+                store.set_page_text(id, None, text)
+            }
+        }
+    }
+
+    /// Takes a forgotten entity's page away; `true` once it is gone. A file
+    /// loses Lax's block, and goes if nothing of the user's is left in it;
+    /// it is tried again next round if that fails, so forgotten text can't
+    /// stay behind in a file Lax no longer knows. A row goes whole, with
+    /// the user's text on it, which the forget showed them first (ADR 0011).
+    fn take_away(&self, page: &Page, found: Option<&Spot>) -> bool {
+        match (self, found) {
+            (_, None) | (Shelf::Rows, _) => true,
+            (Shelf::Folder { dir, .. }, Some(Spot::File(relative))) => {
+                let path = dir.join(relative);
+                match fs::read_to_string(&path) {
+                    Err(_) => false,
+                    Ok(text) => match block::without_block(&text, &page.id) {
+                        None => true,
+                        Some(rest) if block::only_a_title(&rest) => {
+                            fs::read_to_string(&path).ok().as_deref() == Some(text.as_str())
+                                && fs::remove_file(&path).is_ok()
+                        }
+                        Some(rest) => write_inside(dir, &path, Some(&text), &rest).unwrap_or(false),
+                    },
+                }
+            }
+            (Shelf::Folder { .. }, Some(Spot::Row)) => false,
+        }
+    }
+
+    /// For a page whose text wasn't found: whether it is still there but
+    /// without Lax's markers (detached), rather than gone (missing).
+    fn detached(&self, page: &Page) -> bool {
+        match self {
+            Shelf::Folder { dir, .. } => inside(dir, &page.path)
+                .and_then(|path| fs::read_to_string(path).ok())
+                .is_some_and(|text| block::page_id(&text) != Some(page.id.as_str())),
+            Shelf::Rows => false,
+        }
+    }
+}
+
+/// Brings the pages in the memory folder `dir` up to date. See
+/// [`sync_shelf`].
 pub fn sync<Tz: TimeZone>(
     store: &mut Store,
     dir: &Path,
@@ -318,55 +475,54 @@ pub fn sync<Tz: TimeZone>(
 where
     Tz::Offset: std::fmt::Display,
 {
+    let shelf = Shelf::Folder {
+        dir,
+        on_disk: scan(dir, cache),
+    };
+    sync_shelf(store, &shelf, now, tz)
+}
+
+/// Brings the pages in the database up to date. See [`sync_shelf`].
+pub fn sync_rows<Tz: TimeZone>(
+    store: &mut Store,
+    now: DateTime<Utc>,
+    tz: &Tz,
+) -> crate::store::Result<Synced>
+where
+    Tz::Offset: std::fmt::Display,
+{
+    sync_shelf(store, &Shelf::Rows, now, tz)
+}
+
+/// Brings the pages up to date with the memory: new pages for entities Lax
+/// keeps, blocks rewritten when what they say changed, forgotten entities'
+/// pages taken away. Never changes the user's text.
+fn sync_shelf<Tz: TimeZone>(
+    store: &mut Store,
+    shelf: &Shelf,
+    now: DateTime<Utc>,
+    tz: &Tz,
+) -> crate::store::Result<Synced>
+where
+    Tz::Offset: std::fmt::Display,
+{
     let mut done = Synced::default();
-    let on_disk = scan(dir, cache);
     let entities = store.entities()?;
     // Off, the memory writes nothing new; forgotten entities still leave.
     let enabled = store.memory_enabled()?;
 
     for page in store.pages()? {
-        // The file where the page was last seen, if it still carries the id;
-        // otherwise the first other file that does.
-        let found = on_disk.get(&page.id).and_then(|paths| {
-            paths
-                .iter()
-                .find(|p| p.to_string_lossy() == page.path)
-                .or_else(|| paths.first())
-                .cloned()
-        });
         if page.kind == PageKind::AboutMe {
             continue;
         }
+        let found = shelf.find(store, &page)?;
         let entity = page
             .entity_id
             .and_then(|id| entities.iter().find(|e| e.id == id));
 
-        // Forgotten: take Lax's block out, and the file if nothing of the
-        // user's is left in it.
-        // The page is forgotten only once Lax's block is out of the file
-        // (or there is no file); otherwise it is tried again next round, so
-        // forgotten text can't stay behind in a file Lax no longer knows.
+        // Forgotten: the page goes, once its text is out of the way.
         let Some(entity) = entity else {
-            let cleared = match &found {
-                None => true,
-                Some(relative) => {
-                    let path = dir.join(relative);
-                    match fs::read_to_string(&path) {
-                        Err(_) => false,
-                        Ok(text) => match block::without_block(&text, &page.id) {
-                            None => true,
-                            Some(rest) if block::only_a_title(&rest) => {
-                                fs::read_to_string(&path).ok().as_deref() == Some(text.as_str())
-                                    && fs::remove_file(&path).is_ok()
-                            }
-                            Some(rest) => {
-                                write_inside(dir, &path, Some(&text), &rest).unwrap_or(false)
-                            }
-                        },
-                    }
-                }
-            };
-            if cleared {
+            if shelf.take_away(&page, found.as_ref()) {
                 store.delete_page(&page.id)?;
                 done.removed += 1;
             }
@@ -379,12 +535,12 @@ where
         let latest = store.episodes_mentioning(&[entity.id], None, LATEST)?;
         refresh(
             store,
-            dir,
+            shelf,
             &page,
             found,
             Refresh {
                 title: &entity.name,
-                new_path: &|| free_path(dir, entity.kind, &entity.name),
+                kind: Some(entity.kind),
                 content: &|facts| content(facts, entity, &latest, tz),
                 sources: latest.iter().map(|e| e.id).collect(),
             },
@@ -407,26 +563,18 @@ where
         };
         let latest = store.episodes_mentioning(&[entity.id], None, LATEST)?;
         let content = content(&[], entity, &latest, tz);
-        let path = free_path(dir, entity.kind, &entity.name);
-        let Some(full) = inside(dir, &path) else {
-            continue;
-        };
-        if write_inside(
-            dir,
-            &full,
-            None,
-            &block::new_page(&entity.name, &id, &content),
-        )
-        .unwrap_or(false)
-        {
-            store.add_page(&id, entity.id, &path, now)?;
+        let path = shelf.new_path(store, Some(entity.kind), &entity.name)?;
+        let text = block::new_page(&entity.name, &id, &content);
+        if shelf.put_new(store, &id, &path, &text, |store| {
+            store.add_page(&id, entity.id, &path, now)
+        })? {
             let sources: Vec<i64> = latest.iter().map(|e| e.id).collect();
             store.page_written(&id, &path, &block::normalize(&content), &sources, now)?;
             done.created += 1;
         }
     }
 
-    about_me(store, dir, &on_disk, now, &mut done)?;
+    about_me(store, shelf, now, &mut done)?;
 
     if done != Synced::default() {
         logging::info(
@@ -448,8 +596,9 @@ where
 struct Refresh<'a> {
     /// The title of a page written anew.
     title: &'a str,
-    /// Where a page written anew goes.
-    new_path: &'a dyn Fn() -> String,
+    /// What the page is about, for naming one written anew; `None` for the
+    /// About me page.
+    kind: Option<EntityKind>,
     /// The block, given the facts.
     content: &'a dyn Fn(&[String]) -> String,
     /// The episodes the block lists besides its facts.
@@ -461,9 +610,9 @@ struct Refresh<'a> {
 /// the user asked, or marked missing or detached.
 fn refresh(
     store: &mut Store,
-    dir: &Path,
+    shelf: &Shelf,
     page: &Page,
-    found: Option<PathBuf>,
+    found: Option<Spot>,
     what: Refresh,
     now: DateTime<Utc>,
     done: &mut Synced,
@@ -471,8 +620,8 @@ fn refresh(
     // Facts the user deleted from the page are rejected: gone, and never
     // written there again.
     let mut facts = page.facts.clone().unwrap_or_default();
-    if let Some(relative) = &found
-        && let Ok(text) = fs::read_to_string(dir.join(relative))
+    if let Some(spot) = &found
+        && let Some(text) = shelf.read(store, &page.id, spot)
     {
         for line in block::removed_lines(&text, &page.id, page.last_block.as_deref()) {
             let Some(fact) = line.strip_prefix("- ") else {
@@ -500,19 +649,41 @@ fn refresh(
     }
 
     match (page.state, found) {
-        (PageState::Recreate, _) => {
-            let path = (what.new_path)();
-            let Some(full) = inside(dir, &path) else {
-                return Ok(());
+        (PageState::Recreate, found) => {
+            let written = match shelf {
+                // A new file next to the old one.
+                Shelf::Folder { dir, .. } => {
+                    let path = shelf.new_path(store, what.kind, what.title)?;
+                    inside(dir, &path)
+                        .filter(|full| {
+                            write_inside(
+                                dir,
+                                full,
+                                None,
+                                &block::new_page(what.title, &page.id, &content),
+                            )
+                            .unwrap_or(false)
+                        })
+                        .map(|_| path)
+                }
+                // A new block of Lax's below the user's text on the same
+                // page, or a new page if it had none.
+                Shelf::Rows => {
+                    let current = found.and_then(|spot| shelf.read(store, &page.id, &spot));
+                    let text = match &current {
+                        Some(current) => format!(
+                            "{}\n\n{}\n",
+                            current.trim_end(),
+                            block::block(&page.id, &content)
+                        ),
+                        None => block::new_page(what.title, &page.id, &content),
+                    };
+                    store
+                        .set_page_text(&page.id, current.as_deref(), &text)?
+                        .then(|| page.path.clone())
+                }
             };
-            if write_inside(
-                dir,
-                &full,
-                None,
-                &block::new_page(what.title, &page.id, &content),
-            )
-            .unwrap_or(false)
-            {
+            if let Some(path) = written {
                 store.page_written(&page.id, &path, &block::normalize(&content), &sources, now)?;
                 done.created += 1;
             }
@@ -520,10 +691,7 @@ fn refresh(
         (_, None) => {
             // Still there, but without Lax's markers: the user made it
             // theirs. Gone: missing.
-            let detached = inside(dir, &page.path)
-                .and_then(|path| fs::read_to_string(path).ok())
-                .is_some_and(|text| block::page_id(&text) != Some(page.id.as_str()));
-            let state = if detached {
+            let state = if shelf.detached(page) {
                 PageState::Detached
             } else {
                 PageState::Missing
@@ -533,27 +701,26 @@ fn refresh(
                 done.missing += 1;
             }
         }
-        (_, Some(relative)) => {
-            let path = dir.join(&relative);
-            let relative = relative.to_string_lossy().to_string();
-            let Ok(text) = fs::read_to_string(&path) else {
+        (_, Some(spot)) => {
+            let path = Shelf::path(page, &spot);
+            let Some(text) = shelf.read(store, &page.id, &spot) else {
                 return Ok(());
             };
             match block::update(&text, &page.id, page.last_block.as_deref(), &content) {
                 block::Update::Same => {
-                    if page.state != PageState::Ok || page.path != relative {
-                        store.set_page_state(&page.id, PageState::Ok, Some(&relative))?;
+                    if page.state != PageState::Ok || page.path != path {
+                        store.set_page_state(&page.id, PageState::Ok, Some(&path))?;
                     }
                 }
                 block::Update::Write { text: new, adopted } => {
-                    if write_inside(dir, &path, Some(&text), &new).unwrap_or(false) {
+                    if shelf.write(store, &page.id, &spot, &text, &new) {
                         if let Some(edit) = &adopted {
                             store.page_edited_by_user(&page.id, edit, now)?;
                             done.adopted += 1;
                         }
                         store.page_written(
                             &page.id,
-                            &relative,
+                            &path,
                             &block::normalize(&content),
                             &sources,
                             now,
@@ -563,7 +730,7 @@ fn refresh(
                 }
                 block::Update::NotOurs => {
                     if page.state != PageState::Detached {
-                        store.set_page_state(&page.id, PageState::Detached, Some(&relative))?;
+                        store.set_page_state(&page.id, PageState::Detached, Some(&path))?;
                     }
                 }
             }
@@ -625,11 +792,10 @@ fn lately(store: &Store, now: DateTime<Utc>) -> crate::store::Result<AboutMe> {
     })
 }
 
-/// Writes or updates `about-me.md`, with the memory on.
+/// Writes or updates the About me page, with the memory on.
 fn about_me(
     store: &mut Store,
-    dir: &Path,
-    on_disk: &HashMap<String, Vec<PathBuf>>,
+    shelf: &Shelf,
     now: DateTime<Utc>,
     done: &mut Synced,
 ) -> crate::store::Result<()> {
@@ -637,54 +803,31 @@ fn about_me(
         return Ok(());
     }
     let lately = lately(store, now)?;
-    let new_path = || {
-        let mut path = "about-me.md".to_string();
-        let mut n = 2;
-        while dir.join(&path).exists() {
-            path = format!("about-me-{n}.md");
-            n += 1;
-        }
-        path
-    };
     match store.about_me_page()? {
         None => {
             let Ok(id) = block::new_id() else {
                 return Ok(());
             };
             let content = about_me_content(&[], &lately);
-            let path = new_path();
-            let Some(full) = inside(dir, &path) else {
-                return Ok(());
-            };
-            if write_inside(
-                dir,
-                &full,
-                None,
-                &block::new_page(ABOUT_ME_TITLE, &id, &content),
-            )
-            .unwrap_or(false)
-            {
-                store.add_about_me_page(&id, &path, now)?;
+            let path = shelf.new_path(store, None, ABOUT_ME_TITLE)?;
+            let text = block::new_page(ABOUT_ME_TITLE, &id, &content);
+            if shelf.put_new(store, &id, &path, &text, |store| {
+                store.add_about_me_page(&id, &path, now)
+            })? {
                 store.page_written(&id, &path, &block::normalize(&content), &[], now)?;
                 done.created += 1;
             }
         }
         Some(page) => {
-            let found = on_disk.get(&page.id).and_then(|paths| {
-                paths
-                    .iter()
-                    .find(|p| p.to_string_lossy() == page.path)
-                    .or_else(|| paths.first())
-                    .cloned()
-            });
+            let found = shelf.find(store, &page)?;
             refresh(
                 store,
-                dir,
+                shelf,
                 &page,
                 found,
                 Refresh {
                     title: ABOUT_ME_TITLE,
-                    new_path: &new_path,
+                    kind: None,
                     content: &|facts| about_me_content(facts, &lately),
                     sources: Vec::new(),
                 },
@@ -718,6 +861,13 @@ pub fn sync_now(app: &AppHandle) {
         return;
     };
     let mut store = store.lock().unwrap_or_else(PoisonError::into_inner);
+    // Moved into the database: no folder to prepare.
+    if store.pages_in_database().unwrap_or(false) {
+        if sync_rows(&mut store, Utc::now(), &Local).is_err() {
+            logging::warn("pages.failed", &[Field::Error(ErrorKind::Database)]);
+        }
+        return;
+    }
     let enabled = store.memory_enabled().unwrap_or(false);
     let has_pages = store.pages().is_ok_and(|pages| !pages.is_empty());
     // Off and nothing written: not even the folder is created.
