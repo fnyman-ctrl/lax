@@ -34,7 +34,9 @@ for one). A chat message (LinkedIn, Slack, Teams, Messages and the like) has no 
 starts with a greeting only if the user's own earlier messages in the thread do. A list, note \
 or rewritten paragraph is only that text. \
 A reply answers the latest message in the thread and fits where the conversation stands: if \
-the other person has already closed or settled something, don't treat it as open. Write like \
+the other person has already closed or settled something, don't treat it as open. If the \
+latest message is the user's own and nobody answered, the request is a follow-up: write a \
+short new message that builds on it, not the same message again. Write like \
 the user: when a block shows their own earlier messages, use the same kind of greeting, \
 words, sentence length and formality, never more formal than they are. When a block holds the text the user selected, the request says what to do with it (shorten, \
 rephrase, fix, translate, continue): answer with only that text, changed as asked, and nothing \
@@ -310,7 +312,8 @@ fn request_for(instruction: &str, language: Option<&str>, selected: bool) -> Str
 /// small model follows a reminder at the end better than a rule up front,
 /// and otherwise falls back on stock business phrases.
 const TONE: &str = "Write it in the user's own tone, as in their messages above: plain, \
-no stock phrases such as \"after careful consideration\" or \"move forward\".";
+no stock phrases such as \"after careful consideration\" or \"move forward\". Use their \
+messages for tone only: write new sentences, never theirs again.";
 
 /// When the chat model was last woken for a draft.
 static WOKEN: Mutex<Option<Instant>> = Mutex::new(None);
@@ -983,7 +986,17 @@ mod tests {
         let slack = "#projekt-lax\n\
             Anna Example: kan du ta kundmötet imorgon? jag är sjuk\n\
             Filip: ojdå, krya på dig! jag kollar kalendern\n";
+        // The latest message is the user's own: a reminder must be new.
+        let follow_up = "Messaging | LinkedIn\n\
+            Bo Example\n· 10:45 AM\nHej Filip!\nKul att höra från dig! Hörs gärna. De närmaste 4 veckorna är jag dock i Spanien och Japan för jobb. I oktober finns jag i Sverige.\n//Bo\n\
+            Filip Nyman\n· 11:11 AM\nHej Bo! Toppen, då lägger jag in en påminnelse i min kalender att höra av mig igen i oktober.\n\
+            OCT 6\nFilip Nyman\n· 9:30 AM\nHej Bo! Hoppas du hade det bra i Spanien och Japan. Tänkte höra hur det ser ut för dig nu i oktober om du har möjlighet för ett Teams samtal? /Filip\n";
         let cases = [
+            (
+                "Chrome",
+                follow_up,
+                "Skriv en påminnelse till Bo om hur det ser ut, och man kan ha möte nu i oktober eller om november passar bättre",
+            ),
             (
                 "Chrome",
                 chat,
@@ -1020,6 +1033,13 @@ mod tests {
             )
             .await
             .unwrap();
+            assert!(
+                !reply
+                    .draft
+                    .contains("Hoppas du hade det bra i Spanien och Japan"),
+                "a follow-up repeated the user's own message: {}",
+                reply.draft
+            );
             out.push_str(&format!(
                 "## {app}: {instruction} ({:.1} s)\n{}\n\n",
                 started.elapsed().as_secs_f32(),
