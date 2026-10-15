@@ -38,6 +38,20 @@ Decision below follows the answers.
 
 **Status.** Accepted by the maintainer on 2026-10-13, together with [ADR 0010](0010-encrypted-database.md). Pages only ever move into an encrypted database.
 
+### 2026-10-15: before release 0.1, without the app lock
+
+The maintainer decided to build this ADR before release 0.1, and the app
+lock ([ADR 0012](0012-app-lock.md), issue #158) after it. Until the lock is
+there, the places below that say "behind the app lock" or "needs Touch ID
+or the login password" work like this:
+
+- **The editor** (`page_text`, `save_page`) is open whenever Lax's window
+  is, like the rest of the Memory view today.
+- **Export** and **Delete the old files** ask for a confirmation in a dialog
+  that says what happens, every time, as forgets do now.
+
+When ADR 0012 is built, these three get the lock as this ADR describes.
+
 ## Context
 
 [ADR 0005](0005-memory-as-markdown.md) put the memory in Markdown files in

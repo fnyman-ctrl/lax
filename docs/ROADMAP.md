@@ -125,7 +125,10 @@ Gatekeeper warnings. A signed and notarized `.dmg` comes later.
 - User documentation ([USER-GUIDE.md](USER-GUIDE.md))
 - Release process documented ([RELEASING.md](RELEASING.md), [CHANGELOG.md](../CHANGELOG.md))
 - `npm run perf` for the performance budget (#11), measured over a few evenings
+- The database encrypted ([ADR 0010](adr/0010-encrypted-database.md)), and the
+  memory pages kept in it ([ADR 0011](adr/0011-pages-in-the-database.md))
 - Later: signed and notarized `.dmg` built by CI with build provenance
+- After 0.1: the app lock with Touch ID ([ADR 0012](adr/0012-app-lock.md))
 
 ## Later
 

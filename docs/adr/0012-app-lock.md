@@ -1,6 +1,6 @@
 # 0012. Lock Lax's window with Touch ID or the login password
 
-- **Status:** Accepted
+- **Status:** Accepted. Built after release 0.1 (maintainer, 2026-10-15; issue #158)
 - **Date:** 2026-10-13
 
 ## Summary
