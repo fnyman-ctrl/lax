@@ -51,7 +51,9 @@ choose.
 - **Journal:** what you did, a few lines every 15 minutes or so.
 - **Memory:** the people, projects and organisations Lax has learned about. You
   can rename them, merge duplicates, keep them, forget them, or tell Lax never
-  to learn about someone. Under **About you**, add the names you go by.
+  to learn about someone. Each has a page you can edit and export (see
+  [Your memory pages](#your-memory-pages)). Under **About you**, add the names
+  you go by and edit your own page.
 - **Captures:** everything Lax has read. Search it, forget a time or an app, or
   delete everything.
 - **Exclusions:** apps, websites and window titles Lax never reads. Banking and
@@ -74,16 +76,135 @@ With nothing selected, the instruction is the paragraph you're writing in. The
 draft draws on what Lax knows about you, the people you name in the instruction,
 and the window you're in.
 
-## Your memory in ~/Lax
+## Your memory pages
 
-Each person, project and organisation Lax keeps has a Markdown page in `~/Lax`,
-plus `about-me.md`. You can read and edit them in any editor. Lax only writes
-between its own markers; what you write elsewhere is never changed, and a fact
-you delete is never written again. **Memory → Change… → History** shows earlier
-versions.
+Each person, project and organisation Lax keeps has a page, and so do you:
+the About me page. The pages are in Lax's encrypted database, and you read
+and edit them in Lax. They are not files on your disk, unless you export
+them (see [Export](#export-your-pages)).
 
-These pages are not part of the encrypted database yet. See
-[Encryption](#encryption) for what that means.
+### Editing a page
+
+- In **Memory**, press **Edit page** under a name. For your own page, press
+  **Edit your page** under **About you**.
+- The page opens as plain text, never as formatted text. Lax's part is shown
+  as it is, because it is written from what Lax read.
+- Lax saves a moment after you stop typing, and when you close the page. While
+  a page is open, Lax doesn't write to it.
+- If the page changed while you were editing, Lax shows **The page changed
+  while you were editing**, with your text and the page's text. Press **Keep
+  my text** or **Use the page's text**. Nothing you wrote is thrown away.
+- **Memory → Change… → History** shows earlier versions: what Lax wrote, and
+  your own edits, one each time you opened the page and changed it. The last
+  20 of each are kept.
+
+### What is yours, and what is Lax's
+
+Lax writes only between two marker lines, `<!-- lax:begin … -->` and
+`<!-- lax:end -->`. Everything outside them is yours.
+
+- Lax never changes your text outside its block. It checks before every
+  write, whatever the model answered.
+- A line you add or change between the markers becomes yours. Lax moves it
+  above its block and keeps it.
+- A fact you delete between the markers is never written again.
+- If you remove the markers, Lax stops writing to the page and offers
+  **Write a new page**, which adds a new block below your text.
+- A page Lax can't find is shown as missing. Lax never writes it again, and
+  never forgets it, unless you ask.
+
+### Your pages move into the database, once
+
+Earlier versions of Lax kept the pages as Markdown files in `~/Lax`. If you
+have those, Lax moves them into the database once, in the background, as soon
+as the database is encrypted, and not before.
+
+- It reads each file whole, with every line you added, and keeps it as the
+  page. It moves all pages in one step. If Lax stops halfway, nothing has
+  changed, and it tries again.
+- Nothing is deleted by the move. A page whose file is gone stays missing, with
+  **Recreate page** and **Forget**. A file whose markers you removed moves in as
+  yours, and Lax leaves it alone. If two
+  files carry the same page, one moves in and the other stays where it is.
+  Files that aren't Lax's pages are never moved and never deleted.
+- A new install has no files to move. Its pages start in the database.
+
+Then Lax asks once: **Your pages are now in Lax's encrypted database. Delete
+the old files in ~/Lax?** It tells you:
+
+- Edits to the old files are no longer read.
+- Deleting doesn't reliably erase the old text from the disk. On APFS and
+  SSDs, old blocks can stay until they are reused. FileVault, if it is on,
+  keeps them unreadable. Time Machine backups and local snapshots keep the
+  files until they expire.
+- If you keep the files, every program can still read them.
+
+**Delete the old files** is the default button. It deletes only the files Lax
+moved, and only those that still hold exactly what was moved. A file you
+changed since is kept, and Lax lists it. Then it removes the folders left
+empty, and `~/Lax` itself if it is empty. Your own files stay. You confirm
+this in the dialog, every time.
+
+**Keep them** leaves the files. Lax doesn't ask again. Memory shows a quiet
+line, **Your old page files are still in ~/Lax**, with **Delete the old files**
+if you change your mind.
+
+An older Lax can't read pages that have moved. The move is one-way, like the
+encryption.
+
+### Export your pages
+
+The database is the only copy Lax keeps, so you can export your pages as
+Markdown files.
+
+- **One page:** press **Export this page…** in the editor. Or press **Export it
+  first** when you forget a name (see below).
+- **All pages:** press **Export pages…** in **Memory**. There is no way to pick
+  several.
+
+Lax first says that the copy will not be encrypted: every program you run can
+read it, Spotlight may index it, and backups and sync copy it. Forgetting
+someone in Lax later doesn't reach that copy. Then you choose a folder in the
+macOS folder picker. Lax keeps your choice to itself and writes there.
+
+If the folder is inside iCloud Drive or another synced folder, Lax asks again,
+because the copy would leave this Mac. Choose **Export there anyway** or
+another folder.
+
+Lax writes a new folder, `Lax pages <date>`, inside the one you chose. If that
+name is taken, it adds a number. The folder is private to you (`0700`), and
+so are the files (`0600`). Lax never overwrites anything. Inside are
+`people/`, `organisations/` and `projects/`, and `about-me.md`. Each file is the
+page's whole text, markers included. Lax doesn't keep track of exported copies
+and doesn't read them back.
+
+### No app lock yet
+
+An app lock comes after release 0.1 (issue #158). Until then, the page editor
+is open whenever Lax's window is. Export and **Delete the old files** ask you
+to confirm in their dialogs instead.
+
+### Forgetting a name
+
+Forgetting a name deletes its page, including what you wrote on it. Lax shows
+you that text first, under **Its page goes too, with what you wrote on it**,
+with **Export it first** next to **Forget**. A page that is open in the editor
+goes when you close it. **Forget what it noted…** deletes every page the same
+way, About me included.
+
+Forgetting a time range or an app doesn't touch your text. It rewrites Lax's
+block on the pages that drew on what you forgot.
+
+### If the database isn't encrypted yet
+
+Pages move into the database only once it is encrypted. If Lax couldn't
+convert the database (see [Encryption](#encryption)), because the disk was
+too full or the check of the copy failed, the pages stay as Markdown files in
+`~/Lax`. They work as before: edit them in any editor, and Lax writes only
+between its markers. Lax doesn't write them if `~/Lax` is inside iCloud Drive or
+another synced folder. In this case the Memory view has no page editor and no
+export, because the files already are the export. Once the database has been
+encrypted, the pages move in, in the background.
 
 ## Encryption
 
@@ -98,14 +219,18 @@ Encrypted, in the database `lax.sqlite` in the data folder
 - everything Lax captured, and the index used to search it
 - the journal
 - the memory's people, projects and organisations, their names and facts, and
-  the versions of the blocks Lax wrote on pages
+  their pages, with everything you wrote on them, and the versions of the blocks
+  Lax wrote on pages
 - the log of what was sent, and your settings
 
 Not encrypted by Lax:
 
-- **The pages in `~/Lax`.** They are plain Markdown files, so you can edit them
-  in any editor. Until they move into the database, only FileVault and the
-  folder's permissions protect them. Lax warns you if FileVault is off.
+- **Pages that are still files in `~/Lax`.** Pages move into the database once
+  it is encrypted. Until then, and for old files you chose to keep, they are
+  plain Markdown files that only FileVault and the folder's permissions
+  protect. Lax warns you if FileVault is off.
+- **Pages you export.** An exported page is a plain Markdown file in the folder
+  you chose. Lax tells you so first.
 - **The logs.** They hold counts and timings, never what you did.
 - **Backups and snapshots from before the conversion.** If you used Lax before
   it encrypted its database, Time Machine and local snapshots may still hold the
@@ -131,8 +256,9 @@ of the key, the database can't be opened by anyone, and what is in it is gone.
 Keep a copy of the key in your password manager. It also lets you move to
 another Mac. Never put it anywhere else: not in a note, a message or an issue.
 
-Raw captures expire after a few weeks anyway, but the journal and the memory
-are only in the database. The pages in `~/Lax` survive a lost key.
+Raw captures expire after a few weeks anyway, but the journal and the memory,
+pages included, are only in the database. Export your pages now and then if
+they matter to you: an exported copy survives a lost key.
 
 ### The first start after encrypting
 
@@ -208,7 +334,8 @@ file, and asks you to confirm. Use it only when you have no other way back. It:
   and keeps it
 - starts again with a new key, an empty journal and an empty memory
 
-It doesn't touch `~/Lax`. The old file and the old key are kept, so if the right
+It doesn't touch `~/Lax`. Pages that had already moved into the old database
+are in the old file, not in the new one. The old file and the old key are kept, so if the right
 key turns up you can still open the old file (see the next section). Lax doesn't
 delete them. If you are sure you don't want them, delete the file in the data
 folder, and the old key in Keychain Access, by hand.
@@ -239,8 +366,9 @@ the key and the file can read everything in it.
   fields, password managers or private browser windows.
 - Secrets such as passwords, keys and card numbers are masked before anything is
   stored.
-- The database is encrypted with a key that only your login keychain holds. The
-  memory pages in `~/Lax` are not, yet; they rely on FileVault.
+- The database is encrypted with a key that only your login keychain holds. So
+  are the memory pages, which you edit in Lax. They leave it only when you
+  export them, after a notice that the copy isn't encrypted.
 - Raw text is deleted 30 days after the journal has summarized it, and after 90
   days (your choice) at the latest. The journal and memory keep what was learned.
 - Lax reads nothing once you've been away for ten minutes, and pauses from the

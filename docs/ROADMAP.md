@@ -13,7 +13,7 @@ closer to them.
 | [1](https://github.com/fnyman-ctrl/lax/milestone/1) | Capture | 🚧 Almost done: a workday measurement is left (#11). Reads nothing while you're away |
 | [2](https://github.com/fnyman-ctrl/lax/milestone/2) | Model layer | 🚧 Local models done, quiet in the background and on battery; remote providers after 0.1 |
 | [3](https://github.com/fnyman-ctrl/lax/milestone/3) | Journal | ✅ Done, opt-in; raw text goes 30 days after it's summarized |
-| [4](https://github.com/fnyman-ctrl/lax/milestone/4) | Learning memory ⭐ | ✅ First version: entities, pages in ~/Lax with facts, about-me.md, history; a week of use to judge |
+| [4](https://github.com/fnyman-ctrl/lax/milestone/4) | Learning memory ⭐ | ✅ First version: entities, pages with facts and history in the encrypted database, an About me page, edited and exported in Lax; a week of use to judge |
 | [5](https://github.com/fnyman-ctrl/lax/milestone/5) | Ask your memory | ✅ First version: a conversation, answered from the journal and the memory, found by time, name, words and meaning |
 | — | Writing assistant | ✅ First version, pulled forward ([ADR 0009](adr/0009-writing-assistant.md)): call Lax to any text field for a draft |
 | [6](https://github.com/fnyman-ctrl/lax/milestone/6) | Release 0.1 | Planned |
@@ -77,7 +77,9 @@ and every remote request is redacted and visible in the outbox.
 who you work with.
 
 - Recognize projects, people and organisations in episodes, without duplicates
-- A Markdown page per entity, plus `about-me.md` ([ADR 0005](adr/0005-memory-as-markdown.md))
+- A Markdown page per entity, plus an About me page ([ADR 0005](adr/0005-memory-as-markdown.md)),
+  kept in the encrypted database, edited in Lax and exported as Markdown on
+  request ([ADR 0011](adr/0011-pages-in-the-database.md))
 - Incremental page updates; user edits are ground truth and never overwritten
 - Version history for every page, with undo
 - Views to browse and edit the memory
@@ -105,7 +107,7 @@ useful every day.
 - A small pixel salmon swims to the text cursor; the card sits on Liquid Glass
   on macOS 26 and later
 - The instruction is the selection or the paragraph at the cursor; the draft is
-  written from it, `about-me.md`, the pages of people named in it and the window
+  written from it, the About me page, the pages of people named in it and the window
 - The user reads and edits the draft; Enter puts it in place of the instruction,
   and Lax never sends
 
@@ -126,7 +128,8 @@ Gatekeeper warnings. A signed and notarized `.dmg` comes later.
 - Release process documented ([RELEASING.md](RELEASING.md), [CHANGELOG.md](../CHANGELOG.md))
 - `npm run perf` for the performance budget (#11), measured over a few evenings
 - The database encrypted ([ADR 0010](adr/0010-encrypted-database.md)), and the
-  memory pages kept in it ([ADR 0011](adr/0011-pages-in-the-database.md))
+  memory pages kept in it, edited and exported in Lax
+  ([ADR 0011](adr/0011-pages-in-the-database.md)): built
 - Later: signed and notarized `.dmg` built by CI with build provenance
 - After 0.1: the app lock with Touch ID ([ADR 0012](adr/0012-app-lock.md))
 

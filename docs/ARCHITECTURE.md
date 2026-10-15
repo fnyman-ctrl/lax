@@ -6,7 +6,8 @@ previous one, so they can be built, tested and improved independently.
 ```
  Capture ──► Summarize ──► Recognize ──► Learn
  (raw text)   (episodes)    (entities)    (Markdown pages)
-     └────────────── SQLite ──────────────┘        └── ~/Lax/
+     └───── encrypted SQLite, pages in pages.text ─────┘
+                                                      └── Markdown export
 ```
 
 The database is encrypted with SQLCipher. Its random key lives in the login
@@ -71,12 +72,30 @@ prompt never freezes the window. See
 ## 4. Learn
 
 - Each entity Lax keeps (mentioned on two days, or kept by the user) has a
-  Markdown page in the memory folder, e.g. `~/Lax/projects/q3-proposal.md`,
-  `~/Lax/people/anna.md`, plus `~/Lax/about-me.md` (`src-tauri/src/pages`).
-  Lax writes only between its own markers, and versions every block in SQLite.
+  page, plus the About me page (`src-tauri/src/pages`). A page is one
+  Markdown text in the `text` column of its row in `pages`, in the encrypted
+  database, and the user edits it in Lax's Memory view
+  ([ADR 0011](adr/0011-pages-in-the-database.md)). Lax writes only between its
+  own markers, and versions every block in SQLite.
+- Until the pages have moved in, they are files in `~/Lax`. The move runs
+  once, only on an encrypted database, in one transaction
+  (`src-tauri/src/pages/moving.rs`). The code that writes pages works on
+  either, through `Shelf`: files in `~/Lax` while the database is still
+  plaintext, rows after. Nothing is deleted by the move. Lax asks once whether
+  to delete the old files, and then removes only those that still hold what
+  was moved.
+- The editor (`src/PageEditor.tsx`) shows a page as plain text, never as
+  HTML, and saves over the text it loaded, so a page that changed meanwhile
+  is never overwritten. A page open in it is not written by the background
+  round.
+- A page leaves the database only through the export
+  (`src-tauri/src/pages/export.rs`): Markdown files in a new folder in a
+  folder the user picks with macOS's folder picker, chosen in Rust so the
+  window never hands Lax a path to write to, after a notice that the copy is
+  not encrypted.
 - About once an hour, while the user is away, the model updates the facts on
   pages with new mentions (`src-tauri/src/pages/facts.rs`); facts the user
-  deletes are never written again. `~/Lax/about-me.md` is about the user:
+  deletes are never written again. The About me page is about the user:
   who and what they worked with most in the last 30 days, and, once a day,
   what the model learned about their work.
 - Pages are updated incrementally: the LLM gets the current page plus new episodes
@@ -122,7 +141,7 @@ prompt never freezes the window. See
   instruction is the text selected in the field, or else the paragraph at the
   cursor; the window is read as capture
   reads it, for the app Lax was called to (`src-tauri/src/summon.rs`). On
-  Enter, the chat model writes a draft from the instruction, `about-me.md`,
+  Enter, the chat model writes a draft from the instruction, the About me page,
   the pages of people and projects named in the instruction or in the
   thread's header lines at the top of the window (From, To, Cc; not every
   name in the window), and the window's text, all as `Captured` data

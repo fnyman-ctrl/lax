@@ -76,9 +76,9 @@ decide otherwise.**
    organisations in those episodes. You can rename, merge, keep or forget them,
    and tell Lax never to learn about someone.
 4. **Learn** (works today, opt-in): keeps a page per project and person, plus an
-   *About me* page, as plain **Markdown files** in `~/Lax` that you can read and
-   edit. What you write there is never overwritten, and facts you delete stay
-   deleted.
+   *About me* page, kept in Lax's encrypted database. You read and edit them in
+   Lax's Memory view, and can export them as plain Markdown files. What you write
+   there is never overwritten, and facts you delete stay deleted.
 5. **Ask** (works today): a conversation about your work. Ask "What did I do
    yesterday?" or "What did I work on with Anna last week?", then ask on ("and
    the day before?"). Answers come from your journal and memory, with the entries
@@ -107,8 +107,8 @@ other local tools can use your memory.
   I read last week?" and Lax looks through your journal, by words and by
   meaning, instead of you digging through browser history.
 - **Picking up after a context switch or a holiday.** Open the project's page in
-  `~/Lax`, or ask "What happened with Example AB last week?". You get the short
-  version of where things stood and who was involved.
+  Lax's Memory view, or ask "What happened with Example AB last week?". You get
+  the short version of where things stood and who was involved.
 - **Replies and messages.** In Slack, mail or a GitHub pull request description,
   double-tap ⌥ Option and say what to write ("reply to Anna Example and agree to
   Thursday"). Lax drafts it from the thread on screen and what it knows about
@@ -131,7 +131,7 @@ other local tools can use your memory.
   if your computer can't run a local model, you'll be able to pick a
   privacy-focused provider instead: opt-in, redacted first, and every request
   logged for you to inspect.
-- **Your data, open formats.** Memory is stored as Markdown + SQLite in folders you own. The database is encrypted with a key in your login keychain.
+- **Your data, open formats.** Memory is stored in one SQLite database in a folder you own, encrypted with a key in your login keychain. Its pages are Markdown, edited in Lax and exported as Markdown files whenever you ask.
 - **Transparent.** You can always see what was captured, what Lax believes about you,
   and what was sent off your machine. You can pause, exclude apps or delete anything.
 - **No telemetry.** Ever.

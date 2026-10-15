@@ -52,6 +52,17 @@ or the login password" work like this:
 
 When ADR 0012 is built, these three get the lock as this ADR describes.
 
+### 2026-10-15: built
+
+Steps 0 to 4 of "Rollout" are in (#160 to #164): GUARDRAILS, the rows and the
+block writer on them, the editor, the move with its one-time question, and
+the export. Step 5 is split. The docs are done in the change that adds this
+note. The removal of the folder code waits: it stays while a database can
+still be plaintext (a conversion postponed for lack of disk space or a
+failed check, see the USER-GUIDE's "Encryption"), because the pages stay
+files in `~/Lax` until the database is encrypted. It goes once a plaintext
+database can no longer happen.
+
 ## Context
 
 [ADR 0005](0005-memory-as-markdown.md) put the memory in Markdown files in
