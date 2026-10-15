@@ -270,8 +270,8 @@ export function Ask({ onShowJournal }: { onShowJournal: () => void }) {
           <div className="conversation">
             {turns.length >= REMEMBERED_TURNS && (
               <p className="muted">
-                Lax keeps the last {REMEMBERED_TURNS} questions in mind. For a new subject, start a
-                new conversation.
+                Lax keeps at most the last {REMEMBERED_TURNS} questions in mind. For a new subject,
+                start a new conversation.
               </p>
             )}
             <button
@@ -285,24 +285,24 @@ export function Ask({ onShowJournal }: { onShowJournal: () => void }) {
           </div>
         )}
         <div className="ask-row">
-        <textarea
-          ref={input}
-          value={question}
-          rows={1}
-          maxLength={1000}
-          placeholder={turns.length > 0 ? "Ask on…" : "Ask about your days, people and projects"}
-          aria-label="Question"
-          onChange={(e) => setQuestion(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-              e.preventDefault();
-              ask(question);
-            }
-          }}
-        />
-        <button type="submit" disabled={asking !== null || question.trim() === ""}>
-          Ask
-        </button>
+          <textarea
+            ref={input}
+            value={question}
+            rows={1}
+            maxLength={1000}
+            placeholder={turns.length > 0 ? "Ask on…" : "Ask about your days, people and projects"}
+            aria-label="Question"
+            onChange={(e) => setQuestion(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                ask(question);
+              }
+            }}
+          />
+          <button type="submit" disabled={asking !== null || question.trim() === ""}>
+            Ask
+          </button>
         </div>
       </form>
       <p className="muted hint">

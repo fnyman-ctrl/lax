@@ -259,7 +259,7 @@ describe("Ask", () => {
       const question = pending();
       await act(async () => ask(`Question ${i}?`));
       await act(async () => question.answer(answer(`Answer ${i}.`)));
-      const tip = screen.queryByText(/keeps the last 4 questions/);
+      const tip = screen.queryByText(/keeps at most the last 4 questions/);
       expect(tip === null).toBe(i < 4);
     }
     await act(async () =>
