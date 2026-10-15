@@ -16,6 +16,7 @@
 //!   on; forgetting one of them deletes the version.
 
 pub mod block;
+pub mod export;
 pub mod facts;
 pub mod moving;
 
@@ -121,7 +122,7 @@ pub fn prepare_folder(dir: &Path) -> Result<(), FolderError> {
 /// The sync service a path is inside, if any. Dropbox, Google Drive,
 /// OneDrive and Box live in `~/Library/CloudStorage` on current macOS, or in
 /// their own folder on older setups.
-fn synced(path: &Path) -> Option<&'static str> {
+pub(crate) fn synced(path: &Path) -> Option<&'static str> {
     let path = path.to_string_lossy();
     if path.contains("/Library/Mobile Documents/") || path.ends_with("/Library/Mobile Documents") {
         return Some("iCloud Drive");

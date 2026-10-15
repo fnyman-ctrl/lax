@@ -664,6 +664,92 @@ pub fn close_page(app: AppHandle, entity: Option<i64>) {
     pages::sync_now(&app);
 }
 
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PickedFolder {
+    /// The folder's own name, for the window; never its path.
+    pub name: String,
+    /// The sync service it is inside, if any: the window asks again.
+    pub synced: Option<&'static str>,
+}
+
+/// Asks the user for a folder to export pages into, with macOS's folder
+/// picker. The folder stays in Rust (`pages::export::ChosenFolder`).
+/// `None` if they cancelled.
+#[tauri::command(async)]
+pub fn pick_export_folder(app: AppHandle) -> Result<Option<PickedFolder>, String> {
+    let chosen = app.state::<pages::export::ChosenFolder>();
+    chosen.set(None);
+    let Some(folder) = pages::export::pick_folder(&app) else {
+        return Ok(None);
+    };
+    let picked = PickedFolder {
+        name: folder
+            .file_name()
+            .map(|name| name.to_string_lossy().to_string())
+            .unwrap_or_else(|| folder.display().to_string()),
+        synced: pages::export::synced_service(&folder),
+    };
+    chosen.set(Some(folder));
+    Ok(Some(picked))
+}
+
+/// Exports pages as Markdown files into the folder just picked: the page
+/// of `entity`, the About me page for `None`, or every page with `all`. The
+/// window has shown that the copy isn't encrypted; a synced folder needs
+/// `synced_confirmed` too.
+#[tauri::command(async)]
+pub fn export_pages(
+    app: AppHandle,
+    entity: Option<i64>,
+    all: bool,
+    synced_confirmed: bool,
+) -> Result<pages::export::Exported, String> {
+    let chosen = app.state::<pages::export::ChosenFolder>();
+    let folder = chosen.get().ok_or("Choose a folder first.")?;
+    if pages::export::synced_service(&folder).is_some() && !synced_confirmed {
+        return Err("That folder is synced off this Mac. Confirm it first.".into());
+    }
+    let exported = command(&app, |store| {
+        let failed = |_| "Lax couldn't read the pages.".to_string();
+        let chosen = if all {
+            if !store.pages_in_database().map_err(failed)? {
+                return Err("Your pages are still files in ~/Lax.".into());
+            }
+            store.pages().map_err(failed)?
+        } else {
+            vec![page_to_edit(store, entity)?]
+        };
+        let pages = chosen
+            .iter()
+            .map(|page| pages::export::ExportPage::of(store, page))
+            .collect::<crate::store::Result<Vec<_>>>()
+            .map_err(failed)?;
+        let date = chrono::Local::now().format("%Y-%m-%d").to_string();
+        pages::export::write(&pages, &folder, &date)
+            .map_err(|_| "Lax couldn't write the pages there.".to_string())
+    })?;
+    chosen.set(None);
+    Ok(exported)
+}
+
+/// The user's own text on the page of `entity`: everything outside Lax's
+/// block, title included, for the forget dialog, which deletes it with the
+/// page. `None` if there is nothing of theirs but the title.
+#[tauri::command(async)]
+pub fn page_notes(app: AppHandle, entity: i64) -> Result<Option<String>, String> {
+    command(&app, |store| {
+        let page = page_to_edit(store, Some(entity))?;
+        let text = store
+            .page_text(&page.id)
+            .map_err(|_| "Lax couldn't read the page.".to_string())?;
+        Ok(text
+            .map(|text| pages::block::without_block(&text, &page.id).unwrap_or(text))
+            .filter(|rest| !pages::block::only_a_title(rest))
+            .map(|rest| rest.trim().to_string()))
+    })
+}
+
 /// Deletes the old page files in `~/Lax` that still hold exactly what was
 /// moved into the database, after the user agreed (ADR 0011). Files changed
 /// since are kept and listed.

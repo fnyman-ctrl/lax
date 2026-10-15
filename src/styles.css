@@ -1668,3 +1668,16 @@ button.link {
 .page-editor .confirm textarea {
   min-height: 8rem;
 }
+
+/* The user's own text, shown before a forget deletes it with the page. */
+.entity pre.notes {
+  max-height: 12rem;
+  overflow: auto;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

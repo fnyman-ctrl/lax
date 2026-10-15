@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { ExportPages } from "./ExportPages";
 import { PageEditor } from "./PageEditor";
 
 // Shapes returned by src-tauri/src/memory.rs.
@@ -48,6 +49,7 @@ const SECTIONS: { kind: Kind; title: string }[] = [
  */
 export function Memory({ onShowModels }: { onShowModels: () => void }) {
   const [status, setStatus] = useState<MemoryStatus | null | "failed">(null);
+  const [exportingAll, setExportingAll] = useState(false);
   const [entities, setEntities] = useState<EntityItem[] | null | "failed">(null);
   const [dontLearn, setDontLearn] = useState<DontLearnItem[]>([]);
   const [message, setMessage] = useState<string | null>(null);
@@ -159,10 +161,24 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
               <p className="muted">The journal is off, so no new entries arrive.</p>
             )}
             {status.pagesInDatabase ? (
-              <p className="muted">
-                Lax keeps a page for each name it's sure of, in its encrypted database. Write in
-                them freely: Lax only changes its own part.
-              </p>
+              <>
+                <p className="buttons">
+                  <span className="muted">
+                    Lax keeps a page for each name it's sure of, in its encrypted database. Write
+                    in them freely: Lax only changes its own part.
+                  </span>
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={() => setExportingAll(true)}
+                  >
+                    Export pages…
+                  </button>
+                </p>
+                {exportingAll && (
+                  <ExportPages scope="all" onClose={() => setExportingAll(false)} />
+                )}
+              </>
             ) : status.folderProblem ? (
               <p className="error">{status.folderProblem}</p>
             ) : (
@@ -597,6 +613,10 @@ function EntityRow({
   const [dontLearn, setDontLearn] = useState(entity.isNew);
   const [confirming, setConfirming] = useState(false);
   const [editing, setEditing] = useState(false);
+  // The user's own text on the page, shown before a forget deletes it
+  // with the page (ADR 0011); `undefined` until read.
+  const [notes, setNotes] = useState<string | null | undefined>(undefined);
+  const [exporting, setExporting] = useState(false);
   const nameInput = useRef<HTMLInputElement>(null);
   const confirmButton = useRef<HTMLButtonElement>(null);
   const others = all
@@ -637,6 +657,12 @@ function EntityRow({
       ),
     ).then((done) => done && onOpen(false));
   };
+
+  useEffect(() => {
+    if (confirming && editable && entity.page) {
+      invoke<string | null>("page_notes", { entity: entity.id }).then(setNotes, () => setNotes(null));
+    }
+  }, [confirming, editable, entity.id, entity.page]);
 
   const forget = () =>
     run(
@@ -789,11 +815,29 @@ function EntityRow({
               <p>
                 Forget {entity.name}? Lax removes the name and where it was mentioned. The
                 journal entries stay.{" "}
-                {entity.page && "Lax's part of its page goes too; anything you wrote there stays. "}
+                {entity.page &&
+                  !editable &&
+                  "Lax's part of its page goes too; anything you wrote there stays. "}
+                {entity.page && editable && !notes && "Its page goes too. "}
                 {dontLearn
                   ? "Lax won't learn about it again until you allow it."
                   : "If a new entry names it again, Lax starts over."}
               </p>
+              {editable && notes && (
+                <>
+                  <p>Its page goes too, with what you wrote on it:</p>
+                  <pre className="notes">{notes}</pre>
+                  {exporting ? (
+                    <ExportPages scope={{ entity: entity.id }} onClose={() => setExporting(false)} />
+                  ) : (
+                    <p className="buttons">
+                      <button type="button" className="secondary" onClick={() => setExporting(true)}>
+                        Export it first
+                      </button>
+                    </p>
+                  )}
+                </>
+              )}
               <p className="buttons">
                 <button
                   type="button"

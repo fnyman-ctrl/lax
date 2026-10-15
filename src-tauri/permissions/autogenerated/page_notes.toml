@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-page-notes"
+description = "Enables the page_notes command without any pre-configured scope."
+commands.allow = ["page_notes"]
+
+[[permission]]
+identifier = "deny-page-notes"
+description = "Denies the page_notes command without any pre-configured scope."
+commands.deny = ["page_notes"]

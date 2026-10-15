@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { ExportPages } from "./ExportPages";
 
 /** Saves this long after the user stops typing. */
 const SAVE_AFTER_MS = 1500;
@@ -20,6 +21,7 @@ export function PageEditor({ entity, onClose }: { entity: number | null; onClose
   const [conflict, setConflict] = useState<string | null | undefined>(null);
   const [error, setError] = useState<string | null>(null);
   const [state, setState] = useState<"saved" | "saving" | "unsaved">("saved");
+  const [exporting, setExporting] = useState(false);
   // What the page held when last loaded or saved: a save goes only over it.
   const loaded = useRef<string | null>(null);
   const latest = useRef<string | null>(null);
@@ -159,10 +161,20 @@ export function PageEditor({ entity, onClose }: { entity: number | null; onClose
           {error}
         </p>
       )}
+      {exporting && <ExportPages scope={{ entity }} onClose={() => setExporting(false)} />}
       <p className="actions">
         <button type="button" className="secondary" onClick={onClose}>
           Done
-        </button>
+        </button>{" "}
+        {!exporting && (
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => void save().then(() => setExporting(true))}
+          >
+            Export this page…
+          </button>
+        )}
       </p>
     </div>
   );
