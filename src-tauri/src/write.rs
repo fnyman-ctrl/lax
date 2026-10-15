@@ -30,13 +30,21 @@ language of the request. A language the request names always wins. \
 Form: a reply to an email is a whole email, with a greeting, the text and a sign-off the way \
 the user signs (from the memory or their earlier messages in the window; if neither says, \
 their first name from the block with it; if no name is known, no name and no placeholder \
-for one). A chat message has no greeting or sign-off. A list, note or rewritten paragraph is only \
-that text. When a block holds the text the user selected, the request says what to do with it (shorten, \
+for one). A chat message (LinkedIn, Slack, Teams, Messages and the like) has no sign-off, and \
+starts with a greeting only if the user's own earlier messages in the thread do. A list, note \
+or rewritten paragraph is only that text. \
+A reply answers the latest message in the thread and fits where the conversation stands: if \
+the other person has already closed or settled something, don't treat it as open. Write like \
+the user: when a block shows their own earlier messages, use the same kind of greeting, \
+words, sentence length and formality, never more formal than they are. When a block holds the text the user selected, the request says what to do with it (shorten, \
 rephrase, fix, translate, continue): answer with only that text, changed as asked, and nothing \
-from the window around it; shorter means clearly shorter, about half. Keep it as short as the request allows, in the \
-user's usual tone. \
+from the window around it; shorter means clearly shorter, about half. \
+Length: do what the request says. \"Utförligt\", \"in detail\" and the like mean a few \
+sentences that give the reason and some context; \"kort\", \"short\" and the like mean one or \
+two sentences. If the request says nothing about length, keep it short. \
 Don't make up facts about the user's work or life, such as dates, amounts, names or promises, \
-that aren't in the request or the context; leave a short placeholder in brackets instead, like \
+and don't say they tried, used, liked or found something useful unless the request or the \
+context says so; leave a short placeholder in brackets instead, like \
 [date]. Common knowledge, such as what goes on a shopping list, is fine. Leave out passwords, account \
 numbers and other personal details that the text doesn't need, and don't share what the memory \
 knows about people other than those the text is to or about. Answer with only the text to \
@@ -298,6 +306,12 @@ fn request_for(instruction: &str, language: Option<&str>, selected: bool) -> Str
     }
 }
 
+/// Right before the request when the user's own messages are given: a
+/// small model follows a reminder at the end better than a rule up front,
+/// and otherwise falls back on stock business phrases.
+const TONE: &str = "Write it in the user's own tone, as in their messages above: plain, \
+no stock phrases such as \"after careful consideration\" or \"move forward\".";
+
 /// When the chat model was last woken for a draft.
 static WOKEN: Mutex<Option<Instant>> = Mutex::new(None);
 /// A model woken this recently is still loaded: no need to wake it again.
@@ -348,6 +362,80 @@ pub fn wake_model(app: &AppHandle) {
         let woke = client.chat(&choice.model, &messages, Some(1));
         let _ = app.state::<Pause>().unless_paused(woke).await;
     });
+}
+
+/// The user's own messages kept as examples of how they write.
+const OWN_MESSAGES: usize = 3;
+/// Characters kept of each.
+const OWN_MESSAGE_CHARS: usize = 300;
+
+/// The names the user goes by, lowercased: full names and their first
+/// words, from the macOS account and the names given under Memory.
+fn user_names(account: &str, other: &[String]) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for name in std::iter::once(account).chain(other.iter().map(String::as_str)) {
+        let full = name
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
+        let first = full.split(' ').next().unwrap_or_default().to_string();
+        for candidate in [full, first] {
+            if candidate.chars().count() >= 2 && !names.contains(&candidate) {
+                names.push(candidate);
+            }
+        }
+    }
+    names
+}
+
+/// The user's own earlier messages in a chat or mail thread, the latest
+/// last, at most [`OWN_MESSAGES`]: lines after a short line with the user's
+/// name (as messaging sites show the sender above a message), and lines
+/// that start with the name and a colon (as in "Filip: ok!").
+fn own_messages(window: &str, names: &[String]) -> Vec<String> {
+    let is_name = |text: &str| {
+        let text = text.trim().to_lowercase();
+        names
+            .iter()
+            .any(|name| text == *name || text.starts_with(&format!("{name} ")))
+    };
+    let words = |line: &str| line.split_whitespace().count();
+    let mut found: Vec<String> = Vec::new();
+    // Inside a message of the user's, after their name: Some(lines so far).
+    let mut current: Option<Vec<&str>> = None;
+    let finish = |current: &mut Option<Vec<&str>>, found: &mut Vec<String>| {
+        if let Some(lines) = current.take().filter(|lines| !lines.is_empty()) {
+            found.push(lines.join(" ").chars().take(OWN_MESSAGE_CHARS).collect());
+        }
+    };
+    for line in window.lines() {
+        let line = line.trim();
+        if let Some((speaker, text)) = line.split_once(':')
+            && words(speaker) <= 4
+            && words(text) >= 2
+            && is_name(speaker)
+        {
+            finish(&mut current, &mut found);
+            found.push(text.trim().chars().take(OWN_MESSAGE_CHARS).collect());
+            continue;
+        }
+        if words(line) <= 4 && is_name(line) {
+            finish(&mut current, &mut found);
+            current = Some(Vec::new());
+            continue;
+        }
+        match &mut current {
+            // A time or a mark under the name: still before the message.
+            Some(lines) if lines.is_empty() && words(line) < 4 => {}
+            Some(lines) if words(line) >= 4 => lines.push(line),
+            Some(_) => finish(&mut current, &mut found),
+            None => {}
+        }
+    }
+    finish(&mut current, &mut found);
+    let skip = found.len().saturating_sub(OWN_MESSAGES);
+    found.into_iter().skip(skip).collect()
 }
 
 /// Whether the model should be woken now, last woken at `last`.
@@ -509,11 +597,23 @@ pub async fn write_draft(app: AppHandle, instruction: String) -> Result<Draft, S
         call.context
     };
     let read_window = context.is_some();
+    let mut own_given = false;
     if let Some(context) = context {
+        // How the user writes, from their own messages in the thread: a
+        // small model copies examples far better than a rule about tone.
+        let names = user_names(&crate::memory::account_name(), &own_names);
+        let own = own_messages(&context, &names);
         texts.push(format!(
             "The window the user is writing in ({}):\n{context}",
             call.app_name
         ));
+        if !own.is_empty() {
+            own_given = true;
+            texts.push(format!(
+                "How the user writes, from their own earlier messages in this thread:\n- {}",
+                own.join("\n- ")
+            ));
+        }
     }
     // Last, right before the request: the text the request is about. It is
     // captured text like the window's, never part of the request.
@@ -524,7 +624,10 @@ pub async fn write_draft(app: AppHandle, instruction: String) -> Result<Draft, S
         ));
     }
     let started = std::time::Instant::now();
-    let request = request_for(&instruction, language, selected);
+    let mut request = request_for(&instruction, language, selected);
+    if own_given {
+        request.push_str(&format!("\n\n{TONE}"));
+    }
     let asked = draft(endpoint, &choice.model, &request, &texts);
     let Some(reply) = app.state::<Pause>().unless_paused(asked).await else {
         return Err("Lax was paused, so nothing was written.".to_string());
@@ -788,6 +891,37 @@ mod tests {
     }
 
     #[test]
+    fn the_user_s_own_messages_come_from_the_thread() {
+        let names = user_names("Anna Example", &["Annie".to_string()]);
+        // A messaging site: the sender's name above each message.
+        let linkedin = "Sam Example\n· 9:00 AM\nWant me to close the loop here or leave it?\n\
+            Anna Example\n· 9:23 AM\nhi Sam you can close it, been busy and not got to it yet\n\
+            Sam Example\nClosing it Anna, no stress at all, ping me later.\n\
+            Anna, explore relevant opportunities with Example AB today\n";
+        assert_eq!(
+            own_messages(linkedin, &names),
+            ["hi Sam you can close it, been busy and not got to it yet"]
+        );
+        // A chat with "Name: text" lines; another person's name is skipped.
+        let slack = "Bo Example: kan du ta mötet imorgon?\nAnnie: ojdå, krya på dig!\n\
+            Anna: jag kollar kalendern\nBo: tack";
+        assert_eq!(
+            own_messages(slack, &names),
+            ["ojdå, krya på dig!", "jag kollar kalendern"]
+        );
+        // At most the last three.
+        let many = (1..=5)
+            .map(|i| format!("Anna: message number {i} here"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(own_messages(&many, &names).len(), 3);
+        assert_eq!(
+            own_messages("No names here at all", &names),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
     fn a_named_language_wins() {
         assert!(names_a_language("svara på svenska och tacka"));
         assert!(names_a_language("Reply in English, please"));
@@ -801,6 +935,74 @@ mod tests {
         assert!(serde_json::from_str::<Reply>(r#"{"draft": "Hej"}"#).is_ok());
         assert!(serde_json::from_str::<Reply>(r#"{"draft": "Hej", "send": true}"#).is_err());
         assert!(serde_json::from_str::<Reply>(r#"{"text": "Hej"}"#).is_err());
+    }
+
+    /// Drafts for a few synthetic threads, written to the file named by
+    /// `LAX_PROBE_OUT`, to judge the prompt by eye. Synthetic data only.
+    #[tokio::test]
+    #[ignore = "needs a model server running on this Mac"]
+    async fn live_draft_probe() {
+        let env = |name| std::env::var(name).unwrap_or_else(|_| panic!("{name} is not set"));
+        let chat = "Messaging | LinkedIn\nHome\nMy Network\nJobs\nMessaging\nNotifications\n\
+            Anna Example\nTack för senast, vi hörs nästa vecka om offerten och priset\n\
+            Bo Example\nHej! Kan du skicka underlaget till mig innan fredag så kollar jag\n\
+            Sam Example\nActive now\nVisit my website\n\
+            Want me to close the loop here or leave the trial running for when you get to it?\n\
+            Filip Nyman\n· 9:23 AM\n\
+            Hi Sam you can close the loop, have been busy and not running through it yet but its a bit hectic time, lots of discussions ongoing with stakeholders\n\
+            SEP 14\nSam Example\n· 9:10 AM\n\
+            Closing it Filip, no stress. Stakeholder season beats a first sequence every time.\n\
+            The trial stays on your side, so whenever the 20 come back up the list you have it ready. Ping me then.\n\
+            Thanks Sam\nOkay\n";
+        let mail = "Inbox\nFrom: Bo Example\nTo: Filip\nSubject: Design review\n\n\
+            Hi Filip, could we go through the new design tomorrow at 10? It should take about half an hour.\nThanks, Bo\n";
+        let slack = "#projekt-lax\n\
+            Anna Example: kan du ta kundmötet imorgon? jag är sjuk\n\
+            Filip: ojdå, krya på dig! jag kollar kalendern\n";
+        let cases = [
+            (
+                "Chrome",
+                chat,
+                "svara i min ton utförligt att jag inte är intresserad",
+            ),
+            ("Chrome", chat, "svara kort att jag inte är intresserad"),
+            ("Mail", mail, "svara att det passar bra"),
+            ("Slack", slack, "svara ja men först efter lunch"),
+        ];
+        let mut out = String::new();
+        for (app, window, instruction) in cases {
+            let window = format!("{window}{instruction}");
+            let mut texts = vec![
+                name_block("Filip Nyman", &[]).unwrap(),
+                format!("The window the user is writing in ({app}):\n{window}"),
+            ];
+            let own = own_messages(&window, &user_names("Filip Nyman", &[]));
+            if !own.is_empty() {
+                texts.push(format!(
+                    "How the user writes, from their own earlier messages in this thread:\n- {}",
+                    own.join("\n- ")
+                ));
+            }
+            let mut request = request_for(instruction, reply_language(&window, instruction), false);
+            if !own.is_empty() {
+                request.push_str(&format!("\n\n{TONE}"));
+            }
+            let started = std::time::Instant::now();
+            let reply = draft(
+                Endpoint::parse(&env("LAX_LIVE_MODEL_URL")).unwrap(),
+                &env("LAX_LIVE_CHAT_MODEL"),
+                &request,
+                &texts,
+            )
+            .await
+            .unwrap();
+            out.push_str(&format!(
+                "## {app}: {instruction} ({:.1} s)\n{}\n\n",
+                started.elapsed().as_secs_f32(),
+                reply.draft
+            ));
+        }
+        std::fs::write(env("LAX_PROBE_OUT"), out).unwrap();
     }
 
     /// Writes one draft with a real model, to check prompt and speed. Run
