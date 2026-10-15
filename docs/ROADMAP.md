@@ -10,7 +10,7 @@ closer to them.
 | Stage | Goal | Status |
 |---|---|---|
 | 0 | Foundation | ✅ Done |
-| [1](https://github.com/fnyman-ctrl/lax/milestone/1) | Capture | 🚧 Almost done: a workday measurement is left (#11). Reads nothing while you're away |
+| [1](https://github.com/fnyman-ctrl/lax/milestone/1) | Capture | ✅ Done: within its budget over a workday (0.13% CPU, 39 MB). Reads nothing while you're away |
 | [2](https://github.com/fnyman-ctrl/lax/milestone/2) | Model layer | 🚧 Local models done, quiet in the background and on battery; remote providers in 0.3 |
 | [3](https://github.com/fnyman-ctrl/lax/milestone/3) | Journal | ✅ Done, opt-in; raw text goes 30 days after it's summarized |
 | [4](https://github.com/fnyman-ctrl/lax/milestone/4) | Learning memory ⭐ | ✅ First version: entities, pages with facts and history in the encrypted database, an About me page, edited and exported in Lax; a week of use to judge |
@@ -128,7 +128,7 @@ Gatekeeper warnings. A signed and notarized `.dmg` comes later.
 - First-run onboarding: hardware check, finding a local model server, permissions
 - User documentation ([USER-GUIDE.md](USER-GUIDE.md))
 - Release process documented ([RELEASING.md](RELEASING.md), [CHANGELOG.md](../CHANGELOG.md))
-- `npm run perf` for the performance budget (#11), measured over a few evenings
+- `npm run perf` for the performance budget (#11): measured over a workday, within it
 - The database encrypted ([ADR 0010](adr/0010-encrypted-database.md)), and the
   memory pages kept in it, edited and exported in Lax
   ([ADR 0011](adr/0011-pages-in-the-database.md)): built

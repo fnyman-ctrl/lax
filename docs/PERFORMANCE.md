@@ -86,7 +86,7 @@ after 10.6 hours, with the journal, memory, Ask and the writing assistant on):
 | CPU | 0.13% of one core, average | Under 2% |
 | Memory | 39 MB | Under 150 MB |
 | Disk | 25 MB data folder after a week | Grows until retention |
-| Energy | Not yet read from Activity Monitor | "Low" |
+| Energy | 2.29, "12 hr Power" in Activity Monitor | "Low" |
 
 Capture over the week (2026-10-10 to 10-15): up to about 2,900 reads and 670
 stored captures a day, with most rounds while away reading nothing. The
