@@ -1305,7 +1305,7 @@ fn only_old_files_that_still_hold_what_was_moved_are_deleted() {
     folder.put(&about.path, "# About me\n\nChanged after the move.\n");
     let deleted = moving::delete_old_files(&store, &folder.0).unwrap();
     assert_eq!(deleted.deleted, 1);
-    assert_eq!(deleted.changed, [about.path.clone()]);
+    assert_eq!(deleted.changed, std::slice::from_ref(&about.path));
     assert!(!folder.0.join(ANNA).exists());
     // The user's own file, and the folder holding it, stay.
     assert_eq!(folder.read("people/notes.md"), "My own file.\n");
