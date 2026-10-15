@@ -29,7 +29,7 @@ our word for it.
 |---|---|---|---|
 | **Raw captures** | Window text, OCR output, transcripts | Highest | Only to a remote model the user enabled for that task, after redaction |
 | **Episodes** | "Worked on Q3 proposal with Anna" | High | Same as above |
-| **Memory pages** | `about-me.md`, project and people pages | High | Same as above |
+| **Memory pages** | About me, project and people pages | High | Same as above |
 | **Settings** | Excluded apps, model choice | Low | Never |
 | **Secrets** | API keys | Critical | Only to their own provider, over TLS |
 
@@ -174,21 +174,26 @@ written to manipulate an AI ("ignore previous instructions and…"). Therefore:
 
 ## 6. Storage
 
-- All data lives in two folders owned by the user, both with permissions `0700`:
-  the data folder (database and logs, in `~/Library/Application Support`) and the
-  memory folder (`~/Lax`, the memory's Markdown pages, files `0600`). Lax refuses
-  to write pages if the memory folder is inside iCloud Drive or another synced
-  folder, since that would copy the memory off the machine (§1).
+- All data lives in one folder owned by the user, with permissions `0700`: the
+  data folder (database and logs, in `~/Library/Application Support`).
 - **The database is encrypted** with SQLCipher, with a random key that Lax keeps
   in the login keychain, never synced and never written anywhere else
   ([ADR 0010](adr/0010-encrypted-database.md)).
-- Until [ADR 0011](adr/0011-pages-in-the-database.md) moves them into the
-  database, the memory pages in `~/Lax` are plain Markdown, protected by FileVault
-  and the permissions above. Lax warns if FileVault is off.
+- **The memory's pages are in the database**
+  ([ADR 0011](adr/0011-pages-in-the-database.md)), and are read and edited in
+  Lax. They leave it only when the user exports them: as Markdown files, into a
+  folder the user picks, after a notice that the copy is not encrypted. Lax
+  warns, and asks again, before exporting into iCloud Drive or another synced
+  folder, since that copies the memory off the machine (§1).
+- Until Lax has moved them in (ADR 0011 is built in steps), the pages are
+  Markdown files in `~/Lax` (`0700`, files `0600`) that the user edits in any
+  editor, protected by FileVault and those permissions, and Lax refuses to write
+  them if that folder is inside a synced folder. Lax warns if FileVault is off.
 - **Logs never contain captured content**, only metadata such as counts and timings.
-- Everything is stored in open formats (SQLite + Markdown) so the user can export,
-  back up or inspect it without Lax. The database needs SQLCipher and its key,
-  which the user can copy from Keychain Access.
+- Everything is stored in open formats so the user can export, back up or
+  inspect it without Lax: the database is SQLite (SQLCipher, opened with the key
+  the user can copy from Keychain Access), the pages are Markdown inside it, and
+  Lax exports them as Markdown files on request.
 
 ## 7. Network
 
