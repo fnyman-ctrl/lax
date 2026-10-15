@@ -215,16 +215,7 @@ pub(crate) fn question_language(question: &str) -> Option<&'static str> {
         .map(str::to_lowercase)
         .collect();
     let count = |list: &[&str]| words.iter().filter(|w| list.contains(&w.as_str())).count();
-    let (swedish, english) = (count(SWEDISH_WORDS), count(ENGLISH_WORDS));
-    if swedish + english < 2 {
-        None
-    } else if english >= 2 * swedish {
-        Some("English")
-    } else if swedish >= 2 * english {
-        Some("Swedish")
-    } else {
-        None
-    }
+    leading(count(SWEDISH_WORDS), count(ENGLISH_WORDS), 2)
 }
 
 /// Hits for Swedish and English in one line of at least five words; none
@@ -273,7 +264,13 @@ pub(crate) fn reply_language(window: &str, instruction: &str) -> Option<&'static
 
 /// Swedish or English if one leads by two to one, with at least four hits.
 fn leading_language(swedish: usize, english: usize) -> Option<&'static str> {
-    if swedish + english < 4 {
+    leading(swedish, english, 4)
+}
+
+/// Swedish or English if one leads by two to one, with at least `least`
+/// hits in all.
+fn leading(swedish: usize, english: usize, least: usize) -> Option<&'static str> {
+    if swedish + english < least {
         None
     } else if english >= 2 * swedish {
         Some("English")
