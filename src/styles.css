@@ -921,13 +921,26 @@ mark {
 }
 
 .entity .change {
-  padding: 0.5rem 0.75rem;
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.9rem 1rem;
   border: 1px solid var(--line);
   border-radius: var(--radius);
   background: var(--surface);
 }
 
-.entity .change input[type="text"] {
+/* Rows of their own, with room between them: Rename, Merge, Forget. */
+.entity .change > p,
+.entity .change > details {
+  margin: 0;
+}
+
+.entity .change .hint {
+  margin-top: -0.4rem;
+}
+
+.entity .change input[type="text"],
+.entity .change select {
   min-width: 14rem;
 }
 
