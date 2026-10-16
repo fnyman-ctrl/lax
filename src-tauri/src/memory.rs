@@ -276,6 +276,8 @@ pub struct MemoryStatus {
     pub pages_in_database: bool,
     /// The old page files in `~/Lax` after the move, while there are any.
     pub old_page_files: Option<OldPageFiles>,
+    /// The Mac runs on battery: the memory's work waits for power.
+    pub on_battery: bool,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -352,6 +354,7 @@ fn status(store: &Store) -> crate::store::Result<MemoryStatus> {
                 })
                 .transpose()?
         },
+        on_battery: crate::journal::power() != crate::journal::Power::Mains,
     })
 }
 

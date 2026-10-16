@@ -4,6 +4,10 @@ What changed in each version of Lax, for people who use it.
 
 ## Unreleased
 
+- **Journal on battery.** The journal now writes on battery too, about once an
+  hour, and waits for power only below 20 %. Before, it waited for power
+  however long you were unplugged. The Journal and Memory tabs say what
+  waits for power.
 - **Memory: new names fade.** A new name that doesn't come back on another
   day leaves the memory two weeks after your newest journal entry (four weeks
   if it was mentioned three times or more). The journal entries stay, and the

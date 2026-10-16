@@ -17,6 +17,8 @@ type MemoryStatus = {
   pagesInDatabase: boolean;
   /** The old page files in ~/Lax after the move, while there are any. */
   oldPageFiles: { count: number; kept: boolean } | null;
+  /** On battery, the memory's work waits for power. */
+  onBattery: boolean;
 };
 type PageItem = { path: string; state: "ok" | "missing" | "detached" | "recreate" };
 type Kind = "person" | "organisation" | "project";
@@ -167,6 +169,12 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
             </p>
             {!status.journal && (
               <p className="muted">The journal is off, so no new entries arrive.</p>
+            )}
+            {status.onBattery && (
+              <p className="muted">
+                On battery, the memory waits for power: it reads new entries, writes pages and
+                looks for names that are the same once the Mac is plugged in.
+              </p>
             )}
             {status.pagesInDatabase ? (
               <>

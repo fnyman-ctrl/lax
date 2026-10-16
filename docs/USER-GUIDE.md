@@ -418,6 +418,9 @@ The rules are in [GUARDRAILS.md](GUARDRAILS.md), with the test behind each in
   wrongly; Lax then goes by the mouse pointer. Click in the field first.
 - **The fans spin.** The memory's work runs while you're away from the keyboard,
   and never on battery. `npm run perf` shows how Lax is doing.
+- **No new journal entries on battery.** On battery, Lax writes the journal
+  about once an hour, and below 20 % it waits for power. It keeps reading
+  meanwhile, and the Journal tab says so.
 
 Found a bug? [Open an issue](https://github.com/fnyman-ctrl/lax/issues), and
 leave out anything personal.
