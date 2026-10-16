@@ -16,7 +16,9 @@ How a version of Lax is released. Lax 0.1 is built from source by its users
 
 1. Set the version in `package.json`, `src-tauri/Cargo.toml` and
    `src-tauri/tauri.conf.json` (they must match), and run `cargo check` so
-   `Cargo.lock` follows. Open a pull request, "Release 0.1.0", and merge it.
+   `Cargo.lock` follows. In `CHANGELOG.md`, replace "(unreleased)" in the
+   version's heading with the date. Open a pull request, "Release 0.1.0", and
+   merge it.
 2. Tag the merge commit and push the tag:
    ```sh
    git tag -a v0.1.0 -m "Lax 0.1.0"
@@ -24,7 +26,7 @@ How a version of Lax is released. Lax 0.1 is built from source by its users
    ```
 3. Create the GitHub release from the tag, with the changelog section as notes:
    ```sh
-   gh release create v0.1.0 --title "Lax 0.1.0" --notes-file <(sed -n '/^## 0.1.0/,/^## /p' CHANGELOG.md | sed '$d')
+   gh release create v0.1.0 --title "Lax 0.1.0" --notes-file <(awk '/^## /{f=/^## 0\.1\.0 /; next} f' CHANGELOG.md)
    ```
    GitHub attaches the source archives. Add their SHA-256 checksums to the
    notes, so users can check what they downloaded:

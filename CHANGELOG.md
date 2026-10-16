@@ -6,6 +6,16 @@ What changed in each version of Lax, for people who use it.
 
 The first version. Everything runs on your Mac; nothing leaves it.
 
+**What you need:** a Mac, the Xcode Command Line Tools, rustup and Node.js to
+build Lax, and a local model server ([LM Studio](https://lmstudio.ai) or
+[Ollama](https://ollama.com)) with a chat model and an embedding model for the
+AI parts. [MODELS.md](docs/MODELS.md) suggests models for your Mac's memory.
+See [Install](docs/USER-GUIDE.md#install).
+
+- **First start:** Lax explains what it reads and never reads, helps you turn
+  on Accessibility, finds the models on your Mac, and lets you choose what to
+  turn on. The journal, the memory and the writing assistant are all off until
+  you do.
 - **Capture:** reads the text of the window you're working in through
   Accessibility. Never password fields, password managers or private browser
   windows; banking and health excluded from the start; your own exclusions;
@@ -43,3 +53,22 @@ The first version. Everything runs on your Mac; nothing leaves it.
   one-way, like the encryption: an older version of Lax can't read pages that
   have moved. There is no app lock yet; it comes after 0.1.
 - **Install:** build from source with `npm run build:app`.
+
+### Known limits
+
+- **No app lock yet.** Anyone at your unlocked Mac can open Lax's window and
+  read the journal, the memory and the pages. A lock with Touch ID or your
+  login password is planned for 0.2.
+- **Every build is a new app to macOS.** After you build Lax again, remove it
+  under **Privacy & Security → Accessibility** with − and add it again with +,
+  and type your login password once so the new build may read its key. A
+  signed app comes later.
+- **Private windows:** checked on a real Mac only in Safari. Chrome, Firefox,
+  Edge and Arc are recognised by their window titles, which haven't been
+  checked on a real Mac yet. Exclude them under **Exclusions** if you want to
+  be sure.
+- **Meetings you only listen to** stop being read after ten minutes without
+  keyboard or mouse, like any time you're away.
+- **The memory's list grows long.** You keep, merge and forget names by hand.
+  0.2 is planned to tidy it for you.
+- **English and Swedish** are the languages Lax is tested with.
