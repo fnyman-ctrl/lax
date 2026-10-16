@@ -8,6 +8,8 @@ type JournalStatus = {
   model: string | null;
   waiting: number;
   modelDownSince: number | null;
+  /** On battery the journal writes about once an hour; when low, it waits for power. */
+  power: "mains" | "battery" | "lowBattery";
 };
 type Episode = {
   id: number;
@@ -98,6 +100,7 @@ export function Journal({ onShowModels }: { onShowModels: () => void }) {
                 </span>
               )}
             </p>
+            <PowerNote power={status.power} />
             <p className="buttons">
               <button type="button" className="secondary" onClick={() => toggle(false)}>
                 Turn the journal off
@@ -207,4 +210,28 @@ function dayLabel(date: Date): string {
 
 function time(millis: number): string {
   return new Date(millis).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+
+/**
+ * What the journal does on battery (#196): it keeps reading, writes about
+ * once an hour, and waits for power when the battery is low.
+ */
+export function PowerNote({ power }: { power: "mains" | "battery" | "lowBattery" }) {
+  if (power === "battery") {
+    return (
+      <p className="muted" role="status">
+        On battery, Lax writes the journal about once an hour, everything that waited in one
+        go. It keeps reading meanwhile.
+      </p>
+    );
+  }
+  if (power === "lowBattery") {
+    return (
+      <p className="muted" role="status">
+        The battery is low, so Lax waits for power to write the journal. It keeps reading
+        meanwhile, and catches up once the Mac is plugged in.
+      </p>
+    );
+  }
+  return null;
 }

@@ -49,8 +49,9 @@ prompt never freezes the window. See
   The journal is off until the user turns it on and has chosen a chat model
   (`src-tauri/src/journal.rs`). It skips captures younger than two minutes, sends
   each window once with its latest content, and stops while capture is paused.
-  No background work uses the model while the Mac runs on battery; it catches
-  up on mains power (`journal::may_use_model`). Questions are not background
+  On battery the journal writes about once an hour, everything that waited
+  in one go, and waits for power below 20 % charge; the memory's work waits
+  for power (`journal::may_use_model`, #196). Questions are not background
   work.
 - Episodes are what the rest of the system reads. A raw capture expires only after
   it has been summarized, or at the maximum age (default 90 days, configurable).

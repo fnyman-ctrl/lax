@@ -93,7 +93,7 @@ decide otherwise.**
 
 Lax keeps your Mac quiet while you use it: it reads nothing once you've left the
 computer for ten minutes, the memory's model work waits until you're away from
-the keyboard, and nothing runs in the background on battery.
+the keyboard, and on battery only the journal runs, about once an hour.
 
 Later: meeting transcription (Whisper), time tracking, and a local MCP server so
 other local tools can use your memory.
