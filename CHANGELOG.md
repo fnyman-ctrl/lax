@@ -2,7 +2,7 @@
 
 What changed in each version of Lax, for people who use it.
 
-## 0.1.0 (unreleased)
+## 0.1.0 (2026-10-16)
 
 The first version. Everything runs on your Mac; nothing leaves it.
 
