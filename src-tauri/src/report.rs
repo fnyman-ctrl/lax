@@ -235,7 +235,7 @@ mod tests {
         let mut details = Details::default();
         from_store(&store, &mut details).unwrap();
         let text = details.text();
-        for secret in [
+        for word in [
             "Anna",
             "Offert",
             "offerten",
@@ -244,7 +244,10 @@ mod tests {
             "localhost",
             "1234",
         ] {
-            assert!(!text.contains(secret), "{secret} in:\n{text}");
+            assert!(
+                !text.contains(word),
+                "a captured word is in the details: {word}"
+            );
         }
         assert!(text.contains("Chat model: google/gemma-4-e4b on LM Studio"));
         assert!(text.contains("Journal entries: 1. Names: 1."));
