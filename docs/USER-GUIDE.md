@@ -58,7 +58,11 @@ choose.
   on two days (written to, met, worked for or on), or until you keep it.
   Names you only read about or saw, such as people in the news or the author
   of an article, are folded away under **New** as **Only mentioned**, and
-  never get a page unless you keep them.
+  never get a page unless you keep them. New names wait, folded away under
+  **New**, until they come back on another day. One that doesn't come back
+  within two weeks of your newest journal entry (four weeks if it was mentioned three
+  times or more) leaves the memory. The journal entries stay, and the name can
+  come back as new. Press **Keep** to keep one for good.
 - **Captures:** everything Lax has read. Search it, forget a time or an app, or
   delete everything.
 - **Exclusions:** apps, websites and window titles Lax never reads. Banking and

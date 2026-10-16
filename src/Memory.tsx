@@ -584,8 +584,9 @@ export function OldPageFiles({
 }
 
 /**
- * The names Lax only notes so far. Names only ever mentioned, never worked
- * with, are folded away below the rest (ADR 0013): they're most of the noise.
+ * The names Lax only notes so far, folded away (ADR 0013): they don't need
+ * the user. Opened, most mentioned first, as the list already comes. Names
+ * only ever mentioned, never worked with, are folded apart inside it.
  */
 export function NewNames({
   entities,
@@ -596,24 +597,29 @@ export function NewNames({
 }) {
   const fresh = entities.filter((e) => e.isNew && !e.onlyMentioned);
   const mentioned = entities.filter((e) => e.isNew && e.onlyMentioned);
-  if (fresh.length === 0 && mentioned.length === 0) return null;
+  const total = fresh.length + mentioned.length;
+  if (total === 0) return null;
+  const count = total === 1 ? "one new name" : `${total} new names`;
   return (
     <section className="day">
       <h2>New</h2>
-      <p className="muted hint">
-        Lax keeps a name once you've worked with it on two days, or when you keep it.
-      </p>
-      {fresh.length > 0 && <ul className="entities">{fresh.map(row)}</ul>}
-      {mentioned.length > 0 && (
-        <details className="only-mentioned">
-          <summary>Only mentioned ({mentioned.length})</summary>
-          <p className="muted hint">
-            Names you read about or saw, but didn't work with. They never get a page unless you
-            keep them.
-          </p>
-          <ul className="entities">{mentioned.map(row)}</ul>
-        </details>
-      )}
+      <details className="new-names">
+        <summary>
+          Lax is watching {count}. They get a page when they come back on another day, and
+          leave after two weeks if they don't.
+        </summary>
+        {fresh.length > 0 && <ul className="entities">{fresh.map(row)}</ul>}
+        {mentioned.length > 0 && (
+          <details className="only-mentioned">
+            <summary>Only mentioned ({mentioned.length})</summary>
+            <p className="muted hint">
+              Names you read about or saw, but didn't work with. They never get a page unless
+              you keep them.
+            </p>
+            <ul className="entities">{mentioned.map(row)}</ul>
+          </details>
+        )}
+      </details>
     </section>
   );
 }

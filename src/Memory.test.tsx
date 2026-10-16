@@ -46,13 +46,18 @@ describe("the old page files after the move", () => {
   });
 });
 
-function entity(id: number, name: string, isNew: boolean, onlyMentioned: boolean): EntityItem {
+function entity(
+  id: number,
+  name: string,
+  isNew: boolean,
+  { mentions = 1, onlyMentioned = false } = {},
+): EntityItem {
   return {
     id,
     kind: "person",
     name,
     aliases: [],
-    mentions: 1,
+    mentions,
     days: 1,
     workingDays: onlyMentioned ? 0 : 1,
     lastSeen: 0,
@@ -65,35 +70,58 @@ function entity(id: number, name: string, isNew: boolean, onlyMentioned: boolean
 describe("new names", () => {
   const row = (e: EntityItem) => <li key={e.id}>{e.name}</li>;
 
-  test("names only mentioned are folded away below the rest", () => {
+  test("are folded away, counted, in the order they come", () => {
     render(
       <NewNames
         entities={[
-          entity(1, "Anna Example", true, false),
-          entity(2, "Bo Nyhet", true, true),
-          entity(3, "Cecilia Example", false, false),
+          entity(1, "Anna Example", true, { mentions: 3 }),
+          entity(2, "Bo Exempel", false, { mentions: 9 }),
+          entity(3, "Cecilia Example", true),
         ]}
         row={row}
       />,
     );
-    const folded = document.querySelector("details.only-mentioned") as HTMLDetailsElement;
+    const folded = document.querySelector("details.new-names") as HTMLDetailsElement;
     expect(folded.open).toBe(false);
-    expect(folded.querySelector("summary")?.textContent).toBe("Only mentioned (1)");
-    expect(folded.textContent).toContain("Bo Nyhet");
-    expect(folded.textContent).not.toContain("Anna Example");
-    expect(screen.getByText("Anna Example").closest("details")).toBeNull();
-    // A name that isn't new belongs to its kind's section, not here.
-    expect(screen.queryByText("Cecilia Example")).toBeNull();
+    expect(folded.querySelector("summary")?.textContent).toContain("Lax is watching 2 new names.");
+    expect([...folded.querySelectorAll("li")].map((li) => li.textContent)).toEqual([
+      "Anna Example",
+      "Cecilia Example",
+    ]);
   });
 
-  test("with only names worked with, there is no folded group", () => {
-    render(<NewNames entities={[entity(1, "Anna Example", true, false)]} row={row} />);
+  test("one name reads as one", () => {
+    render(<NewNames entities={[entity(1, "Anna Example", true)]} row={row} />);
+    expect(screen.getByText(/Lax is watching one new name\./)).toBeTruthy();
+  });
+
+  test("names only mentioned are folded apart inside New", () => {
+    render(
+      <NewNames
+        entities={[
+          entity(1, "Anna Example", true),
+          entity(2, "Bo Nyhet", true, { onlyMentioned: true }),
+        ]}
+        row={row}
+      />,
+    );
+    const outer = document.querySelector("details.new-names") as HTMLDetailsElement;
+    expect(outer.querySelector("summary")?.textContent).toContain("Lax is watching 2 new names.");
+    const inner = outer.querySelector("details.only-mentioned") as HTMLDetailsElement;
+    expect(inner.open).toBe(false);
+    expect(inner.querySelector("summary")?.textContent).toBe("Only mentioned (1)");
+    expect(inner.textContent).toContain("Bo Nyhet");
+    expect(inner.textContent).not.toContain("Anna Example");
+  });
+
+  test("with only names worked with, there is no Only mentioned group", () => {
+    render(<NewNames entities={[entity(1, "Anna Example", true)]} row={row} />);
     expect(document.querySelector("details.only-mentioned")).toBeNull();
   });
 
   test("with nothing new, there is no New section", () => {
     const { container } = render(
-      <NewNames entities={[entity(1, "Anna Example", false, false)]} row={row} />,
+      <NewNames entities={[entity(1, "Anna Example", false)]} row={row} />,
     );
     expect(container.textContent).toBe("");
   });
