@@ -8,6 +8,8 @@ import {
   ObviousPairs,
   OldPageFiles,
   type PairItem,
+  PartSuggestions,
+  type PartSuggestionItem,
   PartOfControls,
   SameAsPicker,
   type SuggestionItem,
@@ -335,5 +337,50 @@ describe("projects in parts", () => {
     controls(all[0], all);
     expect(screen.queryByLabelText("Part of")).toBeNull();
     expect(screen.getByText(/has parts, so it can't be a part itself/)).toBeTruthy();
+  });
+});
+
+describe("part suggestions", () => {
+  const item: PartSuggestionItem = {
+    part: { id: 2, name: "Export" },
+    whole: { id: 1, name: "Exempelappen" },
+    reason: "<i>A</i> feature.",
+  };
+
+  function show() {
+    mocked.mockReset();
+    mocked.mockImplementation(async () => null);
+    const run = vi.fn((work: Promise<string>) => work.then(() => true));
+    render(<PartSuggestions suggestions={[item]} busy={false} run={run} />);
+    return run;
+  }
+
+  test("Yes makes it a part, and the reason is plain text", async () => {
+    const run = show();
+    expect(screen.getByText(/looks like part of/)).toBeTruthy();
+    expect(screen.getByText("<i>A</i> feature.")).toBeTruthy();
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "Yes, Export is part of Exempelappen" })),
+    );
+    expect(mocked).toHaveBeenCalledWith("set_part_of", { part: 2, whole: 1 });
+    expect(await run.mock.calls[0][0]).toBe("Export is now part of Exempelappen.");
+  });
+
+  test("No is sent for the pair", async () => {
+    show();
+    await act(async () =>
+      fireEvent.click(
+        screen.getByRole("button", { name: "No, Export isn't part of Exempelappen" }),
+      ),
+    );
+    expect(mocked).toHaveBeenCalledWith("not_part", { a: 2, b: 1 });
+  });
+
+  test("They're the same merges the part into the whole", async () => {
+    show();
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "Export and Exempelappen are the same" })),
+    );
+    expect(mocked).toHaveBeenCalledWith("merge_entities", { from: 2, into: 1 });
   });
 });

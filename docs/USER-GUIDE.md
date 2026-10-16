@@ -73,7 +73,9 @@ choose.
   their project, and the pages say so. **Take out** makes a part a project of
   its own again; forgetting the project does too. When you name a project in
   Ask or to the writing assistant, they also read the pages of up to three of
-  its parts.
+  its parts. The model on this Mac also suggests parts, under **These may be
+  parts of a project**, for projects whose names overlap or that come up
+  together on several days: **Yes**, **No** (final), or **They're the same**.
 - **Captures:** everything Lax has read. Search it, forget a time or an app, or
   delete everything.
 - **Exclusions:** apps, websites and window titles Lax never reads. Banking and

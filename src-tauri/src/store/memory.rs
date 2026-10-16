@@ -554,11 +554,21 @@ impl Store {
     }
 
     /// Takes project `part` out of its whole: a project of its own again.
-    pub fn take_out(&self, part: i64) -> Result<bool> {
-        Ok(self.conn.execute(
+    /// The user undid it, so the pair isn't suggested as parts again.
+    pub fn take_out(&mut self, part: i64) -> Result<bool> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "INSERT OR IGNORE INTO not_part (a, b)
+             SELECT min(id, part_of), max(id, part_of) FROM entities
+             WHERE id = ?1 AND part_of IS NOT NULL",
+            [part],
+        )?;
+        let taken = tx.execute(
             "UPDATE entities SET part_of = NULL WHERE id = ?1 AND part_of IS NOT NULL",
             [part],
-        )? > 0)
+        )?;
+        tx.commit()?;
+        Ok(taken > 0)
     }
 
     /// The "don't learn" list, newest first.
