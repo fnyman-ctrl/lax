@@ -87,6 +87,10 @@ prompt never freezes the window. See
   "no" or "unsure" is judged again after 30 days or twice the mentions. The
   user merges; "Not the same" is kept in `not_same` and is final. The Change
   panel's "Same as" list puts the likely names first (`Store::likely_same`).
+- Projects in parts (ADR 0013, point 5): `entities.part_of`, one level deep,
+  set and taken out by the user (`Store::set_part_of`, `Store::take_out`),
+  kept one level deep through merges, released when the whole is forgotten.
+  Page blocks say "Parts: …" and "Part of: …".
 - Each entity Lax keeps (mentioned on two days, or kept by the user) has a
   page, plus the About me page (`src-tauri/src/pages`). A page is one
   Markdown text in the `text` column of its row in `pages`, in the encrypted

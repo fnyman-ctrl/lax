@@ -68,7 +68,10 @@ choose.
   is on power. Its "yes" is shown under **These may be the same**, with its
   reason. If a short name fits several, Lax asks which one, or none. In a
   name's **Change** panel, **Same as** lists the likely names first; with
-  many names, you can search it.
+  many names, you can search it. A project can be **Part of** another, one
+  level deep, such as an export feature in an app: parts are listed under
+  their project, and the pages say so. **Take out** makes a part a project of
+  its own again; forgetting the project does too.
 - **Captures:** everything Lax has read. Search it, forget a time or an app, or
   delete everything.
 - **Exclusions:** apps, websites and window titles Lax never reads. Banking and

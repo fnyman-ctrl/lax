@@ -30,6 +30,8 @@ export type EntityItem = {
   lastSeen: number;
   /** Seen on fewer than two days and not kept: Lax only notes it so far. */
   isNew: boolean;
+  /** The project it is part of (ADR 0013). */
+  partOf: number | null;
   page: PageItem | null;
 };
 type DontLearnItem = { kind: Kind; name: string };
@@ -345,7 +347,7 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
       )}
       {Array.isArray(entities) &&
         SECTIONS.map(({ kind, title }) => {
-          const list = entities.filter((e) => e.kind === kind && !e.isNew);
+          const list = withParts(entities.filter((e) => e.kind === kind && !e.isNew));
           return (
             list.length > 0 && (
               <section key={kind} className="day">
@@ -354,6 +356,7 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
                   {list.map((entity) => (
                     <EntityRow
                       key={entity.id}
+                      part={list.some((e) => e.id === entity.partOf)}
                       entity={entity}
                       all={entities}
                       editable={status.pagesInDatabase}
@@ -818,6 +821,97 @@ export function NewNames({
   );
 }
 
+/**
+ * Projects in their order, each followed by its parts (ADR 0013). A part
+ * whose whole isn't in the list stays where it was.
+ */
+export function withParts(list: EntityItem[]): EntityItem[] {
+  const listed = new Set(list.map((e) => e.id));
+  const isPart = (e: EntityItem) => e.partOf !== null && listed.has(e.partOf);
+  return list
+    .filter((e) => !isPart(e))
+    .flatMap((whole) => [whole, ...list.filter((e) => isPart(e) && e.partOf === whole.id)]);
+}
+
+/**
+ * "Part of" in a project's Change panel (ADR 0013): one level only, so a
+ * project with parts can't be a part, and only projects that aren't parts
+ * can be chosen as the whole.
+ */
+export function PartOfControls({
+  entity,
+  all,
+  busy,
+  run,
+}: {
+  entity: EntityItem;
+  all: EntityItem[];
+  busy: boolean;
+  run: (work: Promise<string>) => Promise<boolean>;
+}) {
+  const [whole, setWhole] = useState("");
+  const current = all.find((e) => e.id === entity.partOf);
+  const hasParts = all.some((e) => e.partOf === entity.id);
+  if (current) {
+    return (
+      <p className="buttons">
+        <span>
+          Part of <strong>{current.name}</strong>.
+        </span>
+        <button
+          type="button"
+          className="secondary"
+          disabled={busy}
+          onClick={() =>
+            run(
+              invoke("take_out_part", { part: entity.id }).then(
+                () => `${entity.name} is a project of its own again.`,
+              ),
+            )
+          }
+        >
+          Take out
+        </button>
+      </p>
+    );
+  }
+  if (hasParts) {
+    return <p className="muted hint">{entity.name} has parts, so it can't be a part itself.</p>;
+  }
+  const wholes = all
+    .filter((e) => e.kind === "project" && e.id !== entity.id && e.partOf === null)
+    .sort((a, b) => a.name.localeCompare(b.name));
+  if (wholes.length === 0) return null;
+  const target = wholes.find((e) => String(e.id) === whole);
+  return (
+    <p className="buttons">
+      <label htmlFor={`part-${entity.id}`}>Part of</label>
+      <select id={`part-${entity.id}`} value={whole} onChange={(e) => setWhole(e.target.value)}>
+        <option value="">Choose…</option>
+        {wholes.map((e) => (
+          <option key={e.id} value={e.id}>
+            {e.name}
+          </option>
+        ))}
+      </select>
+      <button
+        type="button"
+        disabled={busy || !target}
+        onClick={() =>
+          target &&
+          run(
+            invoke("set_part_of", { part: entity.id, whole: target.id }).then(
+              () => `${entity.name} is now part of ${target.name}.`,
+            ),
+          )
+        }
+      >
+        Make it a part
+      </button>
+    </p>
+  );
+}
+
 /** Above this many names, the "Same as" list can be searched. */
 const SEARCH_FROM = 15;
 
@@ -904,6 +998,7 @@ export function SameAsPicker({
  */
 function EntityRow({
   entity,
+  part = false,
   all,
   editable,
   busy,
@@ -912,6 +1007,8 @@ function EntityRow({
   run,
 }: {
   entity: EntityItem;
+  /** Listed under its whole, indented. */
+  part?: boolean;
   all: EntityItem[];
   /** The page can be edited here (the pages are in the database). */
   editable: boolean;
@@ -993,7 +1090,7 @@ function EntityRow({
     ).then((done) => done && onOpen(false));
 
   return (
-    <li className="entity">
+    <li className={part ? "entity part" : "entity"}>
       <div>
         <p className="name">
           {entity.name}
@@ -1105,6 +1202,9 @@ function EntityRow({
               Merging keeps the chosen name, and {entity.name} becomes one of its names. What you
               wrote on its page moves to the chosen one's page. You can rename it afterwards.
             </p>
+          )}
+          {entity.kind === "project" && (
+            <PartOfControls entity={entity} all={all} busy={busy} run={run} />
           )}
           <p className="buttons">
             <label>
