@@ -1297,6 +1297,14 @@ mod tests {
         assert_eq!(suggestions[0].reason, "A feature.");
         // Waiting for the user: not judged again.
         assert!(part_candidates(&store, 40).is_empty());
+        // Taken out after a Yes, it isn't suggested again.
+        assert_eq!(
+            store.set_part_of(export.0, app.0).unwrap(),
+            crate::store::PartOf::Done
+        );
+        assert!(store.part_suggestions().unwrap().is_empty());
+        assert!(store.take_out(export.0).unwrap());
+        assert!(store.part_suggestions().unwrap().is_empty());
         // The user's No is final.
         assert!(store.mark_not_part(export.0, app.0).unwrap());
         assert!(store.part_suggestions().unwrap().is_empty());
