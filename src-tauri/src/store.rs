@@ -37,7 +37,7 @@ pub use pages::{LAX_VERSIONS_KEPT, USER_EDITS_KEPT};
 pub use pages::{MovedFile, MovedPage, Page, PageKind, PageState, fact_key, facts_in};
 #[cfg(test)]
 pub use pairs::Signal;
-pub use pairs::{Candidate, ObviousPair, Suggestion, Verdict};
+pub use pairs::{Candidate, ObviousPair, PartSuggestion, Relation, Suggestion, Verdict};
 #[cfg(test)]
 pub use vectors::cosine;
 
@@ -63,6 +63,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0015_not_same.sql"),
     include_str!("../migrations/0016_pair_verdicts.sql"),
     include_str!("../migrations/0017_part_of.sql"),
+    include_str!("../migrations/0018_project_verdicts.sql"),
 ];
 
 /// How long raw captures are kept unless the user chooses otherwise
@@ -1640,6 +1641,7 @@ mod tests {
         14272306742173636111, // 0015 not same
         12863801613182836056, // 0016 pair verdicts
         2925741326736966748,  // 0017 part of
+        10426696711050450953, // 0018 project verdicts
     ];
 
     #[test]

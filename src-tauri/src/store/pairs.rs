@@ -29,6 +29,42 @@ pub enum Signal {
     LegalSuffix,
     /// A letter or two apart: a typo or an inflection ("Nyterios").
     Typo,
+    /// Two projects named in the same entries on two or more days: how a
+    /// project and its part show up when their names differ (ADR 0013).
+    Together,
+}
+
+/// Projects named together on at least this many days are a candidate pair.
+const TOGETHER_DAYS: usize = 2;
+
+/// How two projects relate, as the model judged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Relation {
+    Same,
+    /// Part of the other; which one is the whole is given with it.
+    PartOf,
+    Neither,
+    Unsure,
+}
+
+impl Relation {
+    fn as_str(self) -> &'static str {
+        match self {
+            Relation::Same => "same",
+            Relation::PartOf => "part_of",
+            Relation::Neither => "neither",
+            Relation::Unsure => "unsure",
+        }
+    }
+}
+
+/// A project the model said is part of another.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PartSuggestion {
+    pub part: (i64, String),
+    pub whole: (i64, String),
+    /// The model's reason: untrusted text, shown as text only.
+    pub reason: String,
 }
 
 /// Two names of one kind that may be the same: the model judges them.
@@ -212,7 +248,8 @@ impl Store {
         let mut candidates = Vec::new();
         for (i, a) in entities.iter().enumerate() {
             for b in &entities[i + 1..] {
-                if a.kind != b.kind || (a.is_new() && b.is_new()) {
+                // Projects have their own judge, which knows about parts.
+                if a.kind != b.kind || a.kind == EntityKind::Project || (a.is_new() && b.is_new()) {
                     continue;
                 }
                 let key = ordered(a.id, b.id);
@@ -241,6 +278,182 @@ impl Store {
         }
         candidates.sort_by_key(|c| (c.signal, std::cmp::Reverse(c.a.mentions + c.b.mentions)));
         Ok(candidates)
+    }
+
+    /// Pairs of projects for the model to judge as the same, one part of the
+    /// other, or neither (ADR 0013): a name signal with at least one side
+    /// known, or both known and named together on `TOGETHER_DAYS` days. Not
+    /// "not the same", not "not part", not already one part of the other,
+    /// and not judged yet or due again, as for [`Store::pair_candidates`].
+    pub fn part_candidates(&self, now: DateTime<Utc>) -> Result<Vec<Candidate>> {
+        let projects: Vec<Entity> = self
+            .entities()?
+            .into_iter()
+            .filter(|e| e.kind == EntityKind::Project)
+            .collect();
+        let not_same = self.not_same_pairs()?;
+        let not_part = self.not_part_pairs()?;
+        let verdicts = self.project_verdicts()?;
+        let mentions = self.mentions_by_entity()?;
+        let days = self.episode_days()?;
+        let mut candidates = Vec::new();
+        for (i, a) in projects.iter().enumerate() {
+            for b in &projects[i + 1..] {
+                let key = ordered(a.id, b.id);
+                if not_same.contains(&key)
+                    || not_part.contains(&key)
+                    || a.part_of == Some(b.id)
+                    || b.part_of == Some(a.id)
+                {
+                    continue;
+                }
+                let signal = match signal(a, b) {
+                    Some(signal) if !(a.is_new() && b.is_new()) => signal,
+                    _ if !a.is_new() && !b.is_new() => {
+                        let together: HashSet<&String> =
+                            match (mentions.get(&a.id), mentions.get(&b.id)) {
+                                (Some(x), Some(y)) => {
+                                    x.intersection(y).filter_map(|e| days.get(e)).collect()
+                                }
+                                _ => HashSet::new(),
+                            };
+                        if together.len() < TOGETHER_DAYS {
+                            continue;
+                        }
+                        Signal::Together
+                    }
+                    _ => continue,
+                };
+                let (first, second) = if a.id < b.id { (a, b) } else { (b, a) };
+                if let Some(v) = verdicts.get(&key)
+                    && !v.due(now, first.mentions as i64, second.mentions as i64)
+                {
+                    continue;
+                }
+                candidates.push(Candidate {
+                    kind: EntityKind::Project,
+                    a: first.clone(),
+                    b: second.clone(),
+                    signal,
+                });
+            }
+        }
+        candidates.sort_by_key(|c| (c.signal, std::cmp::Reverse(c.a.mentions + c.b.mentions)));
+        Ok(candidates)
+    }
+
+    /// Keeps the model's verdict on a pair of projects; `whole` is the
+    /// whole's id for `Relation::PartOf`. Refused (`false`) as
+    /// [`Store::record_verdict`] is, and for a `whole` that isn't one of them.
+    pub fn record_project_verdict(
+        &mut self,
+        (a, mentions_a): (i64, usize),
+        (b, mentions_b): (i64, usize),
+        relation: Relation,
+        whole: Option<i64>,
+        reason: &str,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        let whole = whole.filter(|_| relation == Relation::PartOf);
+        if a == b
+            || (relation == Relation::PartOf) != whole.is_some()
+            || whole.is_some_and(|w| w != a && w != b)
+        {
+            return Ok(false);
+        }
+        let ((a, mentions_a), (b, mentions_b)) = if a < b {
+            ((a, mentions_a), (b, mentions_b))
+        } else {
+            ((b, mentions_b), (a, mentions_a))
+        };
+        let tx = self.conn.transaction()?;
+        let count = |id: i64| -> rusqlite::Result<i64> {
+            tx.query_row(
+                "SELECT count(*) FROM mentions WHERE entity_id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+        };
+        if count(a)? != mentions_a as i64 || count(b)? != mentions_b as i64 || mentions_a == 0 {
+            return Ok(false);
+        }
+        tx.execute(
+            "INSERT OR REPLACE INTO project_verdicts
+                 (a, b, relation, whole, reason, judged_at, mentions_a, mentions_b)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                a,
+                b,
+                relation.as_str(),
+                whole,
+                reason,
+                now.timestamp_millis(),
+                mentions_a as i64,
+                mentions_b as i64
+            ],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    /// The projects the model said are part of another, that can be made so
+    /// now (one level deep) and the user hasn't answered "No" or "Not the
+    /// same" for.
+    pub fn part_suggestions(&self) -> Result<Vec<PartSuggestion>> {
+        let entities: HashMap<i64, Entity> =
+            self.entities()?.into_iter().map(|e| (e.id, e)).collect();
+        let has_parts: HashSet<i64> = entities.values().filter_map(|e| e.part_of).collect();
+        let (not_same, not_part) = (self.not_same_pairs()?, self.not_part_pairs()?);
+        let mut statement = self.conn.prepare(
+            "SELECT a, b, whole, reason FROM project_verdicts
+             WHERE relation = 'part_of' ORDER BY judged_at",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })?;
+        let mut suggestions = Vec::new();
+        for row in rows {
+            let (a, b, whole, reason) = row?;
+            let key = ordered(a, b);
+            if not_same.contains(&key) || not_part.contains(&key) {
+                continue;
+            }
+            let part = if whole == a { b } else { a };
+            let (Some(part), Some(whole)) = (entities.get(&part), entities.get(&whole)) else {
+                continue;
+            };
+            // Only what can be done now: one level deep.
+            if part.part_of.is_some() || whole.part_of.is_some() || has_parts.contains(&part.id) {
+                continue;
+            }
+            suggestions.push(PartSuggestion {
+                part: (part.id, part.name.clone()),
+                whole: (whole.id, whole.name.clone()),
+                reason,
+            });
+        }
+        Ok(suggestions)
+    }
+
+    /// The user says project `a` isn't part of `b`, nor `b` of `a`: never
+    /// suggested as parts again. `false` if either is gone.
+    pub fn mark_not_part(&self, a: i64, b: i64) -> Result<bool> {
+        if a == b {
+            return Ok(false);
+        }
+        let (a, b) = ordered(a, b);
+        self.conn.execute(
+            "INSERT OR IGNORE INTO not_part (a, b)
+             SELECT ?1, ?2 WHERE EXISTS (SELECT 1 FROM entities WHERE id = ?1)
+                             AND EXISTS (SELECT 1 FROM entities WHERE id = ?2)",
+            params![a, b],
+        )?;
+        Ok(self.not_part_pairs()?.contains(&(a, b)))
     }
 
     /// Keeps the model's verdict on a pair. Refused (`false`) if either
@@ -304,7 +517,10 @@ impl Store {
             self.entities()?.into_iter().map(|e| (e.id, e)).collect();
         let not_same = self.not_same_pairs()?;
         let mut statement = self.conn.prepare(
-            "SELECT a, b, reason FROM pair_verdicts WHERE verdict = 'yes' ORDER BY judged_at",
+            "SELECT a, b, reason, judged_at FROM pair_verdicts WHERE verdict = 'yes'
+             UNION ALL
+             SELECT a, b, reason, judged_at FROM project_verdicts WHERE relation = 'same'
+             ORDER BY 4",
         )?;
         let rows = statement.query_map([], |row| {
             Ok((
@@ -409,6 +625,40 @@ impl Store {
                 },
             ))
         })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    fn project_verdicts(&self) -> Result<HashMap<(i64, i64), Judged>> {
+        let mut statement = self.conn.prepare(
+            "SELECT a, b, relation, judged_at, mentions_a, mentions_b FROM project_verdicts",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                (row.get(0)?, row.get(1)?),
+                Judged {
+                    // "same" and "part_of" wait for the user, like a yes.
+                    yes: matches!(row.get::<_, String>(2)?.as_str(), "same" | "part_of"),
+                    at: DateTime::from_timestamp_millis(row.get(3)?).unwrap_or_default(),
+                    mentions: (row.get(4)?, row.get(5)?),
+                },
+            ))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// The day (local time) of every episode that mentions something.
+    fn episode_days(&self) -> Result<HashMap<i64, String>> {
+        let mut statement = self.conn.prepare(
+            "SELECT id, date(started_at / 1000, 'unixepoch', 'localtime') FROM episodes
+             WHERE id IN (SELECT episode_id FROM mentions)",
+        )?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    fn not_part_pairs(&self) -> Result<HashSet<(i64, i64)>> {
+        let mut statement = self.conn.prepare("SELECT a, b FROM not_part")?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
 
@@ -964,5 +1214,151 @@ mod tests {
             .map(name)
             .collect();
         assert_eq!(likely, ["Anna Other"]);
+    }
+    fn projects(store: &mut Store, day: i64, names: &[&str]) {
+        mention_as(store, day, EntityKind::Project, names);
+    }
+
+    fn part_candidates(store: &Store, now: i64) -> Vec<(String, String, Signal)> {
+        store
+            .part_candidates(at(now))
+            .unwrap()
+            .into_iter()
+            .map(|c| (c.a.name, c.b.name, c.signal))
+            .collect()
+    }
+
+    #[test]
+    fn projects_named_together_on_two_days_are_candidates() {
+        let mut store = Store::open_in_memory().unwrap();
+        // Two known projects named together on one day only: not yet.
+        projects(&mut store, 0, &["Nyterio", "LinkedIn-serien"]);
+        projects(&mut store, 1, &["Nyterio"]);
+        projects(&mut store, 2, &["LinkedIn-serien"]);
+        assert!(part_candidates(&store, 2).is_empty());
+        projects(&mut store, 3, &["Nyterio", "LinkedIn-serien"]);
+        assert_eq!(
+            part_candidates(&store, 3),
+            [(
+                "Nyterio".to_string(),
+                "LinkedIn-serien".to_string(),
+                Signal::Together
+            )]
+        );
+        // Projects go to the part judge, not the same-name judge.
+        assert!(candidates(&store, 3).is_empty());
+    }
+
+    #[test]
+    fn project_names_with_a_signal_are_candidates() {
+        let mut store = Store::open_in_memory().unwrap();
+        projects(&mut store, 0, &["Exempelappen"]);
+        projects(&mut store, 1, &["Exempelappen"]);
+        projects(&mut store, 2, &["Exempelappen export"]);
+        assert_eq!(
+            part_candidates(&store, 2),
+            [(
+                "Exempelappen".to_string(),
+                "Exempelappen export".to_string(),
+                Signal::Contains
+            )]
+        );
+    }
+
+    #[test]
+    fn part_of_is_a_suggestion_until_answered() {
+        let mut store = Store::open_in_memory().unwrap();
+        projects(&mut store, 0, &["Exempelappen"]);
+        projects(&mut store, 1, &["Exempelappen"]);
+        projects(&mut store, 2, &["Exempelappen export"]);
+        let (app, export) = counts(&store, "Exempelappen", "Exempelappen export");
+        // A whole that isn't one of the two is refused.
+        assert!(
+            !store
+                .record_project_verdict(app, export, Relation::PartOf, Some(999), "", at(2))
+                .unwrap()
+        );
+        assert!(
+            store
+                .record_project_verdict(
+                    app,
+                    export,
+                    Relation::PartOf,
+                    Some(app.0),
+                    "A feature.",
+                    at(2)
+                )
+                .unwrap()
+        );
+        let suggestions = store.part_suggestions().unwrap();
+        assert_eq!(suggestions.len(), 1);
+        assert_eq!(suggestions[0].part.1, "Exempelappen export");
+        assert_eq!(suggestions[0].whole.1, "Exempelappen");
+        assert_eq!(suggestions[0].reason, "A feature.");
+        // Waiting for the user: not judged again.
+        assert!(part_candidates(&store, 40).is_empty());
+        // Taken out after a Yes, it isn't suggested again.
+        assert_eq!(
+            store.set_part_of(export.0, app.0).unwrap(),
+            crate::store::PartOf::Done
+        );
+        assert!(store.part_suggestions().unwrap().is_empty());
+        assert!(store.take_out(export.0).unwrap());
+        assert!(store.part_suggestions().unwrap().is_empty());
+        // The user's No is final.
+        assert!(store.mark_not_part(export.0, app.0).unwrap());
+        assert!(store.part_suggestions().unwrap().is_empty());
+        assert!(part_candidates(&store, 40).is_empty());
+    }
+
+    #[test]
+    fn same_projects_are_a_merge_suggestion_and_parts_need_one_level() {
+        let mut store = Store::open_in_memory().unwrap();
+        projects(&mut store, 0, &["Lax", "Exempelappen", "Kryptering"]);
+        projects(&mut store, 1, &["Lax", "Exempelappen", "Kryptering"]);
+        projects(&mut store, 2, &["Lax development"]);
+        let (lax, dev) = counts(&store, "Lax", "Lax development");
+        assert!(
+            store
+                .record_project_verdict(lax, dev, Relation::Same, None, "One project.", at(2))
+                .unwrap()
+        );
+        let merges = store.merge_suggestions().unwrap();
+        assert_eq!(merges.len(), 1);
+        assert_eq!(merges[0].into.1, "Lax");
+        // A part suggestion that can't be done now (the whole is a part) waits.
+        let (app, crypto) = counts(&store, "Exempelappen", "Kryptering");
+        assert!(
+            store
+                .record_project_verdict(app, crypto, Relation::PartOf, Some(app.0), "", at(2))
+                .unwrap()
+        );
+        assert_eq!(
+            store.set_part_of(app.0, lax.0).unwrap(),
+            crate::store::PartOf::Done
+        );
+        assert!(store.part_suggestions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_forgotten_entry_takes_the_project_verdict() {
+        let mut store = Store::open_in_memory().unwrap();
+        projects(&mut store, 0, &["Exempelappen"]);
+        projects(&mut store, 1, &["Exempelappen"]);
+        projects(&mut store, 2, &["Exempelappen export"]);
+        let (app, export) = counts(&store, "Exempelappen", "Exempelappen export");
+        assert!(
+            store
+                .record_project_verdict(app, export, Relation::PartOf, Some(app.0), "x", at(2))
+                .unwrap()
+        );
+        store
+            .conn
+            .execute(
+                "DELETE FROM mentions WHERE episode_id = (SELECT min(id) FROM episodes)",
+                [],
+            )
+            .unwrap();
+        assert!(store.part_suggestions().unwrap().is_empty());
     }
 }

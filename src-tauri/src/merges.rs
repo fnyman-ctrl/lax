@@ -23,7 +23,9 @@ use crate::logging::{self, ErrorKind, Field};
 use crate::models::structured::{self, Captured, StructuredError, Validate, is_invisible};
 use crate::models::{Endpoint, ModelClient, ModelTurn};
 use crate::pause::Pause;
-use crate::store::{Candidate, EntityKind, ModelTask, Store, Suggestion, Verdict};
+use crate::store::{
+    Candidate, EntityKind, ModelTask, PartSuggestion, Relation, Store, Suggestion, Verdict,
+};
 
 /// Pairs judged per round: each is a model call while the user is away.
 const PAIRS_PER_ROUND: usize = 2;
@@ -67,6 +69,58 @@ first name or a word, or being mentioned near similar topics, is not enough. Ans
 they show the two are different, for instance different roles, companies, places or kinds of \
 work. Answer \"unsure\" when they don't tell. The reason is one short sentence.";
 const SHAPE: &str = r#"{"same": "yes" | "no" | "unsure", "reason": string}"#;
+
+/// For two projects, which may also be one part of the other (ADR 0013).
+const PROJECT_TASK: &str = "Decide how two projects in the user's memory relate. Project 1 is \
+the first name given, project 2 the second. You get each with entries from the user's journal \
+that mention it, and facts from its page if it has one. \"same\": one name is a short form, a \
+longer form, a misspelling or an inflection of the other, and they tell of the same work. \
+\"part_of\": one is a piece of the other, such as a feature of a product, a phase of an \
+initiative or a series within a business; give the bigger one as \"whole\", 1 or 2. \
+\"neither\": they are different pieces of work. \"unsure\": they don't tell. Being mentioned \
+together, or sharing a word, is not enough for \"same\" or \"part_of\" on its own. The reason \
+is one short sentence.";
+const PROJECT_SHAPE: &str =
+    r#"{"relation": "same" | "part_of" | "neither" | "unsure", "whole": 1 | 2, "reason": string}"#;
+
+/// The model's answer on two projects.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectAnswer {
+    relation: Rel,
+    /// Which one is the whole, for "part_of": 1 or 2.
+    #[serde(default)]
+    whole: Option<u8>,
+    reason: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum Rel {
+    Same,
+    PartOf,
+    Neither,
+    Unsure,
+}
+
+impl Validate for ProjectAnswer {
+    fn validate(&self) -> Result<(), &'static str> {
+        if self.relation == Rel::PartOf && !matches!(self.whole, Some(1 | 2)) {
+            return Err("part_of without a whole");
+        }
+        if self.reason.chars().count() > 5 * MAX_REASON_CHARS {
+            return Err("the reason was far too long");
+        }
+        Ok(())
+    }
+}
+
+/// What the model said about a pair.
+#[derive(Debug)]
+enum Judgment {
+    Names(Answer),
+    Projects(ProjectAnswer),
+}
 
 /// The model's answer.
 #[derive(Debug, Deserialize)]
@@ -142,26 +196,20 @@ pub async fn round(app: &AppHandle, setbacks: &mut Setbacks) -> Result<(), ()> {
         };
         let (a, b) = (&work.candidate.a, &work.candidate.b);
         match answer {
-            Ok(answer) => {
+            Ok(judgment) => {
                 setbacks.failures.remove(&(a.id, b.id));
-                let verdict = match answer.same {
-                    Same::Yes => Verdict::Yes,
-                    Same::No => Verdict::No,
-                    Same::Unsure => Verdict::Unsure,
+                let stored = with_store(app, |store| record(store, &work, Some(&judgment)));
+                let (same, part) = match &judgment {
+                    Judgment::Names(answer) => (answer.same == Same::Yes, false),
+                    Judgment::Projects(answer) => {
+                        (answer.relation == Rel::Same, answer.relation == Rel::PartOf)
+                    }
                 };
-                let stored = with_store(app, |store| {
-                    store.record_verdict(
-                        (a.id, a.mentions),
-                        (b.id, b.mentions),
-                        verdict,
-                        &clean(&answer.reason),
-                        Utc::now(),
-                    )
-                });
                 logging::info(
                     "merges.judged",
                     &[
-                        Field::Flag("same", verdict == Verdict::Yes),
+                        Field::Flag("same", same),
+                        Field::Flag("part", part),
                         Field::Flag("stored", matches!(stored, Some(Ok(true)))),
                         Field::Duration("elapsed", started.elapsed()),
                     ],
@@ -181,20 +229,53 @@ pub async fn round(app: &AppHandle, setbacks: &mut Setbacks) -> Result<(), ()> {
                 // Asked again next round, and after a few bad answers it
                 // waits like an "unsure".
                 if setbacks.bad_answer((a.id, b.id)) {
-                    let _ = with_store(app, |store| {
-                        store.record_verdict(
-                            (a.id, a.mentions),
-                            (b.id, b.mentions),
-                            Verdict::Unsure,
-                            "",
-                            Utc::now(),
-                        )
-                    });
+                    let _ = with_store(app, |store| record(store, &work, None));
                 }
             }
         }
     }
     Ok(())
+}
+
+/// Keeps what the model said about `work`'s pair, or "unsure" for `None`
+/// (after too many bad answers).
+fn record(
+    store: &mut Store,
+    work: &Work,
+    judgment: Option<&Judgment>,
+) -> crate::store::Result<bool> {
+    let (a, b) = (&work.candidate.a, &work.candidate.b);
+    let (a, b) = ((a.id, a.mentions), (b.id, b.mentions));
+    let now = Utc::now();
+    match judgment {
+        Some(Judgment::Names(answer)) => {
+            let verdict = match answer.same {
+                Same::Yes => Verdict::Yes,
+                Same::No => Verdict::No,
+                Same::Unsure => Verdict::Unsure,
+            };
+            store.record_verdict(a, b, verdict, &clean(&answer.reason), now)
+        }
+        Some(Judgment::Projects(answer)) => {
+            let relation = match answer.relation {
+                Rel::Same => Relation::Same,
+                Rel::PartOf => Relation::PartOf,
+                Rel::Neither => Relation::Neither,
+                Rel::Unsure => Relation::Unsure,
+            };
+            // Project 1 is `a`, as the model was given them.
+            let whole = match answer.whole {
+                Some(1) => Some(a.0),
+                Some(2) => Some(b.0),
+                _ => None,
+            };
+            store.record_project_verdict(a, b, relation, whole, &clean(&answer.reason), now)
+        }
+        None if work.candidate.kind == EntityKind::Project => {
+            store.record_project_verdict(a, b, Relation::Unsure, None, "", now)
+        }
+        None => store.record_verdict(a, b, Verdict::Unsure, "", now),
+    }
 }
 
 /// The pairs to judge this round, if the memory is on and has a model.
@@ -206,11 +287,11 @@ fn gather(store: &mut Store) -> crate::store::Result<Vec<Work>> {
         return Ok(Vec::new());
     };
     let mut work = Vec::new();
-    for candidate in store
-        .pair_candidates(Utc::now())?
-        .into_iter()
-        .take(PAIRS_PER_ROUND)
-    {
+    let now = Utc::now();
+    let mut candidates = store.pair_candidates(now)?;
+    candidates.extend(store.part_candidates(now)?);
+    candidates.sort_by_key(|c| (c.signal, std::cmp::Reverse(c.a.mentions + c.b.mentions)));
+    for candidate in candidates.into_iter().take(PAIRS_PER_ROUND) {
         work.push(Work {
             base_url: choice.base_url.clone(),
             model: choice.model.clone(),
@@ -247,19 +328,27 @@ fn about(store: &Store, kind: EntityKind, id: i64, name: &str) -> crate::store::
     Ok(text)
 }
 
-async fn judge(work: &Work) -> Result<Answer, StructuredError> {
+async fn judge(work: &Work) -> Result<Judgment, StructuredError> {
     let endpoint =
         Endpoint::parse(&work.base_url).map_err(|_| StructuredError::NotTheRequestedJson)?;
     let client = ModelClient::new(endpoint).map_err(StructuredError::Model)?;
-    structured::ask(
-        &client,
-        &work.model,
-        TASK,
-        SHAPE,
-        &[Captured(&work.about_a), Captured(&work.about_b)],
-        MAX_TOKENS,
-    )
-    .await
+    let captured = [Captured(&work.about_a), Captured(&work.about_b)];
+    if work.candidate.kind == EntityKind::Project {
+        structured::ask(
+            &client,
+            &work.model,
+            PROJECT_TASK,
+            PROJECT_SHAPE,
+            &captured,
+            MAX_TOKENS,
+        )
+        .await
+        .map(Judgment::Projects)
+    } else {
+        structured::ask(&client, &work.model, TASK, SHAPE, &captured, MAX_TOKENS)
+            .await
+            .map(Judgment::Names)
+    }
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -303,6 +392,54 @@ pub fn merge_suggestions(app: AppHandle) -> Result<Vec<SuggestionItem>, String> 
             .merge_suggestions()
             .map(|list| list.into_iter().map(SuggestionItem::from).collect())
             .map_err(|_| "Lax couldn't read the memory.".to_string())
+    })
+    .unwrap_or_else(|| Err("The database isn't available.".to_string()))
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PartSuggestionItem {
+    pub part: NameItem,
+    pub whole: NameItem,
+    pub reason: String,
+}
+
+impl From<PartSuggestion> for PartSuggestionItem {
+    fn from(s: PartSuggestion) -> Self {
+        PartSuggestionItem {
+            part: NameItem {
+                id: s.part.0,
+                name: s.part.1,
+            },
+            whole: NameItem {
+                id: s.whole.0,
+                name: s.whole.1,
+            },
+            reason: s.reason,
+        }
+    }
+}
+
+/// The projects the model said are part of another, for the Memory view.
+#[tauri::command(async)]
+pub fn part_suggestions(app: AppHandle) -> Result<Vec<PartSuggestionItem>, String> {
+    with_store(&app, |store| {
+        store
+            .part_suggestions()
+            .map(|list| list.into_iter().map(PartSuggestionItem::from).collect())
+            .map_err(|_| "Lax couldn't read the memory.".to_string())
+    })
+    .unwrap_or_else(|| Err("The database isn't available.".to_string()))
+}
+
+/// The user says neither project is part of the other: never suggested
+/// again.
+#[tauri::command(async)]
+pub fn not_part(app: AppHandle, a: i64, b: i64) -> Result<(), String> {
+    with_store(&app, |store| match store.mark_not_part(a, b) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err("One of them is no longer in the memory.".to_string()),
+        Err(_) => Err("Lax couldn't save that.".to_string()),
     })
     .unwrap_or_else(|| Err("The database isn't available.".to_string()))
 }
@@ -478,10 +615,137 @@ mod tests {
                 about_a: block(kind, a, ea),
                 about_b: block(kind, b, eb),
             };
-            let got = judge(&work).await.expect("an answer").same;
+            let Judgment::Names(answer) = judge(&work).await.expect("an answer") else {
+                panic!("people are judged by name");
+            };
+            let got = answer.same;
             // "unsure" is fine either way; a wrong yes or no is not.
             if got != want && got != Same::Unsure {
                 wrong.push(format!("{a} / {b}: {got:?}, expected {want:?}"));
+            }
+        }
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+
+    #[test]
+    fn project_answers_need_a_whole_for_part_of() {
+        let parse = |json: &str| structured::parse::<ProjectAnswer>(json);
+        let part = parse(r#"{"relation":"part_of","whole":2,"reason":"A feature."}"#).unwrap();
+        assert_eq!((part.relation, part.whole), (Rel::PartOf, Some(2)));
+        assert_eq!(
+            parse(r#"{"relation":"neither","reason":""}"#)
+                .unwrap()
+                .relation,
+            Rel::Neither
+        );
+        for reply in [
+            r#"{"relation":"part_of","reason":"x"}"#,
+            r#"{"relation":"part_of","whole":3,"reason":"x"}"#,
+        ] {
+            assert!(
+                matches!(parse(reply), Err(StructuredError::Invalid(_))),
+                "{reply}"
+            );
+        }
+        assert_eq!(
+            parse(r#"{"relation":"merge","reason":"x"}"#).err(),
+            Some(StructuredError::NotTheRequestedJson)
+        );
+    }
+
+    /// Against a real model server: synthetic pairs of projects.
+    #[tokio::test]
+    #[ignore = "needs a local model server: LAX_LIVE_MODEL_URL, LAX_LIVE_CHAT_MODEL"]
+    async fn live_project_judge() {
+        let env = |name| std::env::var(name).unwrap_or_else(|_| panic!("{name} is not set"));
+        let entity = |name: &str| crate::store::Entity {
+            id: 1,
+            kind: EntityKind::Project,
+            name: name.to_string(),
+            aliases: Vec::new(),
+            mentions: 1,
+            days: 1,
+            last_seen: Utc::now(),
+            first_seen: Utc::now(),
+            kept: false,
+            part_of: None,
+        };
+        let block = |name: &str, entries: &[&str]| {
+            let mut text = format!("Name: {name}\nKind: project\nEntries that mention it:\n");
+            for entry in entries {
+                text.push_str(&format!("- {entry}\n"));
+            }
+            text
+        };
+        type Case<'a> = (
+            &'a str,
+            &'a [&'a str],
+            &'a str,
+            &'a [&'a str],
+            Rel,
+            Option<u8>,
+        );
+        let cases: [Case; 4] = [
+            (
+                "Exempelappen",
+                &[
+                    "Byggde exportfunktionen i Exempelappen.",
+                    "Släppte en ny version av Exempelappen.",
+                ],
+                "Exempelappens export",
+                &["Fixade en bugg i Exempelappens export till CSV."],
+                Rel::PartOf,
+                Some(1),
+            ),
+            (
+                "Skrivhjälpen",
+                &["Fixade att laxen simmar till markören i skrivhjälpen i Lax."],
+                "Lax",
+                &["Byggde krypteringen i Lax."],
+                Rel::PartOf,
+                Some(2),
+            ),
+            (
+                "Q3 lansering",
+                &["Planerade Q3 lansering med marknad."],
+                "Exempelappen",
+                &["Släppte en ny version av Exempelappen."],
+                Rel::Neither,
+                None,
+            ),
+            (
+                "Exempelappen",
+                &["Släppte en ny version av Exempelappen."],
+                "Kundportalen",
+                &["Svarade kunder i Kundportalen för Example AB."],
+                Rel::Neither,
+                None,
+            ),
+        ];
+        let mut wrong = Vec::new();
+        for (a, ea, b, eb, want, whole) in cases {
+            let work = Work {
+                base_url: env("LAX_LIVE_MODEL_URL"),
+                model: env("LAX_LIVE_CHAT_MODEL"),
+                candidate: Candidate {
+                    kind: EntityKind::Project,
+                    a: entity(a),
+                    b: entity(b),
+                    signal: crate::store::Signal::Together,
+                },
+                about_a: block(a, ea),
+                about_b: block(b, eb),
+            };
+            let Judgment::Projects(answer) = judge(&work).await.expect("an answer") else {
+                panic!("projects are judged as projects");
+            };
+            let right = answer.relation == want && (want != Rel::PartOf || answer.whole == whole)
+                || answer.relation == Rel::Unsure;
+            if !right {
+                wrong.push(format!(
+                    "{a} / {b}: {:?} {:?}",
+                    answer.relation, answer.whole
+                ));
             }
         }
         assert!(wrong.is_empty(), "{wrong:#?}");
