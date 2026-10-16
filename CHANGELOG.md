@@ -15,6 +15,8 @@ What changed in each version of Lax, for people who use it.
 - **Memory: suggested merges.** Other names that may be the same, such as
   "Anna" and "Anna Example", are judged by the model on your Mac while you're
   away, and suggested with its reason. Lax never merges on its own.
+- **Memory: Same as.** The list in a name's Change panel puts the likely
+  names first, and can be searched when there are many.
 
 ## 0.1.0 (2026-10-16)
 

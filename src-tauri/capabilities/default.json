@@ -60,6 +60,7 @@
     "allow-not-same",
     "allow-merge-obvious-pairs",
     "allow-merge-suggestions",
+    "allow-likely-same",
     "allow-dont-learn-list",
     "allow-allow-learning",
     "allow-setup-status",

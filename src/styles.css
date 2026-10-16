@@ -1262,6 +1262,10 @@ button.link {
   border-top: none;
 }
 
+.same-search {
+  min-width: 10rem;
+}
+
 .suggestions .reason {
   display: block;
 }

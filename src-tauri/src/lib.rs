@@ -112,6 +112,7 @@ pub fn run() {
             memory::not_same,
             memory::merge_obvious_pairs,
             merges::merge_suggestions,
+            merges::likely_same,
             memory::dont_learn_list,
             memory::allow_learning,
             setup::setup_status,

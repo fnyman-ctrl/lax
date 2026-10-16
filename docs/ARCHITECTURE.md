@@ -85,7 +85,8 @@ prompt never freezes the window. See
   from up to three entries and the page facts of each name. Verdicts are kept
   in `pair_verdicts`, go with any change to either name's mentions, and a
   "no" or "unsure" is judged again after 30 days or twice the mentions. The
-  user merges; "Not the same" is kept in `not_same` and is final.
+  user merges; "Not the same" is kept in `not_same` and is final. The Change
+  panel's "Same as" list puts the likely names first (`Store::likely_same`).
 - Each entity Lax keeps (mentioned on two days, or kept by the user) has a
   page, plus the About me page (`src-tauri/src/pages`). A page is one
   Markdown text in the `text` column of its row in `pages`, in the encrypted

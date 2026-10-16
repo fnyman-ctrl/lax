@@ -818,6 +818,86 @@ export function NewNames({
   );
 }
 
+/** Above this many names, the "Same as" list can be searched. */
+const SEARCH_FROM = 15;
+
+/**
+ * The "Same as" list (ADR 0013, point 4): the names most likely to be the
+ * same first, then all the others by name. With many names, a search box
+ * narrows both.
+ */
+export function SameAsPicker({
+  id,
+  others,
+  likely,
+  value,
+  onChange,
+}: {
+  id: string;
+  others: EntityItem[];
+  likely: number[];
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const wanted = search.trim().toLocaleLowerCase();
+  const matches = (e: EntityItem) =>
+    wanted === "" ||
+    [e.name, ...e.aliases].some((n) => n.toLocaleLowerCase().includes(wanted));
+  const byId = new Map(others.map((e) => [e.id, e]));
+  const first = likely.flatMap((id) => byId.get(id) ?? []).filter(matches);
+  const rest = others.filter((e) => !likely.includes(e.id)).filter(matches);
+  const shown = [...first, ...rest];
+  useEffect(() => {
+    if (value !== "" && !shown.some((e) => String(e.id) === value)) {
+      onChange("");
+    }
+  });
+  return (
+    <>
+      <label htmlFor={id}>Same as</label>
+      {others.length > SEARCH_FROM && (
+        <input
+          type="search"
+          className="same-search"
+          placeholder="Search names"
+          aria-label="Search the names"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+      )}
+      <select id={id} value={value} onChange={(e) => onChange(e.target.value)}>
+        <option value="">{shown.length === 0 ? "No name matches" : "Choose…"}</option>
+        {first.length > 0 && (
+          <optgroup label="Likely">
+            {first.map((e) => (
+              <option key={e.id} value={e.id}>
+                {e.name}
+              </option>
+            ))}
+          </optgroup>
+        )}
+        {rest.length > 0 &&
+          (first.length > 0 ? (
+            <optgroup label="All names">
+              {rest.map((e) => (
+                <option key={e.id} value={e.id}>
+                  {e.name}
+                </option>
+              ))}
+            </optgroup>
+          ) : (
+            rest.map((e) => (
+              <option key={e.id} value={e.id}>
+                {e.name}
+              </option>
+            ))
+          ))}
+      </select>
+    </>
+  );
+}
+
 /**
  * One entity, with "Keep" while it is new and a "Change" panel to rename it,
  * merge it into another of its kind, or forget it.
@@ -842,6 +922,8 @@ function EntityRow({
 }) {
   const [name, setName] = useState(entity.name);
   const [into, setInto] = useState("");
+  // Ids of the names most likely to be the same, best first (ADR 0013).
+  const [likely, setLikely] = useState<number[]>([]);
   // New names were most likely noise, so forgetting one also keeps it from
   // coming back, unless the user unticks it.
   const [dontLearn, setDontLearn] = useState(entity.isNew);
@@ -861,6 +943,7 @@ function EntityRow({
     if (open) {
       setName(entity.name);
       setInto("");
+      invoke<number[]>("likely_same", { id: entity.id }).then(setLikely, () => setLikely([]));
       setDontLearn(entity.isNew);
       setConfirming(false);
       nameInput.current?.focus();
@@ -1005,19 +1088,13 @@ function EntityRow({
           </p>
           {others.length > 0 && (
             <p className="buttons">
-              <label htmlFor={`same-${entity.id}`}>Same as</label>
-              <select
+              <SameAsPicker
                 id={`same-${entity.id}`}
+                others={others}
+                likely={likely}
                 value={into}
-                onChange={(e) => setInto(e.target.value)}
-              >
-                <option value="">Choose…</option>
-                {others.map((e) => (
-                  <option key={e.id} value={e.id}>
-                    {e.name}
-                  </option>
-                ))}
-              </select>
+                onChange={setInto}
+              />
               <button type="button" disabled={busy || into === ""} onClick={merge}>
                 Merge into it
               </button>

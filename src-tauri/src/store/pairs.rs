@@ -341,6 +341,60 @@ impl Store {
         Ok(suggestions)
     }
 
+    /// The names of `id`'s kind most likely to be the same as it, for the
+    /// Change panel's "Same as" list (ADR 0013, point 4), best first: pairs
+    /// suggested (obvious or judged "yes"), then pairs with a name signal,
+    /// then names that share a word with it (not a legal suffix); within
+    /// each, the most mentioned first. Never one the user said is not the
+    /// same.
+    pub fn likely_same(&self, id: i64) -> Result<Vec<i64>> {
+        let entities = self.entities()?;
+        let Some(me) = entities.iter().find(|e| e.id == id) else {
+            return Ok(Vec::new());
+        };
+        let not_same = self.not_same_pairs()?;
+        // The names suggested together with it, obvious or judged.
+        let paired = self
+            .obvious_pairs()?
+            .into_iter()
+            .map(|p| (p.into.0, p.from.0))
+            .chain(
+                self.merge_suggestions()?
+                    .into_iter()
+                    .map(|s| (s.into.0, s.from.0)),
+            );
+        let suggested: HashSet<i64> = paired
+            .filter_map(|(a, b)| match (a == id, b == id) {
+                (true, _) => Some(b),
+                (_, true) => Some(a),
+                _ => None,
+            })
+            .collect();
+        let my_words: HashSet<String> = words(&me.name)
+            .into_iter()
+            .filter(|w| !LEGAL_SUFFIXES.contains(&w.as_str()))
+            .collect();
+        let mut ranked: Vec<(u8, std::cmp::Reverse<usize>, i64)> = Vec::new();
+        for other in &entities {
+            if other.id == id || other.kind != me.kind || not_same.contains(&ordered(id, other.id))
+            {
+                continue;
+            }
+            let rank = if suggested.contains(&other.id) {
+                0
+            } else if signal(me, other).is_some() {
+                1
+            } else if words(&other.name).iter().any(|w| my_words.contains(w)) {
+                2
+            } else {
+                continue;
+            };
+            ranked.push((rank, std::cmp::Reverse(other.mentions), other.id));
+        }
+        ranked.sort();
+        Ok(ranked.into_iter().map(|(_, _, id)| id).collect())
+    }
+
     fn verdicts(&self) -> Result<HashMap<(i64, i64), Judged>> {
         let mut statement = self.conn.prepare(
             "SELECT a, b, verdict, judged_at, mentions_a, mentions_b FROM pair_verdicts",
@@ -855,5 +909,59 @@ mod tests {
             .unwrap();
         assert_eq!(store.verdict_of(a.0, b.0).unwrap(), None);
         assert!(store.merge_suggestions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn likely_names_come_first_by_how_likely() {
+        let mut store = Store::open_in_memory().unwrap();
+        for day in [0, 1] {
+            people(&mut store, day, &["Anna Example", "Anna Other"]);
+        }
+        people(&mut store, 2, &["Anna"]);
+        people(&mut store, 3, &["Anne"]);
+        people(&mut store, 4, &["Bo Example"]);
+        people(&mut store, 5, &["Cecilia Unrelated"]);
+        people(&mut store, 6, &["Dan Example"]);
+        mention_as(&mut store, 7, EntityKind::Project, &["Anna Projekt"]);
+        let (anna, example) = counts(&store, "Anna", "Anna Example");
+        assert!(
+            store
+                .record_verdict(anna, example, Verdict::Yes, "Same team.", at(7))
+                .unwrap()
+        );
+        let name = |id: i64| {
+            store
+                .entities()
+                .unwrap()
+                .into_iter()
+                .find(|e| e.id == id)
+                .unwrap()
+                .name
+        };
+        let likely: Vec<String> = store
+            .likely_same(anna.0)
+            .unwrap()
+            .into_iter()
+            .map(name)
+            .collect();
+        // Suggested, then a name signal; never another kind or an unrelated name.
+        assert_eq!(likely, ["Anna Example", "Anna Other"]);
+        let likely: Vec<String> = store
+            .likely_same(counts(&store, "Bo Example", "Anna").0.0)
+            .unwrap()
+            .into_iter()
+            .map(name)
+            .collect();
+        // Sharing a word: the most mentioned first.
+        assert_eq!(likely, ["Anna Example", "Dan Example"]);
+        // Not the same takes a name off.
+        assert!(store.mark_not_same(anna.0, example.0).unwrap());
+        let likely: Vec<String> = store
+            .likely_same(anna.0)
+            .unwrap()
+            .into_iter()
+            .map(name)
+            .collect();
+        assert_eq!(likely, ["Anna Other"]);
     }
 }

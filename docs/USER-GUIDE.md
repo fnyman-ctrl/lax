@@ -66,7 +66,9 @@ choose.
   and "Anna Example" or "Nyterios" and "Nyterio", are judged by the model on
   this Mac from the entries that mention them, while you're away and the Mac
   is on power. Its "yes" is shown under **These may be the same**, with its
-  reason. If a short name fits several, Lax asks which one, or none.
+  reason. If a short name fits several, Lax asks which one, or none. In a
+  name's **Change** panel, **Same as** lists the likely names first; with
+  many names, you can search it.
 - **Captures:** everything Lax has read. Search it, forget a time or an app, or
   delete everything.
 - **Exclusions:** apps, websites and window titles Lax never reads. Banking and
