@@ -58,7 +58,12 @@ choose.
   until they come back on another day. One that doesn't come back within two
   weeks of your newest journal entry (four weeks if it was mentioned three
   times or more) leaves the memory. The journal entries stay, and the name can
-  come back as new. Press **Keep** to keep one for good.
+  come back as new. Press **Keep** to keep one for good. Organisations whose
+  names differ only by a legal suffix or punctuation ("Example" and "Example
+  AB") are suggested at the top, with **Merge**, **Not the same** and **Merge
+  all**. Lax never merges on its own, and never suggests a pair again once you
+  say they're not the same. "Example AB" and "Example Oy" aren't suggested:
+  they're often different companies.
 - **Captures:** everything Lax has read. Search it, forget a time or an app, or
   delete everything.
 - **Exclusions:** apps, websites and window titles Lax never reads. Banking and

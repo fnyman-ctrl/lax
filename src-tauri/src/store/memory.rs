@@ -419,6 +419,16 @@ impl Store {
              WHERE id = ?2",
             [from, into],
         )?;
+        // What the user said isn't the same as `from` isn't the same as
+        // `into` either (ADR 0013).
+        tx.execute(
+            "INSERT OR IGNORE INTO not_same (a, b)
+             SELECT min(?2, other), max(?2, other)
+             FROM (SELECT CASE WHEN a = ?1 THEN b ELSE a END AS other
+                   FROM not_same WHERE a = ?1 OR b = ?1)
+             WHERE other != ?2",
+            [from, into],
+        )?;
         carry_page(&tx, from, into, now)?;
         tx.execute("DELETE FROM entities WHERE id = ?1", [from])?;
         tx.commit()?;

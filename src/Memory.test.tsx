@@ -1,7 +1,7 @@
 import { describe, expect, test, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
-import { type EntityItem, NewNames, OldPageFiles } from "./Memory";
+import { type EntityItem, NewNames, ObviousPairs, OldPageFiles, type PairItem } from "./Memory";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 const mocked = vi.mocked(invoke);
@@ -82,6 +82,68 @@ describe("new names", () => {
     const { container } = render(
       <NewNames entities={[entity(1, "Anna Example", false)]} row={row} />,
     );
+    expect(container.textContent).toBe("");
+  });
+});
+
+describe("obvious pairs", () => {
+  const pair = (fromId: number, from: string, intoId: number, into: string): PairItem => ({
+    from: { id: fromId, name: from },
+    into: { id: intoId, name: into },
+  });
+
+  function show(pairs: PairItem[]) {
+    mocked.mockReset();
+    mocked.mockImplementation(async (command: string) =>
+      command === "merge_obvious_pairs" ? 2 : null,
+    );
+    const run = vi.fn((work: Promise<string>) => work.then(() => true));
+    render(<ObviousPairs pairs={pairs} busy={false} run={run} />);
+    return run;
+  }
+
+  test("merge one into the name that stays", async () => {
+    const run = show([pair(2, "Exempelbolaget", 1, "Exempelbolaget AB")]);
+    await act(async () =>
+      fireEvent.click(
+        screen.getByRole("button", { name: "Merge Exempelbolaget into Exempelbolaget AB" }),
+      ),
+    );
+    expect(mocked).toHaveBeenCalledWith("merge_entities", { from: 2, into: 1 });
+    expect(await run.mock.calls[0][0]).toBe("Exempelbolaget is now part of Exempelbolaget AB.");
+    // One pair: no Merge all.
+    expect(screen.queryByRole("button", { name: "Merge all" })).toBeNull();
+  });
+
+  test("not the same is sent for the pair", async () => {
+    show([pair(2, "Exempelbolaget", 1, "Exempelbolaget AB")]);
+    await act(async () =>
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: "Exempelbolaget and Exempelbolaget AB are not the same",
+        }),
+      ),
+    );
+    expect(mocked).toHaveBeenCalledWith("not_same", { a: 2, b: 1 });
+  });
+
+  test("merge all sends exactly the pairs shown", async () => {
+    const run = show([
+      pair(2, "Exempelbolaget", 1, "Exempelbolaget AB"),
+      pair(4, "Example Labs", 3, "Example Labs Inc"),
+    ]);
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Merge all" })));
+    expect(mocked).toHaveBeenCalledWith("merge_obvious_pairs", {
+      pairs: [
+        [2, 1],
+        [4, 3],
+      ],
+    });
+    expect(await run.mock.calls[0][0]).toBe("Merged 2 pairs.");
+  });
+
+  test("nothing to suggest, nothing shown", () => {
+    const { container } = render(<ObviousPairs pairs={[]} busy={false} run={vi.fn()} />);
     expect(container.textContent).toBe("");
   });
 });

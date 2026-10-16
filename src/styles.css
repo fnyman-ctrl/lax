@@ -1239,6 +1239,29 @@ button.link {
   color: var(--muted);
 }
 
+.suggestions {
+  margin: 0.75rem 0;
+}
+
+.suggestions .pairs {
+  padding-left: 0;
+  list-style: none;
+}
+
+.suggestions .pairs li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.4rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.suggestions .pairs li:first-child {
+  border-top: none;
+}
+
 .new-names summary {
   cursor: pointer;
   color: var(--muted);

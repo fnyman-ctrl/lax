@@ -33,6 +33,7 @@ export type EntityItem = {
   page: PageItem | null;
 };
 type DontLearnItem = { kind: Kind; name: string };
+export type PairItem = { into: { id: number; name: string }; from: { id: number; name: string } };
 
 const REFRESH_MS = 30_000;
 
@@ -52,6 +53,7 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
   const [exportingAll, setExportingAll] = useState(false);
   const [entities, setEntities] = useState<EntityItem[] | null | "failed">(null);
   const [dontLearn, setDontLearn] = useState<DontLearnItem[]>([]);
+  const [pairs, setPairs] = useState<PairItem[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [forgettingAll, setForgettingAll] = useState(false);
@@ -63,6 +65,7 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
     invoke<MemoryStatus>("memory_status").then(setStatus, () => setStatus("failed"));
     invoke<EntityItem[]>("memory_entities").then(setEntities, () => setEntities("failed"));
     invoke<DontLearnItem[]>("dont_learn_list").then(setDontLearn, () => setDontLearn([]));
+    invoke<PairItem[]>("obvious_pairs").then(setPairs, () => setPairs([]));
   }, []);
 
   /** Runs a change, shows what came of it, and reloads. */
@@ -310,6 +313,8 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
       <p className="muted" role="status" aria-live="polite">
         {message}
       </p>
+
+      {status.enabled && <ObviousPairs pairs={pairs} busy={busy} run={run} />}
 
       {entities === "failed" && <p className="error">Lax couldn't read what it has noted.</p>}
       {Array.isArray(entities) && entities.length === 0 && status.enabled && (
@@ -576,6 +581,85 @@ export function OldPageFiles({
         )}
       </p>
     </section>
+  );
+}
+
+/**
+ * Organisations that look like one, equal but for a legal suffix or
+ * punctuation (ADR 0013). Each pair, or all at once, is merged into the name
+ * that has a page or was kept; the user's "Not the same" is final.
+ */
+export function ObviousPairs({
+  pairs,
+  busy,
+  run,
+}: {
+  pairs: PairItem[];
+  busy: boolean;
+  run: (work: Promise<string>) => Promise<boolean>;
+}) {
+  if (pairs.length === 0) return null;
+  return (
+    <div className="card suggestions">
+      <h2>These look like the same organisations</h2>
+      <ul className="pairs">
+        {pairs.map(({ from, into }) => (
+          <li key={`${from.id}-${into.id}`}>
+            <span>
+              <strong>{from.name}</strong> and <strong>{into.name}</strong>
+            </span>
+            <span className="buttons">
+              <button
+                type="button"
+                disabled={busy}
+                aria-label={`Merge ${from.name} into ${into.name}`}
+                onClick={() =>
+                  run(
+                    invoke("merge_entities", { from: from.id, into: into.id }).then(
+                      () => `${from.name} is now part of ${into.name}.`,
+                    ),
+                  )
+                }
+              >
+                Merge
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                disabled={busy}
+                aria-label={`${from.name} and ${into.name} are not the same`}
+                onClick={() =>
+                  run(
+                    invoke("not_same", { a: from.id, b: into.id }).then(
+                      () => `Lax won't suggest ${from.name} and ${into.name} again.`,
+                    ),
+                  )
+                }
+              >
+                Not the same
+              </button>
+            </span>
+          </li>
+        ))}
+      </ul>
+      {pairs.length > 1 && (
+        <p className="buttons">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              run(
+                invoke<number>("merge_obvious_pairs", {
+                  pairs: pairs.map(({ from, into }) => [from.id, into.id]),
+                }).then((n) => `Merged ${n} ${n === 1 ? "pair" : "pairs"}.`),
+              )
+            }
+          >
+            Merge all
+          </button>
+        </p>
+      )}
+    </div>
   );
 }
 

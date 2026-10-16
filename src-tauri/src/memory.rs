@@ -25,7 +25,8 @@ use crate::models::{Endpoint, ModelClient, ModelTurn};
 use crate::pages;
 use crate::pause::Pause;
 use crate::store::{
-    EntityKind, Merged, ModelTask, Page, PageState, Renamed, Store, UnrecognizedEpisode, name_key,
+    EntityKind, Merged, ModelTask, ObviousPair, Page, PageState, Renamed, Store,
+    UnrecognizedEpisode, name_key,
 };
 
 /// At most this many episodes are read per round, so the journal gets its
@@ -431,6 +432,84 @@ pub fn memory_entities(app: AppHandle) -> Result<Vec<EntityItem>, String> {
             })
             .map_err(|_| "Lax couldn't read the memory.".to_string())
     })
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PairItem {
+    pub into: NameItem,
+    pub from: NameItem,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct NameItem {
+    pub id: i64,
+    pub name: String,
+}
+
+impl From<ObviousPair> for PairItem {
+    fn from(pair: ObviousPair) -> Self {
+        PairItem {
+            into: NameItem {
+                id: pair.into.0,
+                name: pair.into.1,
+            },
+            from: NameItem {
+                id: pair.from.0,
+                name: pair.from.1,
+            },
+        }
+    }
+}
+
+/// Organisations that look like one, equal but for a legal suffix or
+/// punctuation (ADR 0013).
+#[tauri::command(async)]
+pub fn obvious_pairs(app: AppHandle) -> Result<Vec<PairItem>, String> {
+    command(&app, |store| {
+        store
+            .obvious_pairs()
+            .map(|pairs| pairs.into_iter().map(PairItem::from).collect())
+            .map_err(|_| "Lax couldn't read the memory.".to_string())
+    })
+}
+
+/// The user says two names are not the same: never suggested again.
+#[tauri::command(async)]
+pub fn not_same(app: AppHandle, a: i64, b: i64) -> Result<(), String> {
+    command(&app, |store| match store.mark_not_same(a, b) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err("One of them is no longer in the memory.".to_string()),
+        Err(_) => Err("Lax couldn't save that.".to_string()),
+    })
+}
+
+/// Merges the obvious pairs the user saw, `[from, into]` each, that are
+/// still obvious pairs: nothing the user didn't see. Returns how many.
+#[tauri::command(async)]
+pub fn merge_obvious_pairs(app: AppHandle, pairs: Vec<(i64, i64)>) -> Result<usize, String> {
+    let merged = command(&app, |store| {
+        let obvious: Vec<(i64, i64)> = store
+            .obvious_pairs()
+            .map_err(|_| "Lax couldn't read the memory.".to_string())?
+            .into_iter()
+            .map(|p| (p.from.0, p.into.0))
+            .collect();
+        let mut merged = 0;
+        for (from, into) in pairs.into_iter().filter(|pair| obvious.contains(pair)) {
+            if store
+                .merge_entities(from, into, Utc::now())
+                .map_err(|_| "Lax couldn't merge them.".to_string())?
+                == Merged::Done
+            {
+                merged += 1;
+            }
+        }
+        Ok(merged)
+    })?;
+    pages::sync_now(&app);
+    Ok(merged)
 }
 
 /// Forgets everything the memory noted and turns it off.

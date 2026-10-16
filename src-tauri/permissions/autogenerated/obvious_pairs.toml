@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-obvious-pairs"
+description = "Enables the obvious_pairs command without any pre-configured scope."
+commands.allow = ["obvious_pairs"]
+
+[[permission]]
+identifier = "deny-obvious-pairs"
+description = "Denies the obvious_pairs command without any pre-configured scope."
+commands.deny = ["obvious_pairs"]
