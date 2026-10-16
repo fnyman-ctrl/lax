@@ -80,6 +80,8 @@ pub struct Entity {
     pub first_seen: DateTime<Utc>,
     /// The user chose to keep it.
     pub kept: bool,
+    /// The project it is part of, for a project (ADR 0013).
+    pub part_of: Option<i64>,
 }
 
 impl Entity {
@@ -107,6 +109,21 @@ pub enum Renamed {
     },
     /// An empty name.
     Empty,
+}
+
+/// What became of making a project part of another.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PartOf {
+    Done,
+    NotFound,
+    /// Only a project can be part of a project.
+    NotProjects,
+    /// A project can't be part of itself.
+    Same,
+    /// The whole is itself a part: one level only.
+    WholeIsAPart,
+    /// The part has parts of its own: one level only.
+    PartHasParts,
 }
 
 /// What became of a merge.
@@ -247,7 +264,8 @@ impl Store {
                     count(DISTINCT date(e.started_at / 1000, 'unixepoch', 'localtime')),
                     max(e.ended_at),
                     n.kept,
-                    min(e.started_at)
+                    min(e.started_at),
+                    n.part_of
              FROM entities AS n
              JOIN mentions AS m ON m.entity_id = n.id
              JOIN episodes AS e ON e.id = m.episode_id
@@ -276,6 +294,7 @@ impl Store {
                     last_seen: DateTime::from_timestamp_millis(last).unwrap_or_default(),
                     kept: row.get::<_, i64>(7)? != 0,
                     first_seen: DateTime::from_timestamp_millis(row.get(8)?).unwrap_or_default(),
+                    part_of: row.get(9)?,
                 },
             ))
         })?;
@@ -419,6 +438,30 @@ impl Store {
              WHERE id = ?2",
             [from, into],
         )?;
+        // Parts stay one level deep (ADR 0013): `from`'s parts become
+        // `into`'s, unless `into` is a part itself; then they stand alone.
+        // `into`, if it was one of `from`'s parts, stands alone; if `from`
+        // was a part and `into` stands alone without parts, `into` takes
+        // its place under the whole.
+        tx.execute(
+            "UPDATE entities SET part_of = NULL WHERE id = ?2 AND part_of = ?1",
+            [from, into],
+        )?;
+        tx.execute(
+            "UPDATE entities SET part_of = (SELECT part_of FROM entities WHERE id = ?1)
+             WHERE id = ?2 AND part_of IS NULL
+               AND (SELECT part_of FROM entities WHERE id = ?1) IS NOT NULL
+               AND (SELECT part_of FROM entities WHERE id = ?1) != ?2
+               AND NOT EXISTS (SELECT 1 FROM entities WHERE part_of = ?2)",
+            [from, into],
+        )?;
+        tx.execute(
+            "UPDATE entities
+             SET part_of = CASE WHEN (SELECT part_of FROM entities WHERE id = ?2) IS NULL
+                                THEN ?2 END
+             WHERE part_of = ?1",
+            [from, into],
+        )?;
         // What the user said isn't the same as `from` isn't the same as
         // `into` either (ADR 0013).
         tx.execute(
@@ -467,6 +510,55 @@ impl Store {
             self.checkpoint()?;
         }
         Ok(faded)
+    }
+
+    /// Makes project `part` a part of project `whole` (ADR 0013): one level
+    /// only, so a whole can't be a part and a part can't have parts.
+    pub fn set_part_of(&mut self, part: i64, whole: i64) -> Result<PartOf> {
+        if part == whole {
+            return Ok(PartOf::Same);
+        }
+        let tx = self.conn.transaction()?;
+        let row = |id: i64| {
+            tx.query_row(
+                "SELECT kind, part_of FROM entities WHERE id = ?1",
+                [id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?)),
+            )
+            .optional()
+        };
+        let (Some((part_kind, _)), Some((whole_kind, whole_of))) = (row(part)?, row(whole)?) else {
+            return Ok(PartOf::NotFound);
+        };
+        let project = EntityKind::Project.as_str();
+        if part_kind != project || whole_kind != project {
+            return Ok(PartOf::NotProjects);
+        }
+        if whole_of.is_some() {
+            return Ok(PartOf::WholeIsAPart);
+        }
+        let has_parts: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM entities WHERE part_of = ?1)",
+            [part],
+            |row| row.get(0),
+        )?;
+        if has_parts {
+            return Ok(PartOf::PartHasParts);
+        }
+        tx.execute(
+            "UPDATE entities SET part_of = ?2 WHERE id = ?1",
+            [part, whole],
+        )?;
+        tx.commit()?;
+        Ok(PartOf::Done)
+    }
+
+    /// Takes project `part` out of its whole: a project of its own again.
+    pub fn take_out(&self, part: i64) -> Result<bool> {
+        Ok(self.conn.execute(
+            "UPDATE entities SET part_of = NULL WHERE id = ?1 AND part_of IS NOT NULL",
+            [part],
+        )? > 0)
     }
 
     /// The "don't learn" list, newest first.
@@ -894,6 +986,127 @@ mod tests {
                 "Erik Example"
             ]
         );
+    }
+
+    fn project(store: &mut Store, minute: i64, name: &str) -> i64 {
+        let id = episode(store, minute, "Mail");
+        store
+            .record_mentions(
+                id,
+                &[(EntityKind::Project, name.to_string())],
+                at(minute + 1),
+            )
+            .unwrap();
+        store
+            .entities()
+            .unwrap()
+            .into_iter()
+            .find(|e| e.name == name)
+            .unwrap()
+            .id
+    }
+
+    fn whole_of(store: &Store, id: i64) -> Option<i64> {
+        store
+            .entities()
+            .unwrap()
+            .into_iter()
+            .find(|e| e.id == id)
+            .unwrap()
+            .part_of
+    }
+
+    #[test]
+    fn projects_have_parts_one_level_deep() {
+        let mut store = Store::open_in_memory().unwrap();
+        let lax = project(&mut store, 0, "Lax");
+        let encryption = project(&mut store, 1, "Lax encryption");
+        let detail = project(&mut store, 2, "Key rotation");
+        assert_eq!(store.set_part_of(encryption, lax).unwrap(), PartOf::Done);
+        assert_eq!(whole_of(&store, encryption), Some(lax));
+        // A part can't be a whole, and a whole can't be a part.
+        assert_eq!(
+            store.set_part_of(detail, encryption).unwrap(),
+            PartOf::WholeIsAPart
+        );
+        assert_eq!(
+            store.set_part_of(lax, detail).unwrap(),
+            PartOf::PartHasParts
+        );
+        assert_eq!(store.set_part_of(lax, lax).unwrap(), PartOf::Same);
+        // Only projects.
+        mention_on(&mut store, 3, "Anna Example");
+        let anna = store
+            .entities()
+            .unwrap()
+            .into_iter()
+            .find(|e| e.name == "Anna Example")
+            .unwrap()
+            .id;
+        assert_eq!(store.set_part_of(anna, lax).unwrap(), PartOf::NotProjects);
+        assert_eq!(
+            store.set_part_of(encryption, 9999).unwrap(),
+            PartOf::NotFound
+        );
+        // Taken out, it stands alone.
+        assert!(store.take_out(encryption).unwrap());
+        assert!(!store.take_out(encryption).unwrap());
+        assert_eq!(whole_of(&store, encryption), None);
+    }
+
+    #[test]
+    fn forgetting_the_whole_leaves_its_parts() {
+        let mut store = Store::open_in_memory().unwrap();
+        let lax = project(&mut store, 0, "Lax");
+        let encryption = project(&mut store, 1, "Lax encryption");
+        assert_eq!(store.set_part_of(encryption, lax).unwrap(), PartOf::Done);
+        assert!(store.forget_entity(lax, false, at(2)).unwrap());
+        assert_eq!(whole_of(&store, encryption), None);
+    }
+
+    #[test]
+    fn merging_keeps_parts_one_level_deep() {
+        let mut store = Store::open_in_memory().unwrap();
+        let lax = project(&mut store, 0, "Lax");
+        let lax_dev = project(&mut store, 1, "Lax development");
+        let encryption = project(&mut store, 2, "Lax encryption");
+        let other = project(&mut store, 3, "Other");
+        assert_eq!(
+            store.set_part_of(encryption, lax_dev).unwrap(),
+            PartOf::Done
+        );
+        // The same project twice: Lax development's parts become Lax's.
+        assert_eq!(
+            store.merge_entities(lax_dev, lax, at(4)).unwrap(),
+            Merged::Done
+        );
+        assert_eq!(whole_of(&store, encryption), Some(lax));
+        // Merged into a part, the parts stand alone.
+        let writing = project(&mut store, 5, "Writing");
+        let draft = project(&mut store, 6, "Drafts");
+        assert_eq!(store.set_part_of(draft, writing).unwrap(), PartOf::Done);
+        assert_eq!(store.set_part_of(other, lax).unwrap(), PartOf::Done);
+        assert_eq!(
+            store.merge_entities(writing, other, at(7)).unwrap(),
+            Merged::Done
+        );
+        assert_eq!(whole_of(&store, draft), None);
+        assert_eq!(whole_of(&store, other), Some(lax));
+        // A part merged into a project on its own: it takes the part's place.
+        let export = project(&mut store, 9, "Export");
+        let feature = project(&mut store, 10, "Export feature");
+        assert_eq!(store.set_part_of(export, lax).unwrap(), PartOf::Done);
+        assert_eq!(
+            store.merge_entities(export, feature, at(11)).unwrap(),
+            Merged::Done
+        );
+        assert_eq!(whole_of(&store, feature), Some(lax));
+        // A part merged into its whole: the whole stays a whole.
+        assert_eq!(
+            store.merge_entities(lax, encryption, at(8)).unwrap(),
+            Merged::Done
+        );
+        assert_eq!(whole_of(&store, encryption), None);
     }
 
     #[test]

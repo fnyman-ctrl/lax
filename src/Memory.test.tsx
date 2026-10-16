@@ -8,8 +8,10 @@ import {
   ObviousPairs,
   OldPageFiles,
   type PairItem,
+  PartOfControls,
   SameAsPicker,
   type SuggestionItem,
+  withParts,
 } from "./Memory";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -56,7 +58,18 @@ describe("the old page files after the move", () => {
 });
 
 function entity(id: number, name: string, isNew: boolean, mentions = 1): EntityItem {
-  return { id, kind: "person", name, aliases: [], mentions, days: 1, lastSeen: 0, isNew, page: null };
+  return {
+    id,
+    kind: "person",
+    name,
+    aliases: [],
+    mentions,
+    days: 1,
+    lastSeen: 0,
+    isNew,
+    partOf: null,
+    page: null,
+  };
 }
 
 describe("new names", () => {
@@ -264,5 +277,63 @@ describe("the Same as list", () => {
     expect(options()).toEqual(["Choose…", "[Likely]", "Cecilia Example"]);
     // The chosen name was filtered away: the choice is cleared.
     expect(onChange).toHaveBeenCalledWith("");
+  });
+});
+
+describe("projects in parts", () => {
+  const project = (id: number, name: string, partOf: number | null = null): EntityItem => ({
+    ...entity(id, name, false),
+    kind: "project",
+    partOf,
+  });
+
+  test("parts follow their whole; a part whose whole isn't listed stays put", () => {
+    const list = [
+      project(3, "Export", 1),
+      project(1, "Exempelappen"),
+      project(2, "Other"),
+      project(4, "Drafts", 99),
+    ];
+    expect(withParts(list).map((e) => e.name)).toEqual([
+      "Exempelappen",
+      "Export",
+      "Other",
+      "Drafts",
+    ]);
+  });
+
+  function controls(of: EntityItem, all: EntityItem[]) {
+    mocked.mockReset();
+    mocked.mockImplementation(async () => null);
+    const run = vi.fn((work: Promise<string>) => work.then(() => true));
+    render(<PartOfControls entity={of} all={all} busy={false} run={run} />);
+    return run;
+  }
+
+  test("a project can be made part of a project that isn't a part", async () => {
+    const all = [project(1, "Exempelappen"), project(2, "Export"), project(3, "Drafts", 1)];
+    const run = controls(all[1], all);
+    const options = [...document.querySelectorAll("option")].map((o) => o.textContent);
+    // Drafts is a part: it can't be a whole.
+    expect(options).toEqual(["Choose…", "Exempelappen"]);
+    fireEvent.change(screen.getByLabelText("Part of"), { target: { value: "1" } });
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Make it a part" })));
+    expect(mocked).toHaveBeenCalledWith("set_part_of", { part: 2, whole: 1 });
+    expect(await run.mock.calls[0][0]).toBe("Export is now part of Exempelappen.");
+  });
+
+  test("a part can be taken out", async () => {
+    const all = [project(1, "Exempelappen"), project(2, "Export", 1)];
+    controls(all[1], all);
+    expect(screen.getByText("Exempelappen")).toBeTruthy();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Take out" })));
+    expect(mocked).toHaveBeenCalledWith("take_out_part", { part: 2 });
+  });
+
+  test("a project with parts can't be a part", () => {
+    const all = [project(1, "Exempelappen"), project(2, "Export", 1), project(3, "Other")];
+    controls(all[0], all);
+    expect(screen.queryByLabelText("Part of")).toBeNull();
+    expect(screen.getByText(/has parts, so it can't be a part itself/)).toBeTruthy();
   });
 });

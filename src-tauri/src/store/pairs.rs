@@ -754,6 +754,7 @@ mod tests {
             last_seen: at(0),
             first_seen: at(0),
             kept: false,
+            part_of: None,
         };
         let p = |a: &str, b: &str| {
             signal(

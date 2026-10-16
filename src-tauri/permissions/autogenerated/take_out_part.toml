@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-take-out-part"
+description = "Enables the take_out_part command without any pre-configured scope."
+commands.allow = ["take_out_part"]
+
+[[permission]]
+identifier = "deny-take-out-part"
+description = "Denies the take_out_part command without any pre-configured scope."
+commands.deny = ["take_out_part"]

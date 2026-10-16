@@ -1262,6 +1262,12 @@ button.link {
   border-top: none;
 }
 
+.entity.part {
+  margin-left: 1.5rem;
+  padding-left: 0.75rem;
+  border-left: 2px solid var(--line);
+}
+
 .same-search {
   min-width: 10rem;
 }

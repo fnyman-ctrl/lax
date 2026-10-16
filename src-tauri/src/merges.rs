@@ -394,6 +394,7 @@ mod tests {
             last_seen: Utc::now(),
             first_seen: Utc::now(),
             kept: false,
+            part_of: None,
         };
         let block = |kind: &str, name: &str, entries: &[&str]| {
             let mut text = format!("Name: {name}\nKind: {kind}\nEntries that mention it:\n");

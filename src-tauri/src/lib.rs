@@ -111,6 +111,8 @@ pub fn run() {
             memory::obvious_pairs,
             memory::not_same,
             memory::merge_obvious_pairs,
+            memory::set_part_of,
+            memory::take_out_part,
             merges::merge_suggestions,
             merges::likely_same,
             memory::dont_learn_list,
