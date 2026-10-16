@@ -34,9 +34,11 @@ they change.
 - **Reading slows down on battery.** On battery, every wait is twice as long
   (`ax::on_battery`).
 - **The model works in the background only when it doesn't disturb.** On
-  battery, nothing in the background uses the model. The journal writes as
-  captures settle; the memory's reading, page facts and Ask's vectors wait
-  until two minutes without keyboard or mouse input
+  battery, the journal writes about once an hour, everything that waited in
+  one go, and waits for power below 20 %; nothing else in the background uses
+  the model. On power, the journal writes as captures settle; the memory's
+  reading, page facts and Ask's vectors wait until two minutes without
+  keyboard or mouse input
   (`journal::may_use_model`). A question in Ask always goes first.
 - **An encrypted database keeps temporary data in memory.** SQLCipher encrypts
   the database, its journal and its write-ahead log, but not the temporary

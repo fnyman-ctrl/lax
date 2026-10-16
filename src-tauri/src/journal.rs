@@ -39,6 +39,13 @@ const SETTLE: TimeDelta = TimeDelta::minutes(2);
 const IDLE_FLUSH: Duration = Duration::from_secs(5 * 60);
 /// Most blocks summarized in one round, so a backlog doesn't hog the Mac.
 const BLOCKS_PER_ROUND: usize = 3;
+/// On battery, the journal writes about this often, everything that waited
+/// in one go (up to `BLOCKS_ON_BATTERY`), so the model wakes once an hour
+/// rather than every few minutes.
+const ON_BATTERY_EVERY: Duration = Duration::from_secs(60 * 60);
+const BLOCKS_ON_BATTERY: usize = 12;
+/// Below this charge, in percent, the journal waits for power.
+const LOW_BATTERY: u8 = 20;
 /// A block the model answered badly this many times is set aside until Lax
 /// restarts, so one hard block can't stop the journal.
 const ATTEMPTS_PER_BLOCK: u32 = 3;
@@ -124,6 +131,10 @@ pub fn start(app: AppHandle) {
 struct Setbacks {
     failures: HashMap<i64, u32>,
     set_aside: HashSet<i64>,
+    /// When the journal last wrote on battery; cleared on power.
+    on_battery_since: Option<std::time::Instant>,
+    /// What the journal last waited for, so the wait is logged once.
+    waiting_for: Option<Power>,
 }
 
 impl Setbacks {
@@ -146,13 +157,48 @@ impl Setbacks {
 
 /// One round: summarize up to `BLOCKS_PER_ROUND` complete blocks.
 async fn round(app: &AppHandle, setbacks: &mut Setbacks) -> Result<(), ()> {
-    for _ in 0..BLOCKS_PER_ROUND {
+    let power = power();
+    let waiting = match power {
+        Power::Mains => None,
+        Power::Battery(_) if power.low() => Some(power),
+        Power::Battery(_) => setbacks
+            .on_battery_since
+            .is_some_and(|last| last.elapsed() < ON_BATTERY_EVERY)
+            .then_some(power),
+    };
+    // Logged when the wait changes: none, the hour on battery, or low.
+    if waiting.map(Power::low) != setbacks.waiting_for.map(Power::low) {
+        logging::info(
+            "journal.power",
+            &[
+                Field::Flag("on_battery", power != Power::Mains),
+                Field::Flag("low", power.low()),
+            ],
+        );
+    }
+    setbacks.waiting_for = waiting;
+    if power == Power::Mains {
+        setbacks.on_battery_since = None;
+    }
+    if waiting.is_some() {
+        return Ok(());
+    }
+    let blocks = if power == Power::Mains {
+        BLOCKS_PER_ROUND
+    } else {
+        BLOCKS_ON_BATTERY
+    };
+    for _ in 0..blocks {
         if app.state::<Pause>().is_paused() || !may_use_model(When::Soon) {
             return Ok(());
         }
         let Some(work) = next_work(app, &setbacks.set_aside) else {
             return Ok(());
         };
+        // On battery, the hour starts with the first entry written.
+        if power != Power::Mains && setbacks.on_battery_since.is_none() {
+            setbacks.on_battery_since = Some(std::time::Instant::now());
+        }
         let started = std::time::Instant::now();
         // Paused while the model was writing: the request is dropped, and
         // anything it wrote anyway is not stored.
@@ -345,12 +391,39 @@ async fn summarize(work: &Work) -> Result<String, StructuredError> {
 /// the model.
 const AWAY: Duration = Duration::from_secs(2 * 60);
 
-/// Whether background work may use the model now. Never on battery, and
-/// work that can wait (`Later`) only while the user is away from the
-/// keyboard, so the Mac stays quiet and cool while it is used. Questions
-/// the user asks are not background work and always may.
+/// Whether background work may use the model now. Work that can wait
+/// (`Later`) never on battery, and only while the user is away from the
+/// keyboard, so the Mac stays quiet and cool while it is used. The journal
+/// (`Soon`) also on battery, except when the battery is low; how often it
+/// writes on battery is up to the journal's round. Questions the user asks
+/// are not background work and always may.
 pub(crate) fn may_use_model(when: When) -> bool {
-    allowed(when, on_battery(), idle_time())
+    allowed(when, power(), idle_time())
+}
+
+/// Where the Mac's power comes from, and the battery's charge in percent
+/// when it runs on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Power {
+    Mains,
+    Battery(Option<u8>),
+}
+
+impl Power {
+    /// On battery, below `LOW_BATTERY`.
+    pub(crate) fn low(self) -> bool {
+        matches!(self, Power::Battery(Some(percent)) if percent < LOW_BATTERY)
+    }
+}
+
+pub(crate) fn power() -> Power {
+    #[cfg(target_os = "macos")]
+    {
+        if crate::ax::on_battery().unwrap_or(false) {
+            return Power::Battery(crate::ax::battery_percent());
+        }
+    }
+    Power::Mains
 }
 
 /// When background work wants the model.
@@ -362,22 +435,13 @@ pub(crate) enum When {
     Later,
 }
 
-fn allowed(when: When, on_battery: bool, idle: Option<Duration>) -> bool {
-    if on_battery {
-        return false;
-    }
-    // If idle time can't be read, the user counts as away.
-    when == When::Soon || !idle.is_some_and(|idle| idle < AWAY)
-}
-
-fn on_battery() -> bool {
-    #[cfg(target_os = "macos")]
-    {
-        crate::ax::on_battery().unwrap_or(false)
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        false
+fn allowed(when: When, power: Power, idle: Option<Duration>) -> bool {
+    match (when, power) {
+        (When::Later, Power::Battery(_)) => false,
+        (When::Soon, Power::Battery(_)) => !power.low(),
+        // If idle time can't be read, the user counts as away.
+        (When::Soon, Power::Mains) => true,
+        (When::Later, Power::Mains) => !idle.is_some_and(|idle| idle < AWAY),
     }
 }
 
@@ -403,6 +467,9 @@ pub struct JournalStatus {
     /// Since when the model's server couldn't be reached, in milliseconds
     /// since 1970, if it can't.
     pub model_down_since: Option<i64>,
+    /// "mains", "battery" (the journal writes about once an hour) or
+    /// "lowBattery" (it waits for power).
+    pub power: &'static str,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -422,7 +489,16 @@ fn status(store: &Store) -> crate::store::Result<JournalStatus> {
         model: store.model_choice(ModelTask::Chat)?.map(|c| c.model),
         waiting: store.unsummarized_count()?,
         model_down_since: None,
+        power: "mains",
     })
+}
+
+fn power_name(power: Power) -> &'static str {
+    match power {
+        Power::Mains => "mains",
+        _ if power.low() => "lowBattery",
+        Power::Battery(_) => "battery",
+    }
 }
 
 fn command<T>(
@@ -438,6 +514,7 @@ pub fn journal_status(app: AppHandle) -> Result<JournalStatus, String> {
         status(store).map_err(|_| "Lax couldn't read the journal.".to_string())
     })?;
     status.model_down_since = app.state::<ModelHealth>().down_since();
+    status.power = power_name(power());
     Ok(status)
 }
 
@@ -589,18 +666,29 @@ mod tests {
     }
 
     #[test]
-    fn background_work_waits_for_mains_power_and_the_user_to_be_away() {
+    fn the_journal_writes_on_battery_unless_low_and_the_rest_waits_for_power() {
         let s = Duration::from_secs;
         // On mains power the journal always may; the rest once the user is away.
-        assert!(allowed(When::Soon, false, Some(s(0))));
-        assert!(!allowed(When::Later, false, Some(s(0))));
-        assert!(!allowed(When::Later, false, Some(s(119))));
-        assert!(allowed(When::Later, false, Some(s(120))));
-        assert!(allowed(When::Later, false, None));
+        let (mains, battery, low) = (
+            Power::Mains,
+            Power::Battery(Some(80)),
+            Power::Battery(Some(LOW_BATTERY - 1)),
+        );
+        assert!(allowed(When::Soon, mains, Some(s(0))));
+        assert!(!allowed(When::Later, mains, Some(s(0))));
+        assert!(!allowed(When::Later, mains, Some(s(119))));
+        assert!(allowed(When::Later, mains, Some(s(120))));
+        assert!(allowed(When::Later, mains, None));
         // On battery nothing does.
-        assert!(!allowed(When::Soon, true, Some(s(3600))));
-        assert!(!allowed(When::Later, true, Some(s(3600))));
-        assert!(!allowed(When::Later, true, None));
+        // On battery the journal still writes, unless the battery is low;
+        // the memory's work waits for power.
+        assert!(allowed(When::Soon, battery, Some(s(0))));
+        assert!(allowed(When::Soon, Power::Battery(None), Some(s(0))));
+        assert!(!allowed(When::Soon, low, Some(s(3600))));
+        assert!(!allowed(When::Later, battery, Some(s(3600))));
+        assert!(!allowed(When::Later, battery, None));
+        assert_eq!(power_name(low), "lowBattery");
+        assert_eq!(power_name(battery), "battery");
     }
 
     #[test]

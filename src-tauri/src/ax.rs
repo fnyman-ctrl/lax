@@ -188,6 +188,11 @@ unsafe extern "C" {
     fn IOPSCopyPowerSourcesInfo() -> *mut CFType;
     // Returns a string owned by the snapshot ("Get" rule), or null.
     fn IOPSGetProvidingPowerSourceType(snapshot: &CFType) -> *const CFString;
+    // Returns a new array of the snapshot's power sources ("Copy" rule), or
+    // null.
+    fn IOPSCopyPowerSourcesList(snapshot: &CFType) -> *mut CFType;
+    // Returns a dictionary owned by the snapshot ("Get" rule), or null.
+    fn IOPSGetPowerSourceDescription(snapshot: &CFType, source: &CFType) -> *const CFDictionary;
 }
 
 /// How long since the user last pressed a key, moved the mouse, scrolled or
@@ -208,6 +213,51 @@ pub fn on_battery() -> Option<bool> {
     let source = unsafe { CFRetained::retain(source) };
     // kIOPMBatteryPowerKey
     Some(source.to_string() == "Battery Power")
+}
+
+/// How full the Mac's battery is, in percent, or `None` without one. Reads
+/// only the charge, as the menu bar shows it.
+pub fn battery_percent() -> Option<u8> {
+    // SAFETY: no arguments; returns a new snapshot or null.
+    let snapshot = unsafe { owned(IOPSCopyPowerSourcesInfo()) }?;
+    // SAFETY: `snapshot` is a valid power source snapshot; the list is a new
+    // reference we own, checked to be an array below.
+    let sources = unsafe { owned(IOPSCopyPowerSourcesList(&snapshot)) }?
+        .downcast::<CFArray>()
+        .ok()?;
+    let (current, max) = (
+        CFString::from_static_str("Current Capacity"),
+        CFString::from_static_str("Max Capacity"),
+    );
+    for index in 0..sources.count() {
+        // SAFETY: `index` is within the array.
+        let item = unsafe { sources.value_at_index(index) };
+        let Some(item) = NonNull::new(item.cast_mut()) else {
+            continue;
+        };
+        // SAFETY: a valid CF object, borrowed from the array.
+        let source: &CFType = unsafe { item.cast().as_ref() };
+        // SAFETY: valid snapshot and source; the dictionary is borrowed from
+        // the snapshot, which outlives its use here.
+        let description = unsafe { IOPSGetPowerSourceDescription(&snapshot, source) };
+        let Some(description) = NonNull::new(description.cast_mut()) else {
+            continue;
+        };
+        // SAFETY: a valid dictionary, borrowed from the snapshot.
+        let description: &CFDictionary = unsafe { description.as_ref() };
+        let number = |key: &CFString| {
+            // SAFETY: valid dictionary and key; the value is borrowed.
+            let value = unsafe { description.value((key as *const CFString).cast()) };
+            let value: &CFType = unsafe { NonNull::new(value.cast_mut())?.cast().as_ref() };
+            value.downcast_ref::<CFNumber>()?.as_i64()
+        };
+        if let (Some(current), Some(max)) = (number(&current), number(&max))
+            && max > 0
+        {
+            return u8::try_from((current * 100 / max).clamp(0, 100)).ok();
+        }
+    }
+    None
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -1057,5 +1107,14 @@ mod tests {
         assert!(!paste.matches(None, Some(0)));
         assert!(MenuShortcut::SelectAll.matches(Some("A"), Some(0)));
         assert!(!MenuShortcut::SelectAll.matches(Some("V"), Some(0)));
+    }
+
+    /// On a real Mac with a battery: the charge reads as a percentage.
+    #[test]
+    #[ignore = "reads this Mac's battery"]
+    fn live_battery_percent() {
+        let percent = battery_percent().expect("a battery");
+        assert!(percent <= 100);
+        assert!(on_battery().is_some());
     }
 }
