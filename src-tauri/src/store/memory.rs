@@ -440,9 +440,19 @@ impl Store {
         )?;
         // Parts stay one level deep (ADR 0013): `from`'s parts become
         // `into`'s, unless `into` is a part itself; then they stand alone.
-        // `into`, if it was one of `from`'s parts, stands alone.
+        // `into`, if it was one of `from`'s parts, stands alone; if `from`
+        // was a part and `into` stands alone without parts, `into` takes
+        // its place under the whole.
         tx.execute(
             "UPDATE entities SET part_of = NULL WHERE id = ?2 AND part_of = ?1",
+            [from, into],
+        )?;
+        tx.execute(
+            "UPDATE entities SET part_of = (SELECT part_of FROM entities WHERE id = ?1)
+             WHERE id = ?2 AND part_of IS NULL
+               AND (SELECT part_of FROM entities WHERE id = ?1) IS NOT NULL
+               AND (SELECT part_of FROM entities WHERE id = ?1) != ?2
+               AND NOT EXISTS (SELECT 1 FROM entities WHERE part_of = ?2)",
             [from, into],
         )?;
         tx.execute(
@@ -1082,6 +1092,15 @@ mod tests {
         );
         assert_eq!(whole_of(&store, draft), None);
         assert_eq!(whole_of(&store, other), Some(lax));
+        // A part merged into a project on its own: it takes the part's place.
+        let export = project(&mut store, 9, "Export");
+        let feature = project(&mut store, 10, "Export feature");
+        assert_eq!(store.set_part_of(export, lax).unwrap(), PartOf::Done);
+        assert_eq!(
+            store.merge_entities(export, feature, at(11)).unwrap(),
+            Merged::Done
+        );
+        assert_eq!(whole_of(&store, feature), Some(lax));
         // A part merged into its whole: the whole stays a whole.
         assert_eq!(
             store.merge_entities(lax, encryption, at(8)).unwrap(),
