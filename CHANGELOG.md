@@ -12,6 +12,9 @@ What changed in each version of Lax, for people who use it.
   legal suffix or punctuation, such as "Example" and "Example AB", are
   suggested at the top of Memory, with **Merge**, **Not the same** and
   **Merge all**. Your "Not the same" is final.
+- **Memory: suggested merges.** Other names that may be the same, such as
+  "Anna" and "Anna Example", are judged by the model on your Mac while you're
+  away, and suggested with its reason. Lax never merges on its own.
 
 ## 0.1.0 (2026-10-16)
 

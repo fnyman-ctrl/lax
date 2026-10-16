@@ -78,8 +78,14 @@ prompt never freezes the window. See
 - Merge suggestions (`src-tauri/src/store/pairs.rs`, ADR 0013): organisations
   equal once a legal suffix and punctuation are taken off, with the same
   suffix or one without, are listed as obvious pairs, each merged into the
-  name with a page, else a kept one. The user merges; "Not the same" is kept
-  in `not_same` and is final.
+  name with a page, else a kept one. Other pairs with a name signal (one
+  name's words inside the other's, a different legal suffix, a letter or two
+  apart) and at least one known side are judged by the local model
+  (`src-tauri/src/merges.rs`), at most two per round while the user is away,
+  from up to three entries and the page facts of each name. Verdicts are kept
+  in `pair_verdicts`, go with any change to either name's mentions, and a
+  "no" or "unsure" is judged again after 30 days or twice the mentions. The
+  user merges; "Not the same" is kept in `not_same` and is final.
 - Each entity Lax keeps (mentioned on two days, or kept by the user) has a
   page, plus the About me page (`src-tauri/src/pages`). A page is one
   Markdown text in the `text` column of its row in `pages`, in the encrypted

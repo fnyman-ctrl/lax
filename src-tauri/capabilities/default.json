@@ -59,6 +59,7 @@
     "allow-obvious-pairs",
     "allow-not-same",
     "allow-merge-obvious-pairs",
+    "allow-merge-suggestions",
     "allow-dont-learn-list",
     "allow-allow-learning",
     "allow-setup-status",

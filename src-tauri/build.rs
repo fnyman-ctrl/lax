@@ -59,6 +59,7 @@ fn main() {
             "obvious_pairs",
             "not_same",
             "merge_obvious_pairs",
+            "merge_suggestions",
             "dont_learn_list",
             "allow_learning",
             "setup_status",

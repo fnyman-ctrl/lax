@@ -62,8 +62,11 @@ choose.
   names differ only by a legal suffix or punctuation ("Example" and "Example
   AB") are suggested at the top, with **Merge**, **Not the same** and **Merge
   all**. Lax never merges on its own, and never suggests a pair again once you
-  say they're not the same. "Example AB" and "Example Oy" aren't suggested:
-  they're often different companies.
+  say they're not the same. Other names that may be the same, such as "Anna"
+  and "Anna Example" or "Nyterios" and "Nyterio", are judged by the model on
+  this Mac from the entries that mention them, while you're away and the Mac
+  is on power. Its "yes" is shown under **These may be the same**, with its
+  reason. If a short name fits several, Lax asks which one, or none.
 - **Captures:** everything Lax has read. Search it, forget a time or an app, or
   delete everything.
 - **Exclusions:** apps, websites and window titles Lax never reads. Banking and

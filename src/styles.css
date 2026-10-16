@@ -1262,6 +1262,10 @@ button.link {
   border-top: none;
 }
 
+.suggestions .reason {
+  display: block;
+}
+
 .new-names summary {
   cursor: pointer;
   color: var(--muted);

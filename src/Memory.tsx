@@ -34,6 +34,7 @@ export type EntityItem = {
 };
 type DontLearnItem = { kind: Kind; name: string };
 export type PairItem = { into: { id: number; name: string }; from: { id: number; name: string } };
+export type SuggestionItem = PairItem & { kind: Kind; reason: string };
 
 const REFRESH_MS = 30_000;
 
@@ -54,6 +55,7 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
   const [entities, setEntities] = useState<EntityItem[] | null | "failed">(null);
   const [dontLearn, setDontLearn] = useState<DontLearnItem[]>([]);
   const [pairs, setPairs] = useState<PairItem[]>([]);
+  const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [forgettingAll, setForgettingAll] = useState(false);
@@ -66,6 +68,7 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
     invoke<EntityItem[]>("memory_entities").then(setEntities, () => setEntities("failed"));
     invoke<DontLearnItem[]>("dont_learn_list").then(setDontLearn, () => setDontLearn([]));
     invoke<PairItem[]>("obvious_pairs").then(setPairs, () => setPairs([]));
+    invoke<SuggestionItem[]>("merge_suggestions").then(setSuggestions, () => setSuggestions([]));
   }, []);
 
   /** Runs a change, shows what came of it, and reloads. */
@@ -314,6 +317,7 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
         {message}
       </p>
 
+      {status.enabled && <MergeSuggestions suggestions={suggestions} busy={busy} run={run} />}
       {status.enabled && <ObviousPairs pairs={pairs} busy={busy} run={run} />}
 
       {entities === "failed" && <p className="error">Lax couldn't read what it has noted.</p>}
@@ -581,6 +585,129 @@ export function OldPageFiles({
         )}
       </p>
     </section>
+  );
+}
+
+const KIND_NAMES: Record<Kind, string> = {
+  person: "person",
+  organisation: "organisation",
+  project: "project",
+};
+
+/**
+ * Pairs the model on this Mac said are the same (ADR 0013), with its reason,
+ * shown as plain text: it comes from captured text through a model. A name
+ * in several pairs ("Anna" with "Anna Example" and "Anna Other") is asked
+ * about once: which one, or none of them.
+ */
+export function MergeSuggestions({
+  suggestions,
+  busy,
+  run,
+}: {
+  suggestions: SuggestionItem[];
+  busy: boolean;
+  run: (work: Promise<string>) => Promise<boolean>;
+}) {
+  if (suggestions.length === 0) return null;
+  // Group by a name that is in more than one pair.
+  const count = new Map<number, number>();
+  for (const { from, into } of suggestions) {
+    count.set(from.id, (count.get(from.id) ?? 0) + 1);
+    count.set(into.id, (count.get(into.id) ?? 0) + 1);
+  }
+  const groups = new Map<number, SuggestionItem[]>();
+  for (const s of suggestions) {
+    const shared = (count.get(s.from.id) ?? 0) > 1 ? s.from.id : s.into.id;
+    groups.set(shared, [...(groups.get(shared) ?? []), s]);
+  }
+  const merge = ({ from, into }: SuggestionItem) =>
+    run(
+      invoke("merge_entities", { from: from.id, into: into.id }).then(
+        () => `${from.name} is now part of ${into.name}.`,
+      ),
+    );
+  const notSame = (list: SuggestionItem[]) =>
+    run(
+      Promise.all(list.map(({ from, into }) => invoke("not_same", { a: from.id, b: into.id }))).then(
+        () => "Lax won't suggest them again.",
+      ),
+    );
+  return (
+    <div className="card suggestions">
+      <h2>These may be the same</h2>
+      <ul className="pairs">
+        {[...groups.entries()].map(([shared, list]) => {
+          if (list.length === 1) {
+            const [s] = list;
+            return (
+              <li key={`${s.from.id}-${s.into.id}`}>
+                <span>
+                  <strong>{s.from.name}</strong> and <strong>{s.into.name}</strong> look like the
+                  same {KIND_NAMES[s.kind]}.
+                  {s.reason && <span className="muted reason"> {s.reason}</span>}
+                </span>
+                <span className="buttons">
+                  <button
+                    type="button"
+                    disabled={busy}
+                    aria-label={`Merge ${s.from.name} into ${s.into.name}`}
+                    onClick={() => merge(s)}
+                  >
+                    Merge
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={busy}
+                    aria-label={`${s.from.name} and ${s.into.name} are not the same`}
+                    onClick={() => notSame([s])}
+                  >
+                    Not the same
+                  </button>
+                </span>
+              </li>
+            );
+          }
+          const name = (s: SuggestionItem) => (s.from.id === shared ? s.from.name : s.into.name);
+          const other = (s: SuggestionItem) => (s.from.id === shared ? s.into.name : s.from.name);
+          return (
+            <li key={`group-${shared}`}>
+              <span>
+                <strong>{name(list[0])}</strong> could be{" "}
+                {list.map((s, i) => (
+                  <span key={`${s.from.id}-${s.into.id}`}>
+                    {i > 0 && (i === list.length - 1 ? " or " : ", ")}
+                    <strong>{other(s)}</strong>
+                  </span>
+                ))}
+                .
+              </span>
+              <span className="buttons">
+                {list.map((s) => (
+                  <button
+                    key={`${s.from.id}-${s.into.id}`}
+                    type="button"
+                    disabled={busy}
+                    onClick={() => merge(s)}
+                  >
+                    Same as {other(s)}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={busy}
+                  onClick={() => notSame(list)}
+                >
+                  None of them
+                </button>
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
   );
 }
 

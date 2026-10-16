@@ -1,7 +1,15 @@
 import { describe, expect, test, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
-import { type EntityItem, NewNames, ObviousPairs, OldPageFiles, type PairItem } from "./Memory";
+import {
+  type EntityItem,
+  MergeSuggestions,
+  NewNames,
+  ObviousPairs,
+  OldPageFiles,
+  type PairItem,
+  type SuggestionItem,
+} from "./Memory";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 const mocked = vi.mocked(invoke);
@@ -144,6 +152,68 @@ describe("obvious pairs", () => {
 
   test("nothing to suggest, nothing shown", () => {
     const { container } = render(<ObviousPairs pairs={[]} busy={false} run={vi.fn()} />);
+    expect(container.textContent).toBe("");
+  });
+});
+
+describe("merge suggestions", () => {
+  const suggestion = (
+    fromId: number,
+    from: string,
+    intoId: number,
+    into: string,
+    reason = "Same team.",
+  ): SuggestionItem => ({
+    kind: "person",
+    from: { id: fromId, name: from },
+    into: { id: intoId, name: into },
+    reason,
+  });
+
+  function show(suggestions: SuggestionItem[]) {
+    mocked.mockReset();
+    mocked.mockImplementation(async () => null);
+    const run = vi.fn((work: Promise<string>) => work.then(() => true));
+    render(<MergeSuggestions suggestions={suggestions} busy={false} run={run} />);
+    return run;
+  }
+
+  test("a pair shows the model's reason as text, with Merge and Not the same", async () => {
+    show([suggestion(2, "Anna", 1, "Anna Example", "<b>Same</b> team.")]);
+    expect(screen.getByText(/look like the same person/)).toBeTruthy();
+    // Shown as text, never as markup.
+    expect(screen.getByText("<b>Same</b> team.")).toBeTruthy();
+    expect(document.querySelector(".suggestions b")).toBeNull();
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "Merge Anna into Anna Example" })),
+    );
+    expect(mocked).toHaveBeenCalledWith("merge_entities", { from: 2, into: 1 });
+  });
+
+  test("a short name that fits several is asked about once", async () => {
+    const run = show([
+      suggestion(2, "Anna", 1, "Anna Example"),
+      suggestion(2, "Anna", 3, "Anna Other"),
+    ]);
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+    expect(screen.getByRole("listitem").textContent).toContain(
+      "Anna could be Anna Example or Anna Other.",
+    );
+    await act(async () =>
+      fireEvent.click(screen.getByRole("button", { name: "Same as Anna Other" })),
+    );
+    expect(mocked).toHaveBeenCalledWith("merge_entities", { from: 2, into: 3 });
+    mocked.mockClear();
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "None of them" })));
+    expect(mocked).toHaveBeenCalledWith("not_same", { a: 2, b: 1 });
+    expect(mocked).toHaveBeenCalledWith("not_same", { a: 2, b: 3 });
+    expect(await run.mock.calls[1][0]).toBe("Lax won't suggest them again.");
+  });
+
+  test("nothing suggested, nothing shown", () => {
+    const { container } = render(
+      <MergeSuggestions suggestions={[]} busy={false} run={vi.fn()} />,
+    );
     expect(container.textContent).toBe("");
   });
 });

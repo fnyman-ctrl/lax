@@ -18,6 +18,7 @@ mod keychain;
 #[allow(dead_code)] // Some levels and fields have no user yet.
 mod logging;
 mod memory;
+mod merges;
 mod model_settings;
 #[allow(dead_code)] // Embeddings and more are used by the journal (Stage 3).
 mod models;
@@ -110,6 +111,7 @@ pub fn run() {
             memory::obvious_pairs,
             memory::not_same,
             memory::merge_obvious_pairs,
+            merges::merge_suggestions,
             memory::dont_learn_list,
             memory::allow_learning,
             setup::setup_status,
