@@ -289,7 +289,13 @@ companies the user only read about or saw in the news, authors of things they re
 and services they used (such as Mail, Slack or GitHub), topics, documents and single tasks. \
 Judge each name by what the user did with it: a name that only appears in something they read, \
 watched or browsed goes under \"mentioned\", even in the same text as names they work with. \
-Use names as written. Leave a list empty if there are none.";
+Use names as written. Leave a list empty if there are none. Examples: \
+\"Läste ärendet om exportknappen i Exempelportalen, skrev om CSS-filen och sökte på Stack \
+Overflow.\" gives {\"works_with\": {\"projects\": [\"Exempelportalen\"]}, \"mentioned\": \
+{\"organisations\": [\"Stack Overflow\"]}}. \"Ringde Doris Example om avtalet och läste ett \
+pressmeddelande från Exempel Bank.\" gives {\"works_with\": {\"people\": [\"Doris Example\"]}, \
+\"mentioned\": {\"organisations\": [\"Exempel Bank\"]}}. \"Fixade en bugg i inloggningen och \
+läste om CSS grid.\" gives {\"works_with\": {}, \"mentioned\": {\"projects\": [\"CSS grid\"]}}.";
 }
 
 /// Most names per list, and the longest name, in characters.

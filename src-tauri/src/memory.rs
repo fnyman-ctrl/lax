@@ -98,7 +98,12 @@ pub async fn round(app: &AppHandle, setbacks: &mut Setbacks) -> Result<(), ()> {
         match answer {
             Ok(entities) => {
                 setbacks.done(work.episode.id);
-                let names = names_in(entities, &work.episode.app_names, &work.own_names);
+                let names = names_in(
+                    entities,
+                    &work.episode.summary,
+                    &work.episode.app_names,
+                    &work.own_names,
+                );
                 let stored = with_store(app, |store| {
                     store.record_involved_mentions(work.episode.id, &names, Utc::now())
                 });
@@ -186,13 +191,16 @@ async fn recognize(work: &Work) -> Result<Entities, StructuredError> {
 
 /// The names in `entities`, by kind and with how the user is involved,
 /// without the episode's own apps (the model is told apps aren't
-/// organisations, and this makes sure) and without the user, who is not an
-/// entity of their own memory (ADR 0008).
+/// organisations, and this makes sure), without the user, who is not an
+/// entity of their own memory (ADR 0008), and without names that aren't in
+/// `text`, the entry the model read: the task's examples, or names made up.
 fn names_in(
     entities: Entities,
+    text: &str,
     app_names: &[String],
     own_names: &[String],
 ) -> Vec<(EntityKind, String, Involvement)> {
+    let text = name_key(text);
     let apps: Vec<String> = app_names.iter().map(|n| name_key(n)).collect();
     let user: Vec<String> = own_names.iter().map(|n| name_key(n)).collect();
     let mut names = Vec::new();
@@ -207,7 +215,10 @@ fn names_in(
         ] {
             for name in list {
                 let key = name_key(&name);
-                if apps.contains(&key) || (kind == EntityKind::Person && user.contains(&key)) {
+                if !text.contains(&key)
+                    || apps.contains(&key)
+                    || (kind == EntityKind::Person && user.contains(&key))
+                {
                     continue;
                 }
                 names.push((kind, name, involvement));
@@ -939,10 +950,27 @@ mod tests {
         (kind, name.to_string(), involvement)
     }
 
+    /// An entry naming everyone the tests below name.
+    const TEXT: &str = "Anna Example and Bo Nyhet, from Exempelbolaget AB, on Q3 lansering \
+                        in Slack and Mail. BO   EXEMPEL too.";
+
+    #[test]
+    fn names_not_in_the_entry_are_left_out() {
+        let found = names_in(
+            entities(&["Anna  example", "Doris Example"], &["Exempel Bank"], &[]),
+            TEXT,
+            &[],
+            &[],
+        );
+        // Case and spacing don't count; a name the entry doesn't hold goes.
+        assert_eq!(found, [named(EntityKind::Person, W, "Anna  example")]);
+    }
+
     #[test]
     fn names_keep_their_kind() {
         let found = names_in(
             entities(&["Anna Example"], &["Exempelbolaget AB"], &["Q3 lansering"]),
+            TEXT,
             &[],
             &[],
         );
@@ -964,6 +992,7 @@ mod tests {
                 &["slack", "Exempelbolaget AB"],
                 &["Mail"],
             ),
+            TEXT,
             &["Slack".to_string(), "Mail".to_string()],
             &[],
         );
@@ -982,6 +1011,7 @@ mod tests {
         assert_eq!(own, ["Bo", "Bo Exempel"]);
         let found = names_in(
             entities(&["bo exempel", "Bo", "Anna Example"], &[], &["Bo"]),
+            TEXT,
             &[],
             &own,
         );
@@ -1002,7 +1032,7 @@ mod tests {
         let mut answer = entities(&["Anna Example"], &[], &[]);
         answer.mentioned.people.push("Bo Nyhet".to_string());
         assert_eq!(
-            names_in(answer, &[], &[]),
+            names_in(answer, TEXT, &[], &[]),
             [
                 named(EntityKind::Person, W, "Anna Example"),
                 named(EntityKind::Person, Involvement::Mentioned, "Bo Nyhet"),
@@ -1049,7 +1079,7 @@ mod tests {
             own_names: Vec::new(),
         };
         let answer = recognize(&work).await.expect("an answer");
-        let names = names_in(answer, &work.episode.app_names, &[]);
+        let names = names_in(answer, &work.episode.summary, &work.episode.app_names, &[]);
         assert!(
             names
                 .iter()
@@ -1117,7 +1147,8 @@ mod tests {
                 },
                 own_names: Vec::new(),
             };
-            let names = names_in(recognize(&work).await.expect("an answer"), &[], &[]);
+            let answer = recognize(&work).await.expect("an answer");
+            let names = names_in(answer, summary, &[], &[]);
             found += names.len();
             counted += names
                 .iter()
@@ -1281,11 +1312,13 @@ or Safari) are not organisations. Leave a list empty if there are none.";
                 },
                 mentioned: Names::default(),
             };
-            for (kind, _, _) in names_in(old, &episode.app_names, &own) {
+            for (kind, _, _) in names_in(old, &episode.summary, &episode.app_names, &own) {
                 before += 1;
                 projects_before += u64::from(kind == EntityKind::Project);
             }
-            for (kind, name, involvement) in names_in(new, &episode.app_names, &own) {
+            for (kind, name, involvement) in
+                names_in(new, &episode.summary, &episode.app_names, &own)
+            {
                 found += 1;
                 let worked_with = involvement == Involvement::WorksWith;
                 now += u64::from(worked_with);
