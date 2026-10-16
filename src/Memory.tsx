@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ExportPages } from "./ExportPages";
 import { PageEditor } from "./PageEditor";
@@ -20,7 +20,7 @@ type MemoryStatus = {
 };
 type PageItem = { path: string; state: "ok" | "missing" | "detached" | "recreate" };
 type Kind = "person" | "organisation" | "project";
-type EntityItem = {
+export type EntityItem = {
   id: number;
   kind: Kind;
   name: string;
@@ -28,8 +28,10 @@ type EntityItem = {
   mentions: number;
   days: number;
   lastSeen: number;
-  /** Seen on fewer than two days and not kept: Lax only notes it so far. */
+  /** Worked with on fewer than two days and not kept: Lax only notes it so far. */
   isNew: boolean;
+  /** Only ever mentioned, never worked with (ADR 0013): folded away under New. */
+  onlyMentioned: boolean;
   page: PageItem | null;
 };
 type DontLearnItem = { kind: Kind; name: string };
@@ -317,30 +319,22 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
           Nothing noted yet. Names appear here a few minutes after the journal writes an entry.
         </p>
       )}
-      {Array.isArray(entities) && entities.some((e) => e.isNew) && (
-        <section className="day">
-          <h2>New</h2>
-          <p className="muted hint">
-            Seen on one day so far. Lax keeps a name once it shows up on another day, or when
-            you keep it.
-          </p>
-          <ul className="entities">
-            {entities
-              .filter((e) => e.isNew)
-              .map((entity) => (
-                <EntityRow
-                  key={entity.id}
-                  entity={entity}
-                  all={entities}
-                  editable={status.pagesInDatabase}
-                  busy={busy}
-                  open={open === entity.id}
-                  onOpen={(on) => setOpen(on ? entity.id : null)}
-                  run={run}
-                />
-              ))}
-          </ul>
-        </section>
+      {Array.isArray(entities) && (
+        <NewNames
+          entities={entities}
+          row={(entity) => (
+            <EntityRow
+              key={entity.id}
+              entity={entity}
+              all={entities}
+              editable={status.pagesInDatabase}
+              busy={busy}
+              open={open === entity.id}
+              onOpen={(on) => setOpen(on ? entity.id : null)}
+              run={run}
+            />
+          )}
+        />
       )}
       {Array.isArray(entities) &&
         SECTIONS.map(({ kind, title }) => {
@@ -583,6 +577,41 @@ export function OldPageFiles({
           </button>
         )}
       </p>
+    </section>
+  );
+}
+
+/**
+ * The names Lax only notes so far. Names only ever mentioned, never worked
+ * with, are folded away below the rest (ADR 0013): they're most of the noise.
+ */
+export function NewNames({
+  entities,
+  row,
+}: {
+  entities: EntityItem[];
+  row: (entity: EntityItem) => ReactNode;
+}) {
+  const fresh = entities.filter((e) => e.isNew && !e.onlyMentioned);
+  const mentioned = entities.filter((e) => e.isNew && e.onlyMentioned);
+  if (fresh.length === 0 && mentioned.length === 0) return null;
+  return (
+    <section className="day">
+      <h2>New</h2>
+      <p className="muted hint">
+        Lax keeps a name once you've worked with it on two days, or when you keep it.
+      </p>
+      {fresh.length > 0 && <ul className="entities">{fresh.map(row)}</ul>}
+      {mentioned.length > 0 && (
+        <details className="only-mentioned">
+          <summary>Only mentioned ({mentioned.length})</summary>
+          <p className="muted hint">
+            Names you read about or saw, but didn't work with. They never get a page unless you
+            keep them.
+          </p>
+          <ul className="entities">{mentioned.map(row)}</ul>
+        </details>
+      )}
     </section>
   );
 }

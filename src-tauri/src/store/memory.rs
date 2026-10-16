@@ -58,6 +58,27 @@ pub struct UnrecognizedEpisode {
     pub app_names: Vec<String>,
 }
 
+/// How the user is involved with a name in an episode (ADR 0013): only
+/// days on which they work with it earn a page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Involvement {
+    /// Talks to, writes to, meets or works with; works for, with or sells
+    /// to; takes part in.
+    WorksWith,
+    /// Read about, saw in the news, a name on a page they only looked at.
+    Mentioned,
+}
+
+impl Involvement {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Involvement::WorksWith => "works_with",
+            Involvement::Mentioned => "mentioned",
+        }
+    }
+}
+
 /// An entity, for showing in the Memory view.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entity {
@@ -70,6 +91,8 @@ pub struct Entity {
     pub mentions: usize,
     /// On how many different days (local time) it was mentioned.
     pub days: usize,
+    /// On how many of those days the user worked with it (ADR 0013).
+    pub working_days: usize,
     pub last_seen: DateTime<Utc>,
     pub first_seen: DateTime<Utc>,
     /// The user chose to keep it.
@@ -77,9 +100,15 @@ pub struct Entity {
 }
 
 impl Entity {
-    /// Still new: not kept, and not yet mentioned on `DAYS_TO_KEEP` days.
+    /// Still new: not kept, and the user hasn't yet worked with it on
+    /// `DAYS_TO_KEEP` days.
     pub fn is_new(&self) -> bool {
-        !self.kept && self.days < DAYS_TO_KEEP
+        !self.kept && self.working_days < DAYS_TO_KEEP
+    }
+
+    /// Only ever mentioned, never worked with: listed apart, under New.
+    pub fn only_mentioned(&self) -> bool {
+        self.working_days == 0
     }
 }
 
@@ -178,6 +207,21 @@ impl Store {
         names: &[(EntityKind, String)],
         now: DateTime<Utc>,
     ) -> Result<bool> {
+        let names: Vec<_> = names
+            .iter()
+            .map(|(kind, name)| (*kind, name.clone(), Involvement::WorksWith))
+            .collect();
+        self.record_involved_mentions(episode, &names, now)
+    }
+
+    /// [`Store::record_mentions`], with how the user is involved with each
+    /// name. A name seen both ways in one episode counts as worked with.
+    pub fn record_involved_mentions(
+        &mut self,
+        episode: i64,
+        names: &[(EntityKind, String, Involvement)],
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
         let tx = self.conn.transaction()?;
         let marked = tx.execute(
             "UPDATE episodes SET recognized_at = ?2 WHERE id = ?1 AND recognized_at IS NULL",
@@ -186,7 +230,7 @@ impl Store {
         if marked == 0 {
             return Ok(false);
         }
-        for (kind, name) in names {
+        for (kind, name, involvement) in names {
             let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
             let key = name_key(&name);
             if key.is_empty() {
@@ -223,8 +267,10 @@ impl Store {
                 }
             };
             tx.execute(
-                "INSERT OR IGNORE INTO mentions (entity_id, episode_id) VALUES (?1, ?2)",
-                [entity, episode],
+                "INSERT INTO mentions (entity_id, episode_id, involvement) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (entity_id, episode_id) DO UPDATE SET involvement = 'works_with'
+                 WHERE excluded.involvement = 'works_with'",
+                params![entity, episode, involvement.as_str()],
             )?;
         }
         tx.commit()?;
@@ -241,7 +287,9 @@ impl Store {
                     count(DISTINCT date(e.started_at / 1000, 'unixepoch', 'localtime')),
                     max(e.ended_at),
                     n.kept,
-                    min(e.started_at)
+                    min(e.started_at),
+                    count(DISTINCT CASE WHEN m.involvement = 'works_with'
+                          THEN date(e.started_at / 1000, 'unixepoch', 'localtime') END)
              FROM entities AS n
              JOIN mentions AS m ON m.entity_id = n.id
              JOIN episodes AS e ON e.id = m.episode_id
@@ -267,6 +315,7 @@ impl Store {
                         .collect(),
                     mentions: usize::try_from(mentions).unwrap_or(0),
                     days: usize::try_from(days).unwrap_or(0),
+                    working_days: usize::try_from(row.get::<_, i64>(9)?).unwrap_or(0),
                     last_seen: DateTime::from_timestamp_millis(last).unwrap_or_default(),
                     kept: row.get::<_, i64>(7)? != 0,
                     first_seen: DateTime::from_timestamp_millis(row.get(8)?).unwrap_or_default(),
@@ -404,8 +453,10 @@ impl Store {
             [from, into],
         )?;
         tx.execute(
-            "INSERT OR IGNORE INTO mentions (entity_id, episode_id)
-             SELECT ?2, episode_id FROM mentions WHERE entity_id = ?1",
+            "INSERT INTO mentions (entity_id, episode_id, involvement)
+             SELECT ?2, episode_id, involvement FROM mentions WHERE entity_id = ?1
+             ON CONFLICT (entity_id, episode_id) DO UPDATE SET involvement = 'works_with'
+             WHERE excluded.involvement = 'works_with'",
             [from, into],
         )?;
         tx.execute(
@@ -751,6 +802,120 @@ mod tests {
         assert_eq!(anna.mentions, 3);
         assert_eq!(anna.days, 2);
         assert_eq!(anna.last_seen, at(24 * 60));
+    }
+
+    fn involved(name: &str, involvement: Involvement) -> (EntityKind, String, Involvement) {
+        (EntityKind::Person, name.to_string(), involvement)
+    }
+
+    #[test]
+    fn only_days_worked_with_earn_a_page() {
+        let mut store = Store::open_in_memory().unwrap();
+        let today = episode(&mut store, 0, "Safari");
+        let tomorrow = episode(&mut store, 24 * 60, "Safari");
+        for id in [today, tomorrow] {
+            store
+                .record_involved_mentions(
+                    id,
+                    &[
+                        involved("Bo Nyhet", Involvement::Mentioned),
+                        involved("Anna Example", Involvement::WorksWith),
+                    ],
+                    at(24 * 60 + 10),
+                )
+                .unwrap();
+        }
+        let entities = store.entities().unwrap();
+        let bo = entities.iter().find(|e| e.name == "Bo Nyhet").unwrap();
+        // Seen on two days, but only mentioned: still new, listed apart.
+        assert_eq!((bo.days, bo.working_days), (2, 0));
+        assert!(bo.is_new() && bo.only_mentioned());
+        let anna = entities.iter().find(|e| e.name == "Anna Example").unwrap();
+        assert_eq!((anna.days, anna.working_days), (2, 2));
+        assert!(!anna.is_new() && !anna.only_mentioned());
+    }
+
+    #[test]
+    fn a_name_worked_with_once_is_no_longer_only_mentioned() {
+        let mut store = Store::open_in_memory().unwrap();
+        let read = episode(&mut store, 0, "Safari");
+        let wrote = episode(&mut store, 24 * 60, "Mail");
+        store
+            .record_involved_mentions(
+                read,
+                &[involved("Anna Example", Involvement::Mentioned)],
+                at(10),
+            )
+            .unwrap();
+        store
+            .record_involved_mentions(
+                wrote,
+                &[involved("Anna Example", Involvement::WorksWith)],
+                at(24 * 60 + 10),
+            )
+            .unwrap();
+        let anna = &store.entities().unwrap()[0];
+        assert_eq!((anna.days, anna.working_days), (2, 1));
+        assert!(anna.is_new() && !anna.only_mentioned());
+    }
+
+    #[test]
+    fn a_name_seen_both_ways_in_one_episode_counts_as_worked_with() {
+        for order in [
+            [Involvement::Mentioned, Involvement::WorksWith],
+            [Involvement::WorksWith, Involvement::Mentioned],
+        ] {
+            let mut store = Store::open_in_memory().unwrap();
+            let id = episode(&mut store, 0, "Mail");
+            let names: Vec<_> = order
+                .iter()
+                .map(|&involvement| involved("Anna Example", involvement))
+                .collect();
+            store.record_involved_mentions(id, &names, at(10)).unwrap();
+            let anna = &store.entities().unwrap()[0];
+            assert_eq!((anna.mentions, anna.working_days), (1, 1), "{order:?}");
+        }
+    }
+
+    #[test]
+    fn merging_keeps_the_days_worked_with() {
+        let mut store = Store::open_in_memory().unwrap();
+        let one = episode(&mut store, 0, "Mail");
+        let two = episode(&mut store, 24 * 60, "Mail");
+        store
+            .record_involved_mentions(
+                one,
+                &[
+                    involved("Anna Example", Involvement::WorksWith),
+                    involved("A. Example", Involvement::Mentioned),
+                ],
+                at(10),
+            )
+            .unwrap();
+        store
+            .record_involved_mentions(
+                two,
+                &[involved("A. Example", Involvement::WorksWith)],
+                at(24 * 60 + 10),
+            )
+            .unwrap();
+        let id = |store: &Store, name: &str| {
+            store
+                .entities()
+                .unwrap()
+                .into_iter()
+                .find(|e| e.name == name)
+                .unwrap()
+                .id
+        };
+        let (from, into) = (id(&store, "A. Example"), id(&store, "Anna Example"));
+        assert_eq!(
+            store.merge_entities(from, into, at(24 * 60 + 20)).unwrap(),
+            Merged::Done
+        );
+        let anna = &store.entities().unwrap()[0];
+        assert_eq!((anna.mentions, anna.working_days), (2, 2));
+        assert!(!anna.is_new());
     }
 
     #[test]

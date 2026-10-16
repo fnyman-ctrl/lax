@@ -63,6 +63,9 @@ prompt never freezes the window. See
   minutes without keyboard or mouse input, so the Mac stays quiet while it's
   used (`src-tauri/src/memory.rs`, [ADR 0008](adr/0008-learning-memory.md)).
   Episodes are given their vectors for Ask the same way.
+- Each name comes with how the user is involved, `works_with` or
+  `mentioned` ([ADR 0013](adr/0013-tidying-the-memory.md)), stored per
+  mention. A name seen both ways in one episode counts as worked with.
 - Resolve them against known entities to avoid duplicates. For now only an
   exact match of the normalized name (case and spacing ignored, diacritics
   kept) joins a known entity; embeddings can suggest merges later, such as
@@ -71,7 +74,7 @@ prompt never freezes the window. See
 
 ## 4. Learn
 
-- Each entity Lax keeps (mentioned on two days, or kept by the user) has a
+- Each entity Lax keeps (worked with on two days, or kept by the user) has a
   page, plus the About me page (`src-tauri/src/pages`). A page is one
   Markdown text in the `text` column of its row in `pages`, in the encrypted
   database, and the user edits it in Lax's Memory view

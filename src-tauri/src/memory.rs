@@ -20,12 +20,13 @@ use tauri::{AppHandle, Manager};
 
 use crate::journal::{When, may_use_model};
 use crate::logging::{self, ErrorKind, Field};
-use crate::models::structured::{self, Captured, Entities, StructuredError};
+use crate::models::structured::{self, Captured, Entities, Named, StructuredError};
 use crate::models::{Endpoint, ModelClient, ModelTurn};
 use crate::pages;
 use crate::pause::Pause;
 use crate::store::{
-    EntityKind, Merged, ModelTask, Page, PageState, Renamed, Store, UnrecognizedEpisode, name_key,
+    EntityKind, Involvement, Merged, ModelTask, Page, PageState, Renamed, Store,
+    UnrecognizedEpisode, name_key,
 };
 
 /// At most this many episodes are read per round, so the journal gets its
@@ -99,12 +100,17 @@ pub async fn round(app: &AppHandle, setbacks: &mut Setbacks) -> Result<(), ()> {
                 setbacks.done(work.episode.id);
                 let names = names_in(entities, &work.episode.app_names, &work.own_names);
                 let stored = with_store(app, |store| {
-                    store.record_mentions(work.episode.id, &names, Utc::now())
+                    store.record_involved_mentions(work.episode.id, &names, Utc::now())
                 });
+                let mentioned = names
+                    .iter()
+                    .filter(|(_, _, involvement)| *involvement == Involvement::Mentioned)
+                    .count();
                 logging::info(
                     "memory.episode_read",
                     &[
                         Field::Count("names", names.len() as u64),
+                        Field::Count("mentioned", mentioned as u64),
                         Field::Flag("stored", matches!(stored, Some(Ok(true)))),
                         Field::Duration("elapsed", started.elapsed()),
                     ],
@@ -178,14 +184,15 @@ async fn recognize(work: &Work) -> Result<Entities, StructuredError> {
     .await
 }
 
-/// The names in `entities`, by kind, without the episode's own apps (the
-/// model is told apps aren't organisations, and this makes sure) and without
-/// the user, who is not an entity of their own memory (ADR 0008).
+/// The names in `entities`, by kind and with how the user is involved,
+/// without the episode's own apps (the model is told apps aren't
+/// organisations, and this makes sure) and without the user, who is not an
+/// entity of their own memory (ADR 0008).
 fn names_in(
     entities: Entities,
     app_names: &[String],
     own_names: &[String],
-) -> Vec<(EntityKind, String)> {
+) -> Vec<(EntityKind, String, Involvement)> {
     let apps: Vec<String> = app_names.iter().map(|n| name_key(n)).collect();
     let user: Vec<String> = own_names.iter().map(|n| name_key(n)).collect();
     let mut names = Vec::new();
@@ -194,12 +201,12 @@ fn names_in(
         (EntityKind::Organisation, entities.organisations),
         (EntityKind::Project, entities.projects),
     ] {
-        for name in list {
+        for Named { name, involvement } in list {
             let key = name_key(&name);
             if apps.contains(&key) || (kind == EntityKind::Person && user.contains(&key)) {
                 continue;
             }
-            names.push((kind, name));
+            names.push((kind, name, involvement));
         }
     }
     names
@@ -276,8 +283,11 @@ pub struct EntityItem {
     pub mentions: usize,
     pub days: usize,
     pub last_seen: i64,
-    /// Still new: seen on fewer than two days, and not kept by the user.
+    /// Still new: worked with on fewer than two days, and not kept by the
+    /// user.
     pub is_new: bool,
+    /// Only ever mentioned, never worked with (ADR 0013): listed apart.
+    pub only_mentioned: bool,
     pub page: Option<PageItem>,
 }
 
@@ -400,6 +410,7 @@ pub fn memory_entities(app: AppHandle) -> Result<Vec<EntityItem>, String> {
                     .map(|e| EntityItem {
                         page: pages.get(&e.id).map(page_item),
                         is_new: e.is_new(),
+                        only_mentioned: e.only_mentioned(),
                         id: e.id,
                         kind: e.kind.as_str(),
                         name: e.name,
@@ -897,12 +908,31 @@ mod tests {
     use super::*;
 
     fn entities(people: &[&str], organisations: &[&str], projects: &[&str]) -> Entities {
-        let list = |names: &[&str]| names.iter().map(|n| n.to_string()).collect();
+        let list = |names: &[&str]| {
+            names
+                .iter()
+                .map(|n| Named {
+                    name: n.to_string(),
+                    involvement: Involvement::WorksWith,
+                })
+                .collect()
+        };
         Entities {
             people: list(people),
             organisations: list(organisations),
             projects: list(projects),
         }
+    }
+
+    /// Worked with, as the helper above names everything.
+    const W: Involvement = Involvement::WorksWith;
+
+    fn named(
+        kind: EntityKind,
+        involvement: Involvement,
+        name: &str,
+    ) -> (EntityKind, String, Involvement) {
+        (kind, name.to_string(), involvement)
     }
 
     #[test]
@@ -915,9 +945,9 @@ mod tests {
         assert_eq!(
             found,
             [
-                (EntityKind::Person, "Anna Example".to_string()),
-                (EntityKind::Organisation, "Exempelbolaget AB".to_string()),
-                (EntityKind::Project, "Q3 lansering".to_string()),
+                named(EntityKind::Person, W, "Anna Example"),
+                named(EntityKind::Organisation, W, "Exempelbolaget AB"),
+                named(EntityKind::Project, W, "Q3 lansering"),
             ]
         );
     }
@@ -936,8 +966,8 @@ mod tests {
         assert_eq!(
             found,
             [
-                (EntityKind::Person, "Anna Example".to_string()),
-                (EntityKind::Organisation, "Exempelbolaget AB".to_string()),
+                named(EntityKind::Person, W, "Anna Example"),
+                named(EntityKind::Organisation, W, "Exempelbolaget AB"),
             ]
         );
     }
@@ -954,13 +984,29 @@ mod tests {
         assert_eq!(
             found,
             [
-                (EntityKind::Person, "Anna Example".to_string()),
+                named(EntityKind::Person, W, "Anna Example"),
                 // Only people: a project may share the name.
-                (EntityKind::Project, "Bo".to_string()),
+                named(EntityKind::Project, W, "Bo"),
             ]
         );
         assert_eq!(names_of("Cher"), ["Cher"]);
         assert!(names_of("").is_empty());
+    }
+
+    #[test]
+    fn names_keep_how_the_user_is_involved() {
+        let mut answer = entities(&["Anna Example"], &[], &[]);
+        answer.people.push(Named {
+            name: "Bo Nyhet".to_string(),
+            involvement: Involvement::Mentioned,
+        });
+        assert_eq!(
+            names_in(answer, &[], &[]),
+            [
+                named(EntityKind::Person, W, "Anna Example"),
+                named(EntityKind::Person, Involvement::Mentioned, "Bo Nyhet"),
+            ]
+        );
     }
 
     #[test]
@@ -1006,7 +1052,241 @@ mod tests {
         assert!(
             names
                 .iter()
-                .any(|(kind, name)| *kind == EntityKind::Person && name.contains("Anna"))
+                .any(|(kind, name, _)| *kind == EntityKind::Person && name.contains("Anna"))
+        );
+    }
+
+    /// The involvement flag against a real model server (ADR 0013): names
+    /// the user works with are flagged so, names they only read about are
+    /// not. Prints how many names the old prompt would have counted toward a
+    /// page (all of them) and how many count now. Synthetic entries only.
+    #[tokio::test]
+    #[ignore = "needs a local model server: LAX_LIVE_MODEL_URL, LAX_LIVE_CHAT_MODEL"]
+    async fn live_memory_involvement() {
+        let env = |name| std::env::var(name).unwrap_or_else(|_| panic!("{name} is not set"));
+        // Each entry, the names the user works with, and names only read about.
+        let cases: [(&str, &[&str], &[&str]); 4] = [
+            (
+                "Läste en artikel i Dagens Exempel om att Exempel Motors vd Bo Nyhet avgår.",
+                &[],
+                &["Bo Nyhet", "Exempel Motors"],
+            ),
+            (
+                "Skrev till Anna Example om offerten för Q3 lansering till Exempelbolaget AB.",
+                &["Anna Example"],
+                &[],
+            ),
+            (
+                "Videomöte med Cecilia Example och Erik Example om projektet Lax. Läste sedan \
+                 ett blogginlägg av Dan Skribent om SQLite.",
+                &["Cecilia Example", "Erik Example"],
+                &["Dan Skribent"],
+            ),
+            (
+                "Read a news story about Example Labs and its founder Frank Headline, then \
+                 replied to Anna Example in Slack about the release.",
+                &["Anna Example"],
+                &["Frank Headline", "Example Labs"],
+            ),
+        ];
+        let (mut found, mut counted) = (0, 0);
+        let mut wrong = Vec::new();
+        for (summary, works_with, mentioned) in cases {
+            let work = Work {
+                base_url: env("LAX_LIVE_MODEL_URL"),
+                model: env("LAX_LIVE_CHAT_MODEL"),
+                episode: UnrecognizedEpisode {
+                    id: 1,
+                    summary: summary.to_string(),
+                    app_names: vec!["Safari".to_string(), "Slack".to_string()],
+                },
+                own_names: Vec::new(),
+            };
+            let names = names_in(recognize(&work).await.expect("an answer"), &[], &[]);
+            found += names.len();
+            counted += names
+                .iter()
+                .filter(|(_, _, i)| *i == Involvement::WorksWith)
+                .count();
+            let flag = |wanted: &str| {
+                names
+                    .iter()
+                    .find(|(_, name, _)| name.contains(wanted))
+                    .map(|(_, _, involvement)| *involvement)
+            };
+            for name in works_with {
+                if flag(name) != Some(Involvement::WorksWith) {
+                    wrong.push(format!("{name}: {:?}, expected works_with", flag(name)));
+                }
+            }
+            for name in mentioned {
+                if flag(name) == Some(Involvement::WorksWith) {
+                    wrong.push(format!(
+                        "{name}: works_with, expected mentioned or left out"
+                    ));
+                }
+            }
+        }
+        logging::info(
+            "memory.live_involvement",
+            &[
+                Field::Count("names", found as u64),
+                Field::Count("toward_a_page_before", found as u64),
+                Field::Count("toward_a_page_now", counted as u64),
+            ],
+        );
+        assert!(wrong.is_empty(), "{wrong:#?}");
+    }
+
+    /// The entities answer as it was before the involvement flag, for
+    /// [`replay_own_entries`].
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct OldEntities {
+        people: Vec<String>,
+        organisations: Vec<String>,
+        projects: Vec<String>,
+    }
+
+    impl structured::Validate for OldEntities {
+        fn validate(&self) -> Result<(), &'static str> {
+            Ok(())
+        }
+    }
+
+    const OLD_SHAPE: &str =
+        r#"{"people": [string], "organisations": [string], "projects": [string]}"#;
+    const OLD_TASK: &str = "List the people, organisations and projects named in the \
+captured text. Use names as written. Apps and websites the user worked in (such as Mail, Slack \
+or Safari) are not organisations. Leave a list empty if there are none.";
+
+    /// Deletes the copy of the database when the replay ends, also on a
+    /// panic.
+    struct Copy(std::path::PathBuf);
+
+    impl Drop for Copy {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Replays the maintainer's own newest journal entries through the
+    /// prompt from before the involvement flag and the one with it (ADR
+    /// 0013), and logs counts only, never a name or any text. It reads a
+    /// copy of the database, so the real one never gets this branch's
+    /// migrations (an older Lax refuses a newer schema). Reading the key
+    /// makes macOS ask for the login password: choose Allow, not Always
+    /// Allow. From Terminal, with Lax's model server running:
+    ///
+    /// `LAX_LIVE_MODEL_URL=http://localhost:1234/v1 LAX_LIVE_CHAT_MODEL=google/gemma-4-e4b
+    /// cargo test replay_own_entries -- --ignored --nocapture`
+    ///
+    /// `LAX_REPLAY_ENTRIES` sets how many entries (20 by default; each
+    /// takes two model calls).
+    #[tokio::test]
+    #[ignore = "reads the maintainer's own database and needs a local model server"]
+    async fn replay_own_entries() {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+
+        use crate::keychain::LoginKeychain;
+        use crate::store::name_key;
+
+        let env = |name| std::env::var(name).unwrap_or_else(|_| panic!("{name} is not set"));
+        let limit = std::env::var("LAX_REPLAY_ENTRIES")
+            .ok()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(20);
+        let data = std::path::Path::new(&env("HOME"))
+            .join("Library/Application Support/io.github.fnyman-ctrl.lax");
+        let copy = Copy(std::env::temp_dir().join(format!("lax-replay-{}", std::process::id())));
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&copy.0)
+            .expect("a private folder for the copy");
+        for file in ["lax.sqlite", "lax.sqlite-wal", "lax.sqlite-shm"] {
+            let from = data.join(file);
+            if from.exists() {
+                let to = copy.0.join(file);
+                std::fs::copy(&from, &to).expect("a copy of the database");
+                std::fs::set_permissions(&to, std::fs::Permissions::from_mode(0o600)).unwrap();
+            }
+        }
+        let (store, _) =
+            Store::open_keyed(&copy.0, &LoginKeychain::lax()).expect("the copy opens with the key");
+        let episodes = store.episodes(None, limit).expect("the newest entries");
+        let mut own = own_names();
+        own.extend(store.own_names().unwrap());
+        // Names with a page today, by every name they go by.
+        let paged: Vec<String> = store
+            .entities()
+            .unwrap()
+            .into_iter()
+            .filter(|e| !e.is_new())
+            .flat_map(|e| std::iter::once(e.name).chain(e.aliases))
+            .map(|n| name_key(&n))
+            .collect();
+        drop(store);
+
+        let client =
+            ModelClient::new(Endpoint::parse(&env("LAX_LIVE_MODEL_URL")).unwrap()).unwrap();
+        let model = env("LAX_LIVE_CHAT_MODEL");
+        let (mut before, mut found, mut now, mut failed) = (0, 0, 0, 0);
+        let (mut paged_seen, mut paged_mentioned) = (0, 0);
+        for episode in &episodes {
+            let captured = [Captured(&episode.summary)];
+            let old = structured::ask::<OldEntities>(
+                &client, &model, OLD_TASK, OLD_SHAPE, &captured, MAX_TOKENS,
+            )
+            .await;
+            let new = structured::ask::<Entities>(
+                &client,
+                &model,
+                Entities::TASK,
+                Entities::SHAPE,
+                &captured,
+                MAX_TOKENS,
+            )
+            .await;
+            let (Ok(old), Ok(new)) = (old, new) else {
+                failed += 1;
+                continue;
+            };
+            let as_worked_with = |names: Vec<String>| {
+                names
+                    .into_iter()
+                    .map(|name| Named {
+                        name,
+                        involvement: Involvement::WorksWith,
+                    })
+                    .collect()
+            };
+            let old = Entities {
+                people: as_worked_with(old.people),
+                organisations: as_worked_with(old.organisations),
+                projects: as_worked_with(old.projects),
+            };
+            before += names_in(old, &episode.app_names, &own).len();
+            for (_, name, involvement) in names_in(new, &episode.app_names, &own) {
+                found += 1;
+                let worked_with = involvement == Involvement::WorksWith;
+                now += usize::from(worked_with);
+                if paged.contains(&name_key(&name)) {
+                    paged_seen += 1;
+                    paged_mentioned += usize::from(!worked_with);
+                }
+            }
+        }
+        logging::info(
+            "memory.replay",
+            &[
+                Field::Count("entries", episodes.len() as u64),
+                Field::Count("failed", failed),
+                Field::Count("toward_a_page_before", before as u64),
+                Field::Count("names_now", found as u64),
+                Field::Count("toward_a_page_now", now as u64),
+                Field::Count("names_with_a_page_seen", paged_seen as u64),
+                Field::Count("of_those_only_mentioned", paged_mentioned as u64),
+            ],
         );
     }
 }
