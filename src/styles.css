@@ -1757,3 +1757,19 @@ button.link {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+.bug-report {
+  margin-top: 1.5rem;
+}
+
+.bug-report .details {
+  margin: 0.5rem 0 0;
+  padding: 0.6rem 0.8rem;
+  overflow-x: auto;
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}

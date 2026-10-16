@@ -22,17 +22,13 @@ body:
       label: Steps to reproduce
     validations:
       required: true
-  - type: input
-    id: version
+  - type: textarea
+    id: details
     attributes:
-      label: Lax version
-  - type: input
-    id: macos
-    attributes:
-      label: macOS version and Mac model
-      placeholder: macOS 26.1, MacBook Pro M1 Pro 16 GB
-  - type: input
-    id: model
-    attributes:
-      label: Model setup
-      placeholder: Ollama + qwen3:4b / remote provider (which?)
+      label: Details
+      description: >-
+        In Lax, open **Models** and press **Copy details for a bug report**, then
+        paste here. It holds versions, your Mac, the models and counts, nothing
+        Lax has read. If you can't, give the Lax version, macOS version, Mac
+        model and memory, and the model setup.
+      render: text

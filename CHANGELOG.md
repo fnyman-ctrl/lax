@@ -4,6 +4,9 @@ What changed in each version of Lax, for people who use it.
 
 ## Unreleased
 
+- **Copy details for a bug report**, under Models: versions, your Mac, the
+  models, what's on and counts, shown before you paste it. Nothing Lax has
+  read, and nothing is sent.
 - **Journal on battery.** The journal now writes on battery too, about once an
   hour, and waits for power only below 20 %. Before, it waited for power
   however long you were unplugged. The Journal and Memory tabs say what
