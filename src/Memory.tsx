@@ -39,6 +39,11 @@ export type EntityItem = {
 type DontLearnItem = { kind: Kind; name: string };
 export type PairItem = { into: { id: number; name: string }; from: { id: number; name: string } };
 export type SuggestionItem = PairItem & { kind: Kind; reason: string };
+export type PartSuggestionItem = {
+  part: { id: number; name: string };
+  whole: { id: number; name: string };
+  reason: string;
+};
 
 const REFRESH_MS = 30_000;
 
@@ -60,6 +65,7 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
   const [dontLearn, setDontLearn] = useState<DontLearnItem[]>([]);
   const [pairs, setPairs] = useState<PairItem[]>([]);
   const [suggestions, setSuggestions] = useState<SuggestionItem[]>([]);
+  const [partSuggestions, setPartSuggestions] = useState<PartSuggestionItem[]>([]);
   const [message, setMessage] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [forgettingAll, setForgettingAll] = useState(false);
@@ -73,6 +79,9 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
     invoke<DontLearnItem[]>("dont_learn_list").then(setDontLearn, () => setDontLearn([]));
     invoke<PairItem[]>("obvious_pairs").then(setPairs, () => setPairs([]));
     invoke<SuggestionItem[]>("merge_suggestions").then(setSuggestions, () => setSuggestions([]));
+    invoke<PartSuggestionItem[]>("part_suggestions").then(setPartSuggestions, () =>
+      setPartSuggestions([]),
+    );
   }, []);
 
   /** Runs a change, shows what came of it, and reloads. */
@@ -329,6 +338,9 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
 
       {status.enabled && <MergeSuggestions suggestions={suggestions} busy={busy} run={run} />}
       {status.enabled && <ObviousPairs pairs={pairs} busy={busy} run={run} />}
+      {status.enabled && (
+        <PartSuggestions suggestions={partSuggestions} busy={busy} run={run} />
+      )}
 
       {entities === "failed" && <p className="error">Lax couldn't read what it has noted.</p>}
       {Array.isArray(entities) && entities.length === 0 && status.enabled && (
@@ -717,6 +729,84 @@ export function MergeSuggestions({
             </li>
           );
         })}
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * Projects the model on this Mac said are part of another (ADR 0013), with
+ * its reason as plain text. Yes makes it a part, No is final, and "They're
+ * the same" merges the part into the whole.
+ */
+export function PartSuggestions({
+  suggestions,
+  busy,
+  run,
+}: {
+  suggestions: PartSuggestionItem[];
+  busy: boolean;
+  run: (work: Promise<string>) => Promise<boolean>;
+}) {
+  if (suggestions.length === 0) return null;
+  return (
+    <div className="card suggestions">
+      <h2>These may be parts of a project</h2>
+      <ul className="pairs">
+        {suggestions.map(({ part, whole, reason }) => (
+          <li key={`${part.id}-${whole.id}`}>
+            <span>
+              <strong>{part.name}</strong> looks like part of <strong>{whole.name}</strong>.
+              {reason && <span className="muted reason"> {reason}</span>}
+            </span>
+            <span className="buttons">
+              <button
+                type="button"
+                disabled={busy}
+                aria-label={`Yes, ${part.name} is part of ${whole.name}`}
+                onClick={() =>
+                  run(
+                    invoke("set_part_of", { part: part.id, whole: whole.id }).then(
+                      () => `${part.name} is now part of ${whole.name}.`,
+                    ),
+                  )
+                }
+              >
+                Yes
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                disabled={busy}
+                aria-label={`No, ${part.name} isn't part of ${whole.name}`}
+                onClick={() =>
+                  run(
+                    invoke("not_part", { a: part.id, b: whole.id }).then(
+                      () => `Lax won't suggest that again.`,
+                    ),
+                  )
+                }
+              >
+                No
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                disabled={busy}
+                aria-label={`${part.name} and ${whole.name} are the same`}
+                onClick={() =>
+                  run(
+                    invoke("merge_entities", { from: part.id, into: whole.id }).then(
+                      () => `${part.name} is now one of ${whole.name}'s names.`,
+                    ),
+                  )
+                }
+              >
+                They're the same
+              </button>
+            </span>
+          </li>
+        ))}
       </ul>
     </div>
   );

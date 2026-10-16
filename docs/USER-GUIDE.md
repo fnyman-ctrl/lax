@@ -71,7 +71,10 @@ choose.
   many names, you can search it. A project can be **Part of** another, one
   level deep, such as an export feature in an app: parts are listed under
   their project, and the pages say so. **Take out** makes a part a project of
-  its own again; forgetting the project does too.
+  its own again; forgetting the project does too. The model on this Mac also
+  suggests parts, under **These may be parts of a project**, for projects
+  whose names overlap or that come up together on several days: **Yes**,
+  **No** (final), or **They're the same**.
 - **Captures:** everything Lax has read. Search it, forget a time or an app, or
   delete everything.
 - **Exclusions:** apps, websites and window titles Lax never reads. Banking and

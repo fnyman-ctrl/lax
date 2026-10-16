@@ -22,7 +22,7 @@ What changed in each version of Lax, for people who use it.
 - **Memory: Same as.** The list in a name's Change panel puts the likely
   names first, and can be searched when there are many.
 - **Memory: projects in parts.** A project can be part of another, one level
-  deep. Parts are listed under their project, and the pages name them.
+  deep, set by you or suggested by the model on your Mac. Parts are listed under their project, and the pages name them.
 
 ## 0.1.0 (2026-10-16)
 
