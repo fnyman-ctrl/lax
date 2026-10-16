@@ -89,6 +89,7 @@ pub fn start(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut setbacks = Setbacks::default();
         let mut memory_setbacks = memory::Setbacks::default();
+        let mut merge_setbacks = crate::merges::Setbacks::default();
         let mut facts_schedule = crate::pages::facts::Schedule::default();
         loop {
             // The memory reads the journal's episodes, right after it, so the
@@ -98,7 +99,7 @@ pub fn start(app: AppHandle) {
                 result = memory::round(&app, &mut memory_setbacks).await;
             }
             if result.is_ok() {
-                result = crate::merges::round(&app).await;
+                result = crate::merges::round(&app, &mut merge_setbacks).await;
             }
             // No model: brings the memory's pages up to date.
             crate::pages::round(&app);

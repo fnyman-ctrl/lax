@@ -10,6 +10,7 @@
 //! in an entry can at worst flip a verdict; the pair itself comes from Lax,
 //! and a merge always needs the user's click.
 
+use std::collections::HashMap;
 use std::sync::{Mutex, PoisonError};
 use std::time::Instant;
 
@@ -33,6 +34,29 @@ const FACTS_PER_NAME: usize = 10;
 const MAX_REASON_CHARS: usize = 200;
 /// Room for a model that reasons before answering, as for the memory.
 const MAX_TOKENS: u32 = 2000;
+/// Bad answers about one pair before it counts as "unsure", so it waits
+/// instead of taking the first turn every round.
+const ATTEMPTS_PER_PAIR: u32 = 3;
+
+/// Pairs the model answered badly about, and how often. Only in memory.
+#[derive(Default)]
+pub struct Setbacks {
+    failures: HashMap<(i64, i64), u32>,
+}
+
+impl Setbacks {
+    /// Counts a bad answer; `true` once the pair has had
+    /// `ATTEMPTS_PER_PAIR`, and then it is no longer counted.
+    fn bad_answer(&mut self, pair: (i64, i64)) -> bool {
+        let count = self.failures.entry(pair).or_insert(0);
+        *count += 1;
+        if *count >= ATTEMPTS_PER_PAIR {
+            self.failures.remove(&pair);
+            return true;
+        }
+        false
+    }
+}
 
 const TASK: &str = "Decide whether two names in the user's memory are the same person, \
 organisation or project, of the kind given. You get each name with entries from the user's \
@@ -97,7 +121,7 @@ struct Work {
 /// One round: judge up to `PAIRS_PER_ROUND` pairs, only while the user is
 /// away and on power (`may_use_model(When::Later)`), and not while paused.
 /// `Err` means the model server is unavailable.
-pub async fn round(app: &AppHandle) -> Result<(), ()> {
+pub async fn round(app: &AppHandle, setbacks: &mut Setbacks) -> Result<(), ()> {
     if app.state::<Pause>().is_paused() || !may_use_model(When::Later) {
         return Ok(());
     }
@@ -116,14 +140,15 @@ pub async fn round(app: &AppHandle) -> Result<(), ()> {
         else {
             break;
         };
+        let (a, b) = (&work.candidate.a, &work.candidate.b);
         match answer {
             Ok(answer) => {
+                setbacks.failures.remove(&(a.id, b.id));
                 let verdict = match answer.same {
                     Same::Yes => Verdict::Yes,
                     Same::No => Verdict::No,
                     Same::Unsure => Verdict::Unsure,
                 };
-                let (a, b) = (&work.candidate.a, &work.candidate.b);
                 let stored = with_store(app, |store| {
                     store.record_verdict(
                         (a.id, a.mentions),
@@ -153,7 +178,19 @@ pub async fn round(app: &AppHandle) -> Result<(), ()> {
                 if error.model_unavailable() {
                     return Err(());
                 }
-                // A bad answer: the pair stays a candidate for next round.
+                // Asked again next round, and after a few bad answers it
+                // waits like an "unsure".
+                if setbacks.bad_answer((a.id, b.id)) {
+                    let _ = with_store(app, |store| {
+                        store.record_verdict(
+                            (a.id, a.mentions),
+                            (b.id, b.mentions),
+                            Verdict::Unsure,
+                            "",
+                            Utc::now(),
+                        )
+                    });
+                }
             }
         }
     }
@@ -306,6 +343,15 @@ mod tests {
         }
         let long = format!(r#"{{"same":"yes","reason":"{}"}}"#, "a".repeat(1001));
         assert!(matches!(answer(&long), Err(StructuredError::Invalid(_))));
+    }
+
+    #[test]
+    fn a_pair_waits_after_three_bad_answers() {
+        let mut setbacks = Setbacks::default();
+        assert!(!setbacks.bad_answer((1, 2)));
+        assert!(!setbacks.bad_answer((1, 2)));
+        assert!(setbacks.bad_answer((1, 2)));
+        assert!(setbacks.failures.is_empty());
     }
 
     #[test]
