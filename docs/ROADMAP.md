@@ -16,7 +16,7 @@ closer to them.
 | [4](https://github.com/fnyman-ctrl/lax/milestone/4) | Learning memory ⭐ | ✅ First version: entities, pages with facts and history in the encrypted database, an About me page, edited and exported in Lax; a week of use to judge |
 | [5](https://github.com/fnyman-ctrl/lax/milestone/5) | Ask your memory | ✅ First version: a conversation, answered from the journal and the memory, found by time, name, words and meaning |
 | — | Writing assistant | ✅ First version, pulled forward ([ADR 0009](adr/0009-writing-assistant.md)): call Lax to any text field for a draft |
-| [6](https://github.com/fnyman-ctrl/lax/milestone/6) | Release 0.1 | Planned |
+| [6](https://github.com/fnyman-ctrl/lax/milestone/6) | Release 0.1 | ✅ Released 2026-10-16 as [v0.1.0](https://github.com/fnyman-ctrl/lax/releases/tag/v0.1.0) |
 | [7](https://github.com/fnyman-ctrl/lax/milestone/8) | Release 0.2: Safe to share | Planned |
 | [8](https://github.com/fnyman-ctrl/lax/milestone/7) | Release 0.3: Remote providers | Planned |
 
