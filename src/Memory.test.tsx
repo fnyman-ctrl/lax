@@ -54,6 +54,7 @@ function entity(id: number, name: string, isNew: boolean, onlyMentioned: boolean
     aliases: [],
     mentions: 1,
     days: 1,
+    workingDays: onlyMentioned ? 0 : 1,
     lastSeen: 0,
     isNew,
     onlyMentioned,

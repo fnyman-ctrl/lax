@@ -282,6 +282,8 @@ pub struct EntityItem {
     pub aliases: Vec<String>,
     pub mentions: usize,
     pub days: usize,
+    /// Of those days, on how many the user worked with it (ADR 0013).
+    pub working_days: usize,
     pub last_seen: i64,
     /// Still new: worked with on fewer than two days, and not kept by the
     /// user.
@@ -417,6 +419,7 @@ pub fn memory_entities(app: AppHandle) -> Result<Vec<EntityItem>, String> {
                         aliases: e.aliases,
                         mentions: e.mentions,
                         days: e.days,
+                        working_days: e.working_days,
                         last_seen: e.last_seen.timestamp_millis(),
                     })
                     .collect()
@@ -1176,7 +1179,8 @@ or Safari) are not organisations. Leave a list empty if there are none.";
     /// copy of the database, so the real one never gets this branch's
     /// migrations (an older Lax refuses a newer schema). Reading the key
     /// makes macOS ask for the login password: choose Allow, not Always
-    /// Allow. From Terminal, with Lax's model server running:
+    /// Allow. Quit Lax first, so the database isn't copied mid-write. From
+    /// Terminal, with Lax's model server running:
     ///
     /// `LAX_LIVE_MODEL_URL=http://localhost:1234/v1 LAX_LIVE_CHAT_MODEL=google/gemma-4-e4b
     /// cargo test replay_own_entries -- --ignored --nocapture`

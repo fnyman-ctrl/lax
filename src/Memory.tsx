@@ -27,6 +27,8 @@ export type EntityItem = {
   aliases: string[];
   mentions: number;
   days: number;
+  /** Of those days, on how many the user worked with it. */
+  workingDays: number;
   lastSeen: number;
   /** Worked with on fewer than two days and not kept: Lax only notes it so far. */
   isNew: boolean;
@@ -994,5 +996,10 @@ function seen(entity: EntityItem): string {
     day: "numeric",
     month: "short",
   });
-  return `In ${entries} on ${days}, last ${last}`;
+  // A new name seen on more days than it was worked with: say why it's new.
+  const worked =
+    entity.isNew && entity.workingDays < entity.days
+      ? `, worked with on ${entity.workingDays === 1 ? "one" : entity.workingDays}`
+      : "";
+  return `In ${entries} on ${days}${worked}, last ${last}`;
 }
