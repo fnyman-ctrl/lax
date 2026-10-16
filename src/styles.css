@@ -1239,6 +1239,15 @@ button.link {
   color: var(--muted);
 }
 
+.new-names summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+
+.new-names[open] summary {
+  margin-bottom: 0.5rem;
+}
+
 .versions {
   margin: 0.25rem 0 0;
   padding: 0;

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ExportPages } from "./ExportPages";
 import { PageEditor } from "./PageEditor";
@@ -20,7 +20,7 @@ type MemoryStatus = {
 };
 type PageItem = { path: string; state: "ok" | "missing" | "detached" | "recreate" };
 type Kind = "person" | "organisation" | "project";
-type EntityItem = {
+export type EntityItem = {
   id: number;
   kind: Kind;
   name: string;
@@ -317,30 +317,22 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
           Nothing noted yet. Names appear here a few minutes after the journal writes an entry.
         </p>
       )}
-      {Array.isArray(entities) && entities.some((e) => e.isNew) && (
-        <section className="day">
-          <h2>New</h2>
-          <p className="muted hint">
-            Seen on one day so far. Lax keeps a name once it shows up on another day, or when
-            you keep it.
-          </p>
-          <ul className="entities">
-            {entities
-              .filter((e) => e.isNew)
-              .map((entity) => (
-                <EntityRow
-                  key={entity.id}
-                  entity={entity}
-                  all={entities}
-                  editable={status.pagesInDatabase}
-                  busy={busy}
-                  open={open === entity.id}
-                  onOpen={(on) => setOpen(on ? entity.id : null)}
-                  run={run}
-                />
-              ))}
-          </ul>
-        </section>
+      {Array.isArray(entities) && (
+        <NewNames
+          entities={entities}
+          row={(entity) => (
+            <EntityRow
+              key={entity.id}
+              entity={entity}
+              all={entities}
+              editable={status.pagesInDatabase}
+              busy={busy}
+              open={open === entity.id}
+              onOpen={(on) => setOpen(on ? entity.id : null)}
+              run={run}
+            />
+          )}
+        />
       )}
       {Array.isArray(entities) &&
         SECTIONS.map(({ kind, title }) => {
@@ -583,6 +575,34 @@ export function OldPageFiles({
           </button>
         )}
       </p>
+    </section>
+  );
+}
+
+/**
+ * The names Lax only notes so far, folded away (ADR 0013): they don't need
+ * the user. Opened, most mentioned first, as the list already comes.
+ */
+export function NewNames({
+  entities,
+  row,
+}: {
+  entities: EntityItem[];
+  row: (entity: EntityItem) => ReactNode;
+}) {
+  const fresh = entities.filter((e) => e.isNew);
+  if (fresh.length === 0) return null;
+  const count = fresh.length === 1 ? "one new name" : `${fresh.length} new names`;
+  return (
+    <section className="day">
+      <h2>New</h2>
+      <details className="new-names">
+        <summary>
+          Lax is watching {count}. They get a page when they come back on another day, and
+          leave after two weeks if they don't.
+        </summary>
+        <ul className="entities">{fresh.map(row)}</ul>
+      </details>
     </section>
   );
 }

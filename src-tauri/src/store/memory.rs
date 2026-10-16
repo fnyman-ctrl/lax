@@ -14,6 +14,12 @@ const OWN_NAMES_KEY: &str = "own_names";
 /// many different days, or the user keeps it (ADR 0008).
 pub const DAYS_TO_KEEP: usize = 2;
 
+/// A new name not mentioned for this many days fades (ADR 0013), or for
+/// `FADE_DAYS_OFTEN` days once it was mentioned `OFTEN` times.
+pub const FADE_DAYS: i64 = 14;
+pub const FADE_DAYS_OFTEN: i64 = 28;
+pub const OFTEN: i64 = 3;
+
 /// What an entity is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EntityKind {
@@ -419,6 +425,40 @@ impl Store {
         Ok(Merged::Done)
     }
 
+    /// Deletes the new names that faded (ADR 0013): not kept, mentioned on
+    /// fewer than `DAYS_TO_KEEP` days, without a page, and not mentioned for
+    /// `FADE_DAYS` (or `FADE_DAYS_OFTEN`) days before the newest journal
+    /// entry, not the clock, so a holiday or a pause doesn't make names fade.
+    /// Deleted like a forget, with their names and mentions, but not put on
+    /// the "don't learn" list: a name that comes back starts over as new.
+    /// Returns how many faded.
+    pub fn fade_new_names(&mut self) -> Result<usize> {
+        const DAY_MS: i64 = 24 * 60 * 60 * 1000;
+        let faded = self.conn.execute(
+            "DELETE FROM entities WHERE id IN (
+                 SELECT n.id FROM entities AS n
+                 JOIN mentions AS m ON m.entity_id = n.id
+                 JOIN episodes AS e ON e.id = m.episode_id
+                 WHERE n.kept = 0
+                   AND NOT EXISTS (SELECT 1 FROM pages AS p WHERE p.entity_id = n.id)
+                 GROUP BY n.id
+                 HAVING count(DISTINCT date(e.started_at / 1000, 'unixepoch', 'localtime')) < ?1
+                    AND max(e.ended_at) < (SELECT max(ended_at) FROM episodes)
+                        - CASE WHEN count(*) >= ?2 THEN ?3 ELSE ?4 END
+             )",
+            params![
+                DAYS_TO_KEEP as i64,
+                OFTEN,
+                FADE_DAYS_OFTEN * DAY_MS,
+                FADE_DAYS * DAY_MS
+            ],
+        )?;
+        if faded > 0 {
+            self.checkpoint()?;
+        }
+        Ok(faded)
+    }
+
     /// The "don't learn" list, newest first.
     pub fn dont_learn(&self) -> Result<Vec<DontLearn>> {
         let mut statement = self
@@ -751,6 +791,99 @@ mod tests {
         assert_eq!(anna.mentions, 3);
         assert_eq!(anna.days, 2);
         assert_eq!(anna.last_seen, at(24 * 60));
+    }
+
+    const DAY: i64 = 24 * 60;
+
+    /// Mentions `name` in a new episode on `day` (at 10:00 UTC).
+    fn mention_on(store: &mut Store, day: i64, name: &str) {
+        let id = episode(store, day * DAY, "Mail");
+        store
+            .record_mentions(id, &[person(name)], at(day * DAY + 1))
+            .unwrap();
+    }
+
+    fn faded(store: &mut Store) -> (usize, Vec<String>) {
+        let count = store.fade_new_names().unwrap();
+        let left = names(store).into_iter().map(|(name, _)| name).collect();
+        (count, left)
+    }
+
+    #[test]
+    fn new_names_fade_two_weeks_before_the_newest_entry() {
+        let mut store = Store::open_in_memory().unwrap();
+        mention_on(&mut store, 0, "Anna Example");
+        mention_on(&mut store, 13, "Bo Exempel");
+        // The newest entry is 13 days after Anna: she stays.
+        assert_eq!(faded(&mut store).0, 0);
+        mention_on(&mut store, 15, "Bo Exempel");
+        let (count, left) = faded(&mut store);
+        assert_eq!((count, left), (1, vec!["Bo Exempel".to_string()]));
+        // Not on the "don't learn" list: she comes back as new.
+        assert!(store.dont_learn().unwrap().is_empty());
+        mention_on(&mut store, 16, "Anna Example");
+        assert!(names(&store).iter().any(|(name, _)| name == "Anna Example"));
+    }
+
+    #[test]
+    fn the_newest_entry_counts_not_the_clock() {
+        let mut store = Store::open_in_memory().unwrap();
+        mention_on(&mut store, 0, "Anna Example");
+        // Weeks of nothing (a holiday, a pause): no newer entry, no fading.
+        assert_eq!(faded(&mut store).0, 0);
+    }
+
+    #[test]
+    fn names_mentioned_often_get_four_weeks() {
+        let mut store = Store::open_in_memory().unwrap();
+        for _ in 0..3 {
+            mention_on(&mut store, 0, "Anna Example");
+        }
+        mention_on(&mut store, 20, "Bo Exempel");
+        assert_eq!(faded(&mut store).0, 0);
+        mention_on(&mut store, 29, "Bo Exempel");
+        assert_eq!(faded(&mut store).0, 1);
+    }
+
+    #[test]
+    fn kept_names_names_seen_on_two_days_and_names_with_a_page_stay() {
+        let mut store = Store::open_in_memory().unwrap();
+        mention_on(&mut store, 0, "Anna Example");
+        mention_on(&mut store, 0, "Bo Exempel");
+        mention_on(&mut store, 1, "Bo Exempel");
+        mention_on(&mut store, 0, "Cecilia Example");
+        mention_on(&mut store, 0, "Dan Example");
+        let id = |store: &Store, name: &str| {
+            store
+                .entities()
+                .unwrap()
+                .into_iter()
+                .find(|e| e.name == name)
+                .unwrap()
+                .id
+        };
+        assert!(store.keep_entity(id(&store, "Anna Example")).unwrap());
+        // A page without the two days: its episodes were forgotten.
+        store
+            .conn
+            .execute(
+                "INSERT INTO pages (id, entity_id, path, created_at) VALUES ('p1', ?1, 'x.md', 0)",
+                [id(&store, "Cecilia Example")],
+            )
+            .unwrap();
+        mention_on(&mut store, 30, "Erik Example");
+        let (count, mut left) = faded(&mut store);
+        left.sort();
+        assert_eq!(count, 1, "only Dan fades");
+        assert_eq!(
+            left,
+            [
+                "Anna Example",
+                "Bo Exempel",
+                "Cecilia Example",
+                "Erik Example"
+            ]
+        );
     }
 
     #[test]

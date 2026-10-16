@@ -2,6 +2,13 @@
 
 What changed in each version of Lax, for people who use it.
 
+## Unreleased
+
+- **Memory: new names fade.** A new name that doesn't come back on another
+  day leaves the memory two weeks after your newest journal entry (four weeks
+  if it was mentioned three times or more). The journal entries stay, and the
+  name can come back. New names are folded away under **New** until then.
+
 ## 0.1.0 (2026-10-16)
 
 The first version. Everything runs on your Mac; nothing leaves it.

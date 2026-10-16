@@ -54,7 +54,11 @@ choose.
   to learn about someone. When you merge, what you wrote on the merged one's
   page moves to the other's page. Each has a page you can edit and export (see
   [Your memory pages](#your-memory-pages)). Under **About you**, add the names
-  you go by and edit your own page.
+  you go by and edit your own page. New names wait, folded away under **New**,
+  until they come back on another day. One that doesn't come back within two
+  weeks of your newest journal entry (four weeks if it was mentioned three
+  times or more) leaves the memory. The journal entries stay, and the name can
+  come back as new. Press **Keep** to keep one for good.
 - **Captures:** everything Lax has read. Search it, forget a time or an app, or
   delete everything.
 - **Exclusions:** apps, websites and window titles Lax never reads. Banking and

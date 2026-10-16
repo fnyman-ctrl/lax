@@ -76,6 +76,9 @@ struct Work {
 /// One round: read up to `EPISODES_PER_ROUND` new episodes. `Err` means the
 /// model server is unavailable and the loop should wait a while.
 pub async fn round(app: &AppHandle, setbacks: &mut Setbacks) -> Result<(), ()> {
+    if !app.state::<Pause>().is_paused() {
+        fade(app);
+    }
     for _ in 0..EPISODES_PER_ROUND {
         if app.state::<Pause>().is_paused() || !may_use_model(When::Later) {
             return Ok(());
@@ -136,6 +139,22 @@ pub async fn round(app: &AppHandle, setbacks: &mut Setbacks) -> Result<(), ()> {
         }
     }
     Ok(())
+}
+
+/// Lets the new names that weren't seen again fade (ADR 0013), while the
+/// memory is on.
+fn fade(app: &AppHandle) {
+    let faded = with_store(app, |store| -> crate::store::Result<usize> {
+        if !store.memory_enabled()? {
+            return Ok(0);
+        }
+        store.fade_new_names()
+    });
+    match faded {
+        Some(Ok(0)) | None => {}
+        Some(Ok(count)) => logging::info("memory.faded", &[Field::Count("names", count as u64)]),
+        Some(Err(_)) => logging::warn("memory.fade_failed", &[Field::Error(ErrorKind::Database)]),
+    }
 }
 
 /// The next unread episode, if the memory is on and has a model.

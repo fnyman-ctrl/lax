@@ -71,6 +71,10 @@ prompt never freezes the window. See
 
 ## 4. Learn
 
+- A new name that isn't seen again fades: not mentioned for 14 days (28 if
+  mentioned 3 times or more) before the newest journal entry, it is deleted
+  like a forget, but not put on the "don't learn" list
+  ([ADR 0013](adr/0013-tidying-the-memory.md)).
 - Each entity Lax keeps (mentioned on two days, or kept by the user) has a
   page, plus the About me page (`src-tauri/src/pages`). A page is one
   Markdown text in the `text` column of its row in `pages`, in the encrypted
