@@ -20,7 +20,7 @@ use tauri::{AppHandle, Manager};
 
 use crate::journal::{When, may_use_model};
 use crate::logging::{self, ErrorKind, Field};
-use crate::models::structured::{self, Captured, Entities, Named, StructuredError};
+use crate::models::structured::{self, Captured, Entities, StructuredError};
 use crate::models::{Endpoint, ModelClient, ModelTurn};
 use crate::pages;
 use crate::pause::Pause;
@@ -196,17 +196,22 @@ fn names_in(
     let apps: Vec<String> = app_names.iter().map(|n| name_key(n)).collect();
     let user: Vec<String> = own_names.iter().map(|n| name_key(n)).collect();
     let mut names = Vec::new();
-    for (kind, list) in [
-        (EntityKind::Person, entities.people),
-        (EntityKind::Organisation, entities.organisations),
-        (EntityKind::Project, entities.projects),
+    for (involvement, group) in [
+        (Involvement::WorksWith, entities.works_with),
+        (Involvement::Mentioned, entities.mentioned),
     ] {
-        for Named { name, involvement } in list {
-            let key = name_key(&name);
-            if apps.contains(&key) || (kind == EntityKind::Person && user.contains(&key)) {
-                continue;
+        for (kind, list) in [
+            (EntityKind::Person, group.people),
+            (EntityKind::Organisation, group.organisations),
+            (EntityKind::Project, group.projects),
+        ] {
+            for name in list {
+                let key = name_key(&name);
+                if apps.contains(&key) || (kind == EntityKind::Person && user.contains(&key)) {
+                    continue;
+                }
+                names.push((kind, name, involvement));
             }
-            names.push((kind, name, involvement));
         }
     }
     names
@@ -909,21 +914,17 @@ fn with_store<T>(app: &AppHandle, work: impl FnOnce(&mut Store) -> T) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::structured::Names;
 
     fn entities(people: &[&str], organisations: &[&str], projects: &[&str]) -> Entities {
-        let list = |names: &[&str]| {
-            names
-                .iter()
-                .map(|n| Named {
-                    name: n.to_string(),
-                    involvement: Involvement::WorksWith,
-                })
-                .collect()
-        };
+        let list = |names: &[&str]| names.iter().map(|n| n.to_string()).collect();
         Entities {
-            people: list(people),
-            organisations: list(organisations),
-            projects: list(projects),
+            works_with: Names {
+                people: list(people),
+                organisations: list(organisations),
+                projects: list(projects),
+            },
+            mentioned: Names::default(),
         }
     }
 
@@ -999,10 +1000,7 @@ mod tests {
     #[test]
     fn names_keep_how_the_user_is_involved() {
         let mut answer = entities(&["Anna Example"], &[], &[]);
-        answer.people.push(Named {
-            name: "Bo Nyhet".to_string(),
-            involvement: Involvement::Mentioned,
-        });
+        answer.mentioned.people.push("Bo Nyhet".to_string());
         assert_eq!(
             names_in(answer, &[], &[]),
             [
@@ -1068,7 +1066,7 @@ mod tests {
     async fn live_memory_involvement() {
         let env = |name| std::env::var(name).unwrap_or_else(|_| panic!("{name} is not set"));
         // Each entry, the names the user works with, and names only read about.
-        let cases: [(&str, &[&str], &[&str]); 4] = [
+        let cases: [(&str, &[&str], &[&str]); 6] = [
             (
                 "Läste en artikel i Dagens Exempel om att Exempel Motors vd Bo Nyhet avgår.",
                 &[],
@@ -1090,6 +1088,20 @@ mod tests {
                  replied to Anna Example in Slack about the release.",
                 &["Anna Example"],
                 &["Frank Headline", "Example Labs"],
+            ),
+            // Like a real entry: topics, documents and tools amid real work.
+            (
+                "Arbetade i projektet Exempelappen i Visual Studio Code: granskade en pull \
+                 request om krypteringen, läste dokumentationen för SQLCipher och uppdaterade \
+                 README-filen.",
+                &["Exempelappen"],
+                &["SQLCipher", "README", "Visual Studio Code", "krypteringen"],
+            ),
+            (
+                "Bokade ett möte med Erik Example från Exempelbolaget AB om Q3 lansering, och \
+                 skickade fakturan via Fortnox.",
+                &["Erik Example", "Q3 lansering"],
+                &["Fortnox", "fakturan"],
             ),
         ];
         let (mut found, mut counted) = (0, 0);
@@ -1234,7 +1246,9 @@ or Safari) are not organisations. Leave a list empty if there are none.";
         let client =
             ModelClient::new(Endpoint::parse(&env("LAX_LIVE_MODEL_URL")).unwrap()).unwrap();
         let model = env("LAX_LIVE_CHAT_MODEL");
-        let (mut before, mut found, mut now, mut failed) = (0, 0, 0, 0);
+        let (mut old_failed, mut new_failed, mut compared) = (0, 0, 0);
+        let (mut before, mut found, mut now) = (0, 0, 0);
+        let (mut projects_before, mut projects_now) = (0, 0);
         let (mut paged_seen, mut paged_mentioned) = (0, 0);
         for episode in &episodes {
             let captured = [Captured(&episode.summary)];
@@ -1251,32 +1265,34 @@ or Safari) are not organisations. Leave a list empty if there are none.";
                 MAX_TOKENS,
             )
             .await;
+            old_failed += u64::from(old.is_err());
+            new_failed += u64::from(new.is_err());
+            // Compared only where both answered, so a failure doesn't look
+            // like less noise.
             let (Ok(old), Ok(new)) = (old, new) else {
-                failed += 1;
                 continue;
             };
-            let as_worked_with = |names: Vec<String>| {
-                names
-                    .into_iter()
-                    .map(|name| Named {
-                        name,
-                        involvement: Involvement::WorksWith,
-                    })
-                    .collect()
-            };
+            compared += 1;
             let old = Entities {
-                people: as_worked_with(old.people),
-                organisations: as_worked_with(old.organisations),
-                projects: as_worked_with(old.projects),
+                works_with: Names {
+                    people: old.people,
+                    organisations: old.organisations,
+                    projects: old.projects,
+                },
+                mentioned: Names::default(),
             };
-            before += names_in(old, &episode.app_names, &own).len();
-            for (_, name, involvement) in names_in(new, &episode.app_names, &own) {
+            for (kind, _, _) in names_in(old, &episode.app_names, &own) {
+                before += 1;
+                projects_before += u64::from(kind == EntityKind::Project);
+            }
+            for (kind, name, involvement) in names_in(new, &episode.app_names, &own) {
                 found += 1;
                 let worked_with = involvement == Involvement::WorksWith;
-                now += usize::from(worked_with);
+                now += u64::from(worked_with);
+                projects_now += u64::from(worked_with && kind == EntityKind::Project);
                 if paged.contains(&name_key(&name)) {
                     paged_seen += 1;
-                    paged_mentioned += usize::from(!worked_with);
+                    paged_mentioned += u64::from(!worked_with);
                 }
             }
         }
@@ -1284,12 +1300,16 @@ or Safari) are not organisations. Leave a list empty if there are none.";
             "memory.replay",
             &[
                 Field::Count("entries", episodes.len() as u64),
-                Field::Count("failed", failed),
-                Field::Count("toward_a_page_before", before as u64),
-                Field::Count("names_now", found as u64),
-                Field::Count("toward_a_page_now", now as u64),
-                Field::Count("names_with_a_page_seen", paged_seen as u64),
-                Field::Count("of_those_only_mentioned", paged_mentioned as u64),
+                Field::Count("old_failed", old_failed),
+                Field::Count("new_failed", new_failed),
+                Field::Count("compared", compared),
+                Field::Count("toward_a_page_before", before),
+                Field::Count("toward_a_page_now", now),
+                Field::Count("names_now", found),
+                Field::Count("projects_before", projects_before),
+                Field::Count("projects_now", projects_now),
+                Field::Count("names_with_a_page_seen", paged_seen),
+                Field::Count("of_those_only_mentioned", paged_mentioned),
             ],
         );
     }
