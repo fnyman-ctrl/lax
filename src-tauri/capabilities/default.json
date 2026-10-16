@@ -63,6 +63,8 @@
     "allow-take-out-part",
     "allow-merge-suggestions",
     "allow-likely-same",
+    "allow-part-suggestions",
+    "allow-not-part",
     "allow-dont-learn-list",
     "allow-allow-learning",
     "allow-setup-status",

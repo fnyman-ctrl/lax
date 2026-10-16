@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-part-suggestions"
+description = "Enables the part_suggestions command without any pre-configured scope."
+commands.allow = ["part_suggestions"]
+
+[[permission]]
+identifier = "deny-part-suggestions"
+description = "Denies the part_suggestions command without any pre-configured scope."
+commands.deny = ["part_suggestions"]

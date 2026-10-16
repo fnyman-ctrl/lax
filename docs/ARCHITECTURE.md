@@ -94,6 +94,10 @@ prompt never freezes the window. See
   Page blocks say "Parts: …" and "Part of: …". A project named in Ask or to
   the writing assistant brings up to three parts' facts, most mentioned
   first; a named part says which project it is part of (`ask::known`).
+  Pairs of projects (a name signal, or named together on two or more days)
+  go to their own judge, which answers same, part_of (with the whole),
+  neither or unsure (`project_verdicts`); the user's "No" is kept in
+  `not_part`.
 - Each entity Lax keeps (mentioned on two days, or kept by the user) has a
   page, plus the About me page (`src-tauri/src/pages`). A page is one
   Markdown text in the `text` column of its row in `pages`, in the encrypted
