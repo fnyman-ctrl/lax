@@ -24,6 +24,8 @@ mkdir -p "$HOME/Applications"
 # A Lax built earlier is replaced; its data in ~/Library/Application Support
 # and ~/Lax stays.
 rm -rf "$HOME/Applications/Lax.app"
-cp -R "$app" "$HOME/Applications/"
+# Moved, not copied: a second Lax.app left in the build folder shows up in
+# Spotlight and Launchpad next to the real one.
+mv "$app" "$HOME/Applications/"
 echo
 echo "Lax is in ~/Applications. Open it with: open ~/Applications/Lax.app"
