@@ -8,8 +8,9 @@ The first version. Everything runs on your Mac; nothing leaves it.
 
 **What you need:** a Mac, the Xcode Command Line Tools, rustup and Node.js to
 build Lax, and a local model server ([LM Studio](https://lmstudio.ai) or
-[Ollama](https://ollama.com)) with a chat model and an embedding model for the
-AI parts. [MODELS.md](docs/MODELS.md) suggests models for your Mac's memory.
+[Ollama](https://ollama.com)) with a chat model for the AI parts. An embedding
+model is optional: with one, Ask also finds entries by meaning.
+[MODELS.md](docs/MODELS.md) suggests models for your Mac's memory.
 See [Install](docs/USER-GUIDE.md#install).
 
 - **First start:** Lax explains what it reads and never reads, helps you turn
