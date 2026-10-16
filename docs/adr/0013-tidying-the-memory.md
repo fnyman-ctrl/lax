@@ -353,3 +353,17 @@ first.
 2. **Names only mentioned:** **kept, folded under New**, rather than dropped
    (point 1 says how).
 3. **"Part of" for projects:** **in 0.2** (point 5).
+
+## Notes from building it (2026-10-16)
+
+- **The answer's shape.** A flag per name (`{"name", "involvement"}`) made
+  gemma-4-e4b answer wrongly for 5 of 20 real entries, and flagged every
+  name `works_with`. The shape became two groups of plain lists,
+  `works_with` and `mentioned`, each with people, organisations and
+  projects; a group or list left out counts as empty. The decision is the
+  same: each mention keeps how the user was involved.
+- **Projects and tools.** Most of the maintainer's noise was topics,
+  documents and single tasks listed as projects, and some tools. The task
+  now says what isn't a project (a topic, a document, a file, a single
+  task, a feature, a pull request or an issue) and puts apps, tools and
+  services the user used under `mentioned`.

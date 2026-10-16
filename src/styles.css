@@ -1239,6 +1239,16 @@ button.link {
   color: var(--muted);
 }
 
+.only-mentioned {
+  margin-top: 0.75rem;
+}
+
+.only-mentioned summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-weight: 600;
+}
+
 .suggestions {
   margin: 0.75rem 0;
 }

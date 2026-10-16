@@ -46,8 +46,25 @@ describe("the old page files after the move", () => {
   });
 });
 
-function entity(id: number, name: string, isNew: boolean, mentions = 1): EntityItem {
-  return { id, kind: "person", name, aliases: [], mentions, days: 1, lastSeen: 0, isNew, page: null };
+function entity(
+  id: number,
+  name: string,
+  isNew: boolean,
+  { mentions = 1, onlyMentioned = false } = {},
+): EntityItem {
+  return {
+    id,
+    kind: "person",
+    name,
+    aliases: [],
+    mentions,
+    days: 1,
+    workingDays: onlyMentioned ? 0 : 1,
+    lastSeen: 0,
+    isNew,
+    onlyMentioned,
+    page: null,
+  };
 }
 
 describe("new names", () => {
@@ -57,9 +74,9 @@ describe("new names", () => {
     render(
       <NewNames
         entities={[
-          entity(1, "Anna Example", true, 3),
-          entity(2, "Bo Exempel", false, 9),
-          entity(3, "Cecilia Example", true, 1),
+          entity(1, "Anna Example", true, { mentions: 3 }),
+          entity(2, "Bo Exempel", false, { mentions: 9 }),
+          entity(3, "Cecilia Example", true),
         ]}
         row={row}
       />,
@@ -76,6 +93,30 @@ describe("new names", () => {
   test("one name reads as one", () => {
     render(<NewNames entities={[entity(1, "Anna Example", true)]} row={row} />);
     expect(screen.getByText(/Lax is watching one new name\./)).toBeTruthy();
+  });
+
+  test("names only mentioned are folded apart inside New", () => {
+    render(
+      <NewNames
+        entities={[
+          entity(1, "Anna Example", true),
+          entity(2, "Bo Nyhet", true, { onlyMentioned: true }),
+        ]}
+        row={row}
+      />,
+    );
+    const outer = document.querySelector("details.new-names") as HTMLDetailsElement;
+    expect(outer.querySelector("summary")?.textContent).toContain("Lax is watching 2 new names.");
+    const inner = outer.querySelector("details.only-mentioned") as HTMLDetailsElement;
+    expect(inner.open).toBe(false);
+    expect(inner.querySelector("summary")?.textContent).toBe("Only mentioned (1)");
+    expect(inner.textContent).toContain("Bo Nyhet");
+    expect(inner.textContent).not.toContain("Anna Example");
+  });
+
+  test("with only names worked with, there is no Only mentioned group", () => {
+    render(<NewNames entities={[entity(1, "Anna Example", true)]} row={row} />);
+    expect(document.querySelector("details.only-mentioned")).toBeNull();
   });
 
   test("with nothing new, there is no New section", () => {

@@ -12,6 +12,11 @@ What changed in each version of Lax, for people who use it.
   legal suffix or punctuation, such as "Example" and "Example AB", are
   suggested at the top of Memory, with **Merge**, **Not the same** and
   **Merge all**. Your "Not the same" is final.
+- **Memory: less noise.** Lax now tells names you work with from names you
+  only read about or saw, such as people in the news or the author of an
+  article. Only days you worked with a name count toward its page. Names only
+  mentioned are folded away under **New** as **Only mentioned**, and never get
+  a page unless you keep them. Names Lax learned before keep their pages.
 
 ## 0.1.0 (2026-10-16)
 

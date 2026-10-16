@@ -27,9 +27,13 @@ export type EntityItem = {
   aliases: string[];
   mentions: number;
   days: number;
+  /** Of those days, on how many the user worked with it. */
+  workingDays: number;
   lastSeen: number;
-  /** Seen on fewer than two days and not kept: Lax only notes it so far. */
+  /** Worked with on fewer than two days and not kept: Lax only notes it so far. */
   isNew: boolean;
+  /** Only ever mentioned, never worked with (ADR 0013): folded away under New. */
+  onlyMentioned: boolean;
   page: PageItem | null;
 };
 type DontLearnItem = { kind: Kind; name: string };
@@ -665,7 +669,8 @@ export function ObviousPairs({
 
 /**
  * The names Lax only notes so far, folded away (ADR 0013): they don't need
- * the user. Opened, most mentioned first, as the list already comes.
+ * the user. Opened, most mentioned first, as the list already comes. Names
+ * only ever mentioned, never worked with, are folded apart inside it.
  */
 export function NewNames({
   entities,
@@ -674,9 +679,11 @@ export function NewNames({
   entities: EntityItem[];
   row: (entity: EntityItem) => ReactNode;
 }) {
-  const fresh = entities.filter((e) => e.isNew);
-  if (fresh.length === 0) return null;
-  const count = fresh.length === 1 ? "one new name" : `${fresh.length} new names`;
+  const fresh = entities.filter((e) => e.isNew && !e.onlyMentioned);
+  const mentioned = entities.filter((e) => e.isNew && e.onlyMentioned);
+  const total = fresh.length + mentioned.length;
+  if (total === 0) return null;
+  const count = total === 1 ? "one new name" : `${total} new names`;
   return (
     <section className="day">
       <h2>New</h2>
@@ -685,7 +692,17 @@ export function NewNames({
           Lax is watching {count}. They get a page when they come back on another day, and
           leave after two weeks if they don't.
         </summary>
-        <ul className="entities">{fresh.map(row)}</ul>
+        {fresh.length > 0 && <ul className="entities">{fresh.map(row)}</ul>}
+        {mentioned.length > 0 && (
+          <details className="only-mentioned">
+            <summary>Only mentioned ({mentioned.length})</summary>
+            <p className="muted hint">
+              Names you read about or saw, but didn't work with. They never get a page unless
+              you keep them.
+            </p>
+            <ul className="entities">{mentioned.map(row)}</ul>
+          </details>
+        )}
       </details>
     </section>
   );
@@ -1069,5 +1086,10 @@ function seen(entity: EntityItem): string {
     day: "numeric",
     month: "short",
   });
-  return `In ${entries} on ${days}, last ${last}`;
+  // A new name seen on more days than it was worked with: say why it's new.
+  const worked =
+    entity.isNew && entity.workingDays < entity.days
+      ? `, worked with on ${entity.workingDays === 1 ? "one" : entity.workingDays}`
+      : "";
+  return `In ${entries} on ${days}${worked}, last ${last}`;
 }

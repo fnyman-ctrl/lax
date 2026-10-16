@@ -31,7 +31,7 @@ mod pairs;
 mod vectors;
 #[cfg(target_os = "macos")]
 pub use cipher::{FileKind, Opened, Postponed, conversion_fits, file_kind};
-pub use memory::{Entity, EntityKind, Merged, Renamed, UnrecognizedEpisode, name_key};
+pub use memory::{Entity, EntityKind, Involvement, Merged, Renamed, UnrecognizedEpisode, name_key};
 #[cfg(test)]
 pub use pages::{LAX_VERSIONS_KEPT, USER_EDITS_KEPT};
 pub use pages::{MovedFile, MovedPage, Page, PageKind, PageState, fact_key, facts_in};
@@ -59,6 +59,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/0013_page_edits.sql"),
     include_str!("../migrations/0014_moved_page_files.sql"),
     include_str!("../migrations/0015_not_same.sql"),
+    include_str!("../migrations/0016_mention_involvement.sql"),
 ];
 
 /// How long raw captures are kept unless the user chooses otherwise
@@ -1634,6 +1635,7 @@ mod tests {
         10269123721939706164, // 0013 page edits
         6651659427512421612,  // 0014 moved page files
         14272306742173636111, // 0015 not same
+        1983844768826626968,  // 0016 mention involvement
     ];
 
     #[test]
