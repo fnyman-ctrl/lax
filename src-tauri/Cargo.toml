@@ -5,6 +5,9 @@ description = "A private, fully local memory for your Mac"
 license = "AGPL-3.0-only"
 repository = "https://github.com/fnyman-ctrl/lax"
 edition = "2024"
+# The oldest Rust that builds Lax: Tauri needs 1.90 (checked with
+# `cargo +1.90 check --locked`).
+rust-version = "1.90"
 publish = false
 
 [lib]

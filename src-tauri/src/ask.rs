@@ -34,7 +34,7 @@ use crate::models::partial::FieldText;
 use crate::models::structured::{self, Captured, StructuredError, Validate};
 use crate::models::{Endpoint, ModelClient, ModelHealth, ModelTurn};
 use crate::pause::Pause;
-use crate::store::{EntityKind, Episode, ModelTask, Store};
+use crate::store::{Entity, EntityKind, Episode, ModelTask, Store};
 
 /// Most entries and characters of entries given to the model, so the prompt
 /// fits a small local model's context and is answered within the timeout.
@@ -59,6 +59,8 @@ struct Meaning {
 
 /// Most named entities whose facts are given.
 const MAX_KNOWN_ENTITIES: usize = 5;
+/// Most parts whose facts a named project brings along (ADR 0013).
+const PARTS_PER_PROJECT: usize = 3;
 /// Entries given when nothing in the question narrows it down.
 const RECENT: usize = 40;
 /// Room for a model that reasons before answering, as for the journal.
@@ -350,31 +352,35 @@ pub(crate) fn known_for(
     text: &str,
 ) -> crate::store::Result<(Vec<String>, Vec<String>)> {
     let named = named_entities(&words(text), &store.entity_names()?);
-    let known = known(store, &named)?;
-    let mut pages = Vec::new();
+    let (known, mut pages) = known_with_names(store, &named)?;
     if store
         .about_me_page()?
         .and_then(|p| p.facts)
         .is_some_and(|facts| !facts.is_empty())
     {
-        pages.push("you".to_string());
-    }
-    let all = store.entities()?;
-    for id in named.iter().take(MAX_KNOWN_ENTITIES) {
-        let has_facts = store
-            .page_of(*id)?
-            .and_then(|p| p.facts)
-            .is_some_and(|facts| !facts.is_empty());
-        if let Some(entity) = all.iter().find(|e| e.id == *id).filter(|_| has_facts) {
-            pages.push(entity.name.clone());
-        }
+        pages.insert(0, "you".to_string());
     }
     Ok((known, pages))
 }
 
 /// The facts on the pages of the named entities, and on `about-me.md`.
 fn known(store: &Store, entities: &[i64]) -> crate::store::Result<Vec<String>> {
+    Ok(known_with_names(store, entities)?.0)
+}
+
+/// [`known`], and the names of the entities whose facts it gives. A named
+/// project brings up to `PARTS_PER_PROJECT` of its parts' facts too, the most
+/// mentioned first, but only in the room left of half of `MAX_CHARS` after
+/// the user's facts and the named entities' (which always come along, as
+/// before), so parts never make the context bigger than it was. A named part
+/// says which project it is part of; its whole's page isn't added for that
+/// (ADR 0013).
+fn known_with_names(
+    store: &Store,
+    entities: &[i64],
+) -> crate::store::Result<(Vec<String>, Vec<String>)> {
     let mut known = Vec::new();
+    let mut names = Vec::new();
     if let Some(facts) = store.about_me_page()?.and_then(|p| p.facts)
         && !facts.is_empty()
     {
@@ -383,29 +389,65 @@ fn known(store: &Store, entities: &[i64]) -> crate::store::Result<Vec<String>> {
             bullets(&facts)
         ));
     }
+    // Most mentioned first.
     let all = store.entities()?;
-    for id in entities.iter().take(MAX_KNOWN_ENTITIES) {
-        let (Some(entity), Some(facts)) = (
-            all.iter().find(|e| e.id == *id),
-            store.page_of(*id)?.and_then(|p| p.facts),
-        ) else {
-            continue;
+    let block = |entity: &Entity| -> crate::store::Result<Option<String>> {
+        let Some(facts) = store.page_of(entity.id)?.and_then(|p| p.facts) else {
+            return Ok(None);
         };
         if facts.is_empty() {
-            continue;
+            return Ok(None);
         }
         let kind = match entity.kind {
             EntityKind::Person => "person",
             EntityKind::Organisation => "organisation",
             EntityKind::Project => "project",
         };
-        known.push(format!(
-            "What the memory knows about {} ({kind}):\n{}",
+        let whole = entity
+            .part_of
+            .and_then(|w| all.iter().find(|e| e.id == w))
+            .map(|w| format!(", part of {}", w.name))
+            .unwrap_or_default();
+        Ok(Some(format!(
+            "What the memory knows about {} ({kind}{whole}):\n{}",
             entity.name,
             bullets(&facts)
-        ));
+        )))
+    };
+    let named: Vec<&Entity> = entities
+        .iter()
+        .take(MAX_KNOWN_ENTITIES)
+        .filter_map(|id| all.iter().find(|e| e.id == *id))
+        .collect();
+    let mut given: HashSet<i64> = HashSet::new();
+    for entity in &named {
+        given.insert(entity.id);
+        if let Some(text) = block(entity)? {
+            known.push(text);
+            names.push(entity.name.clone());
+        }
     }
-    Ok(known)
+    let used: usize = known.iter().map(|k| k.chars().count()).sum();
+    let mut room = (MAX_CHARS / 2).saturating_sub(used);
+    for entity in &named {
+        let parts = all
+            .iter()
+            .filter(|e| e.part_of == Some(entity.id))
+            .take(PARTS_PER_PROJECT);
+        for part in parts {
+            if !given.insert(part.id) {
+                continue;
+            }
+            if let Some(text) = block(part)?
+                && text.chars().count() <= room
+            {
+                room -= text.chars().count();
+                known.push(text);
+                names.push(part.name.clone());
+            }
+        }
+    }
+    Ok((known, names))
 }
 
 fn bullets(lines: &[String]) -> String {
@@ -1575,6 +1617,105 @@ mod tests {
                 .iter()
                 .any(|e| e.summary == "Mailade Anna om Q3-offerten.")
         );
+    }
+
+    #[test]
+    fn a_named_project_brings_its_parts_and_a_part_names_its_whole() {
+        let mut store = Store::open_in_memory().unwrap();
+        let projects = ["Exempelappen", "Export", "Kryptering", "Ikoner", "Sökning"];
+        // Mentioned more the earlier in the list, so the order is known.
+        for (i, name) in projects.iter().enumerate() {
+            for hour in 0..(10 - i as u32) {
+                let id = episode(
+                    &mut store,
+                    at(6, 8 + hour),
+                    &format!("Arbetade med {name}."),
+                );
+                store
+                    .record_mentions(id, &[(EntityKind::Project, name.to_string())], at(6, 20))
+                    .unwrap();
+            }
+        }
+        let ids: Vec<i64> = projects
+            .iter()
+            .map(|name| {
+                store
+                    .entities()
+                    .unwrap()
+                    .into_iter()
+                    .find(|e| e.name == *name)
+                    .unwrap()
+                    .id
+            })
+            .collect();
+        for &id in &ids {
+            store.keep_entity(id).unwrap();
+        }
+        for &part in &ids[1..] {
+            store.set_part_of(part, ids[0]).unwrap();
+        }
+        store.set_memory_enabled(true).unwrap();
+        store.set_pages_in_database().unwrap();
+        crate::pages::sync_rows(&mut store, &HashSet::new(), at(6, 21), &stockholm()).unwrap();
+        for (&id, name) in ids.iter().zip(projects) {
+            let page = store.page_of(id).unwrap().unwrap();
+            store
+                .set_facts(&page.id, &[format!("Om {name}.")], &[], at(6, 21))
+                .unwrap();
+        }
+
+        // The whole brings its three most mentioned parts.
+        let (known, names) = known_for(&store, "Hur går det med Exempelappen?").unwrap();
+        assert_eq!(names, ["Exempelappen", "Export", "Kryptering", "Ikoner"]);
+        assert_eq!(
+            known[1],
+            "What the memory knows about Export (project, part of Exempelappen):\n- Om Export."
+        );
+        // A part says which project it is part of, without the whole's page.
+        let (known, names) = known_for(&store, "Hur går det med Sökning?").unwrap();
+        assert_eq!(names, ["Sökning"]);
+        assert_eq!(
+            known,
+            ["What the memory knows about Sökning (project, part of Exempelappen):\n- Om Sökning."]
+        );
+    }
+
+    #[test]
+    fn parts_only_use_the_room_left() {
+        let mut store = Store::open_in_memory().unwrap();
+        let names = ["Exempelappen", "Export"];
+        for (i, name) in names.iter().enumerate() {
+            for hour in 0..(5 - i as u32) {
+                let id = episode(
+                    &mut store,
+                    at(6, 8 + hour),
+                    &format!("Arbetade med {name}."),
+                );
+                store
+                    .record_mentions(id, &[(EntityKind::Project, name.to_string())], at(6, 20))
+                    .unwrap();
+            }
+        }
+        let all = store.entities().unwrap();
+        let (app, export) = (all[0].id, all[1].id);
+        store.keep_entity(app).unwrap();
+        store.keep_entity(export).unwrap();
+        store.set_part_of(export, app).unwrap();
+        store.set_memory_enabled(true).unwrap();
+        store.set_pages_in_database().unwrap();
+        crate::pages::sync_rows(&mut store, &HashSet::new(), at(6, 21), &stockholm()).unwrap();
+        // The whole's page takes most of the room: the part's doesn't fit.
+        let long: Vec<String> = (0..12)
+            .map(|i| format!("{i}: {}", "x".repeat(180)))
+            .collect();
+        let page = store.page_of(app).unwrap().unwrap();
+        store.set_facts(&page.id, &long, &[], at(6, 21)).unwrap();
+        let page = store.page_of(export).unwrap().unwrap();
+        store.set_facts(&page.id, &long, &[], at(6, 21)).unwrap();
+        let (known, names) = known_for(&store, "Exempelappen").unwrap();
+        assert_eq!(names, ["Exempelappen"]);
+        let chars: usize = known.iter().map(|k| k.chars().count()).sum();
+        assert!(chars <= MAX_CHARS / 2, "{chars}");
     }
 
     #[test]
