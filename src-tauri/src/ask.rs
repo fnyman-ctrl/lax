@@ -34,7 +34,7 @@ use crate::models::partial::FieldText;
 use crate::models::structured::{self, Captured, StructuredError, Validate};
 use crate::models::{Endpoint, ModelClient, ModelHealth, ModelTurn};
 use crate::pause::Pause;
-use crate::store::{EntityKind, Episode, ModelTask, Store};
+use crate::store::{Entity, EntityKind, Episode, ModelTask, Store};
 
 /// Most entries and characters of entries given to the model, so the prompt
 /// fits a small local model's context and is answered within the timeout.
@@ -370,8 +370,11 @@ fn known(store: &Store, entities: &[i64]) -> crate::store::Result<Vec<String>> {
 
 /// [`known`], and the names of the entities whose facts it gives. A named
 /// project brings up to `PARTS_PER_PROJECT` of its parts' facts too, the most
-/// mentioned first; a named part says which project it is part of, and its
-/// whole's page isn't added for that (ADR 0013).
+/// mentioned first, but only in the room left of half of `MAX_CHARS` after
+/// the user's facts and the named entities' (which always come along, as
+/// before), so parts never make the context bigger than it was. A named part
+/// says which project it is part of; its whole's page isn't added for that
+/// (ADR 0013).
 fn known_with_names(
     store: &Store,
     entities: &[i64],
@@ -388,41 +391,60 @@ fn known_with_names(
     }
     // Most mentioned first.
     let all = store.entities()?;
-    let mut given: HashSet<i64> = HashSet::new();
-    for id in entities.iter().take(MAX_KNOWN_ENTITIES) {
-        let Some(entity) = all.iter().find(|e| e.id == *id) else {
-            continue;
+    let block = |entity: &Entity| -> crate::store::Result<Option<String>> {
+        let Some(facts) = store.page_of(entity.id)?.and_then(|p| p.facts) else {
+            return Ok(None);
         };
+        if facts.is_empty() {
+            return Ok(None);
+        }
+        let kind = match entity.kind {
+            EntityKind::Person => "person",
+            EntityKind::Organisation => "organisation",
+            EntityKind::Project => "project",
+        };
+        let whole = entity
+            .part_of
+            .and_then(|w| all.iter().find(|e| e.id == w))
+            .map(|w| format!(", part of {}", w.name))
+            .unwrap_or_default();
+        Ok(Some(format!(
+            "What the memory knows about {} ({kind}{whole}):\n{}",
+            entity.name,
+            bullets(&facts)
+        )))
+    };
+    let named: Vec<&Entity> = entities
+        .iter()
+        .take(MAX_KNOWN_ENTITIES)
+        .filter_map(|id| all.iter().find(|e| e.id == *id))
+        .collect();
+    let mut given: HashSet<i64> = HashSet::new();
+    for entity in &named {
+        given.insert(entity.id);
+        if let Some(text) = block(entity)? {
+            known.push(text);
+            names.push(entity.name.clone());
+        }
+    }
+    let used: usize = known.iter().map(|k| k.chars().count()).sum();
+    let mut room = (MAX_CHARS / 2).saturating_sub(used);
+    for entity in &named {
         let parts = all
             .iter()
             .filter(|e| e.part_of == Some(entity.id))
             .take(PARTS_PER_PROJECT);
-        for entity in std::iter::once(entity).chain(parts) {
-            if !given.insert(entity.id) {
+        for part in parts {
+            if !given.insert(part.id) {
                 continue;
             }
-            let Some(facts) = store.page_of(entity.id)?.and_then(|p| p.facts) else {
-                continue;
-            };
-            if facts.is_empty() {
-                continue;
+            if let Some(text) = block(part)?
+                && text.chars().count() <= room
+            {
+                room -= text.chars().count();
+                known.push(text);
+                names.push(part.name.clone());
             }
-            let kind = match entity.kind {
-                EntityKind::Person => "person",
-                EntityKind::Organisation => "organisation",
-                EntityKind::Project => "project",
-            };
-            let whole = entity
-                .part_of
-                .and_then(|w| all.iter().find(|e| e.id == w))
-                .map(|w| format!(", part of {}", w.name))
-                .unwrap_or_default();
-            known.push(format!(
-                "What the memory knows about {} ({kind}{whole}):\n{}",
-                entity.name,
-                bullets(&facts)
-            ));
-            names.push(entity.name.clone());
         }
     }
     Ok((known, names))
@@ -1656,6 +1678,44 @@ mod tests {
             known,
             ["What the memory knows about Sökning (project, part of Exempelappen):\n- Om Sökning."]
         );
+    }
+
+    #[test]
+    fn parts_only_use_the_room_left() {
+        let mut store = Store::open_in_memory().unwrap();
+        let names = ["Exempelappen", "Export"];
+        for (i, name) in names.iter().enumerate() {
+            for hour in 0..(5 - i as u32) {
+                let id = episode(
+                    &mut store,
+                    at(6, 8 + hour),
+                    &format!("Arbetade med {name}."),
+                );
+                store
+                    .record_mentions(id, &[(EntityKind::Project, name.to_string())], at(6, 20))
+                    .unwrap();
+            }
+        }
+        let all = store.entities().unwrap();
+        let (app, export) = (all[0].id, all[1].id);
+        store.keep_entity(app).unwrap();
+        store.keep_entity(export).unwrap();
+        store.set_part_of(export, app).unwrap();
+        store.set_memory_enabled(true).unwrap();
+        store.set_pages_in_database().unwrap();
+        crate::pages::sync_rows(&mut store, &HashSet::new(), at(6, 21), &stockholm()).unwrap();
+        // The whole's page takes most of the room: the part's doesn't fit.
+        let long: Vec<String> = (0..12)
+            .map(|i| format!("{i}: {}", "x".repeat(180)))
+            .collect();
+        let page = store.page_of(app).unwrap().unwrap();
+        store.set_facts(&page.id, &long, &[], at(6, 21)).unwrap();
+        let page = store.page_of(export).unwrap().unwrap();
+        store.set_facts(&page.id, &long, &[], at(6, 21)).unwrap();
+        let (known, names) = known_for(&store, "Exempelappen").unwrap();
+        assert_eq!(names, ["Exempelappen"]);
+        let chars: usize = known.iter().map(|k| k.chars().count()).sum();
+        assert!(chars <= MAX_CHARS / 2, "{chars}");
     }
 
     #[test]
