@@ -71,7 +71,9 @@ choose.
   many names, you can search it. A project can be **Part of** another, one
   level deep, such as an export feature in an app: parts are listed under
   their project, and the pages say so. **Take out** makes a part a project of
-  its own again; forgetting the project does too.
+  its own again; forgetting the project does too. When you name a project in
+  Ask or to the writing assistant, they also read the pages of up to three of
+  its parts.
 - **Captures:** everything Lax has read. Search it, forget a time or an app, or
   delete everything.
 - **Exclusions:** apps, websites and window titles Lax never reads. Banking and
