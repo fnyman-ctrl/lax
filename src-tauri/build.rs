@@ -62,6 +62,7 @@ fn main() {
             "set_part_of",
             "take_out_part",
             "merge_suggestions",
+            "likely_same",
             "dont_learn_list",
             "allow_learning",
             "setup_status",

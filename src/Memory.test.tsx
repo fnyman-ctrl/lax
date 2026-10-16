@@ -8,6 +8,7 @@ import {
   ObviousPairs,
   OldPageFiles,
   type PairItem,
+  SameAsPicker,
   type SuggestionItem,
 } from "./Memory";
 
@@ -215,5 +216,53 @@ describe("merge suggestions", () => {
       <MergeSuggestions suggestions={[]} busy={false} run={vi.fn()} />,
     );
     expect(container.textContent).toBe("");
+  });
+});
+
+describe("the Same as list", () => {
+  const named = (id: number, name: string, aliases: string[] = []): EntityItem => ({
+    ...entity(id, name, false),
+    aliases,
+  });
+
+  function pick(others: EntityItem[], likely: number[], value = "") {
+    const onChange = vi.fn();
+    render(
+      <SameAsPicker id="same" others={others} likely={likely} value={value} onChange={onChange} />,
+    );
+    return onChange;
+  }
+
+  const options = () =>
+    [...document.querySelectorAll("optgroup, option")].map((o) =>
+      o.tagName === "OPTGROUP" ? `[${o.getAttribute("label")}]` : o.textContent,
+    );
+
+  test("likely names come first, in their order, then all the others", () => {
+    pick([named(1, "Anna Other"), named(2, "Bo Exempel"), named(3, "Anna Example")], [3, 1]);
+    expect(options()).toEqual([
+      "Choose…",
+      "[Likely]",
+      "Anna Example",
+      "Anna Other",
+      "[All names]",
+      "Bo Exempel",
+    ]);
+  });
+
+  test("with nothing likely, a plain list", () => {
+    pick([named(1, "Anna Other"), named(2, "Bo Exempel")], []);
+    expect(options()).toEqual(["Choose…", "Anna Other", "Bo Exempel"]);
+    expect(screen.queryByRole("searchbox")).toBeNull();
+  });
+
+  test("many names can be searched, by any name they go by", () => {
+    const many = Array.from({ length: 16 }, (_, i) => named(i + 1, `Example ${i + 1}`));
+    many.push(named(99, "Cecilia Example", ["C. Exempel"]));
+    const onChange = pick(many, [99], "5");
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value: "exempel" } });
+    expect(options()).toEqual(["Choose…", "[Likely]", "Cecilia Example"]);
+    // The chosen name was filtered away: the choice is cleared.
+    expect(onChange).toHaveBeenCalledWith("");
   });
 });

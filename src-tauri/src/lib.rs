@@ -114,6 +114,7 @@ pub fn run() {
             memory::set_part_of,
             memory::take_out_part,
             merges::merge_suggestions,
+            merges::likely_same,
             memory::dont_learn_list,
             memory::allow_learning,
             setup::setup_status,

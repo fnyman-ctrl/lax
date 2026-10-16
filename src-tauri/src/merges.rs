@@ -307,6 +307,18 @@ pub fn merge_suggestions(app: AppHandle) -> Result<Vec<SuggestionItem>, String> 
     .unwrap_or_else(|| Err("The database isn't available.".to_string()))
 }
 
+/// The names most likely to be the same as `id`, best first, for the
+/// Change panel's "Same as" list.
+#[tauri::command(async)]
+pub fn likely_same(app: AppHandle, id: i64) -> Result<Vec<i64>, String> {
+    with_store(&app, |store| {
+        store
+            .likely_same(id)
+            .map_err(|_| "Lax couldn't read the memory.".to_string())
+    })
+    .unwrap_or_else(|| Err("The database isn't available.".to_string()))
+}
+
 fn with_store<T>(app: &AppHandle, work: impl FnOnce(&mut Store) -> T) -> Option<T> {
     let store = app.try_state::<Mutex<Store>>()?;
     let mut store = store.lock().unwrap_or_else(PoisonError::into_inner);
