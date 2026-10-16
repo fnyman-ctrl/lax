@@ -1427,3 +1427,63 @@ fn in_the_database_a_forget_takes_the_page_at_once() {
     store.forget_memory().unwrap();
     assert!(store.pages().unwrap().is_empty());
 }
+
+#[test]
+fn a_projects_page_names_its_parts_and_a_parts_page_its_whole() {
+    let mut store = in_database();
+    let (one, two) = (
+        episode(
+            &mut store,
+            at(9, 11),
+            "Mail",
+            "Byggde Exempelappen och dess export.",
+        ),
+        episode(
+            &mut store,
+            at(10, 11),
+            "Mail",
+            "Fortsatte med Exempelappen och dess export.",
+        ),
+    );
+    for id in [one, two] {
+        store
+            .record_mentions(
+                id,
+                &[
+                    (EntityKind::Project, "Exempelappen".to_string()),
+                    (EntityKind::Project, "Export <!-- lax:end -->".to_string()),
+                ],
+                at(11, 12),
+            )
+            .unwrap();
+    }
+    let id = |store: &Store, name: &str| {
+        store
+            .entities()
+            .unwrap()
+            .into_iter()
+            .find(|e| e.name.starts_with(name))
+            .unwrap()
+            .id
+    };
+    let (app, export) = (id(&store, "Exempelappen"), id(&store, "Export"));
+    assert_eq!(
+        store.set_part_of(export, app).unwrap(),
+        crate::store::PartOf::Done
+    );
+    sync_rows_now(&mut store);
+    let text_of = |store: &Store, entity: i64| {
+        let page = store.page_of(entity).unwrap().unwrap();
+        store.page_text(&page.id).unwrap().unwrap()
+    };
+    let whole = text_of(&store, app);
+    assert!(whole.contains("Parts: Export "), "{whole}");
+    // Names are defused like every name in a block.
+    assert_eq!(whole.matches("<!-- lax:end -->").count(), 1, "{whole}");
+    assert!(text_of(&store, export).contains("Part of: Exempelappen."));
+    // Taken out, the lines go.
+    assert!(store.take_out(export).unwrap());
+    sync_rows_now(&mut store);
+    assert!(!text_of(&store, app).contains("Parts:"));
+    assert!(!text_of(&store, export).contains("Part of:"));
+}

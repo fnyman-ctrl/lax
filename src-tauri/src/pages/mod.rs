@@ -280,7 +280,13 @@ fn kind_folder(kind: EntityKind) -> &'static str {
 /// What Lax writes on a page, before the model writes facts (step 4): the
 /// names, how often and when it was mentioned, and the latest entries.
 /// Defused, since summaries come from captured text.
-fn content<Tz: TimeZone>(facts: &[String], entity: &Entity, latest: &[Episode], tz: &Tz) -> String
+fn content<Tz: TimeZone>(
+    facts: &[String],
+    entity: &Entity,
+    all: &[Entity],
+    latest: &[Episode],
+    tz: &Tz,
+) -> String
 where
     Tz::Offset: std::fmt::Display,
 {
@@ -294,6 +300,22 @@ where
     }
     if !entity.aliases.is_empty() {
         text.push_str(&format!("Also known as: {}.\n", entity.aliases.join(", ")));
+    }
+    // Projects in parts (ADR 0013).
+    let mut parts: Vec<&str> = all
+        .iter()
+        .filter(|e| e.part_of == Some(entity.id))
+        .map(|e| e.name.as_str())
+        .collect();
+    parts.sort_by_key(|name| name.to_lowercase());
+    if !parts.is_empty() {
+        text.push_str(&format!("Parts: {}.\n", parts.join(", ")));
+    }
+    if let Some(whole) = entity
+        .part_of
+        .and_then(|id| all.iter().find(|e| e.id == id))
+    {
+        text.push_str(&format!("Part of: {}.\n", whole.name));
     }
     let (mentions, days) = (entity.mentions, entity.days);
     let entries = if mentions == 1 { "entry" } else { "entries" };
@@ -591,7 +613,7 @@ where
             Refresh {
                 title: &entity.name,
                 kind: Some(entity.kind),
-                content: &|facts| content(facts, entity, &latest, tz),
+                content: &|facts| content(facts, entity, &entities, &latest, tz),
                 sources: latest.iter().map(|e| e.id).collect(),
             },
             now,
@@ -612,7 +634,7 @@ where
             continue;
         };
         let latest = store.episodes_mentioning(&[entity.id], None, LATEST)?;
-        let content = content(&[], entity, &latest, tz);
+        let content = content(&[], entity, &entities, &latest, tz);
         let path = shelf.new_path(store, Some(entity.kind), &entity.name)?;
         let text = block::new_page(&entity.name, &id, &content);
         if shelf.put_new(store, &path, &text, |store, text| {

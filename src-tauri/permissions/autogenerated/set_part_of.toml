@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-part-of"
+description = "Enables the set_part_of command without any pre-configured scope."
+commands.allow = ["set_part_of"]
+
+[[permission]]
+identifier = "deny-set-part-of"
+description = "Denies the set_part_of command without any pre-configured scope."
+commands.deny = ["set_part_of"]

@@ -25,7 +25,7 @@ use crate::models::{Endpoint, ModelClient, ModelTurn};
 use crate::pages;
 use crate::pause::Pause;
 use crate::store::{
-    EntityKind, Merged, ModelTask, ObviousPair, Page, PageState, Renamed, Store,
+    EntityKind, Merged, ModelTask, ObviousPair, Page, PageState, PartOf, Renamed, Store,
     UnrecognizedEpisode, name_key,
 };
 
@@ -298,6 +298,8 @@ pub struct EntityItem {
     pub last_seen: i64,
     /// Still new: seen on fewer than two days, and not kept by the user.
     pub is_new: bool,
+    /// The project it is part of (ADR 0013).
+    pub part_of: Option<i64>,
     pub page: Option<PageItem>,
 }
 
@@ -420,6 +422,7 @@ pub fn memory_entities(app: AppHandle) -> Result<Vec<EntityItem>, String> {
                     .map(|e| EntityItem {
                         page: pages.get(&e.id).map(page_item),
                         is_new: e.is_new(),
+                        part_of: e.part_of,
                         id: e.id,
                         kind: e.kind.as_str(),
                         name: e.name,
@@ -510,6 +513,49 @@ pub fn merge_obvious_pairs(app: AppHandle, pairs: Vec<(i64, i64)>) -> Result<usi
     })?;
     pages::sync_now(&app);
     Ok(merged)
+}
+
+/// Makes project `part` a part of project `whole` (ADR 0013).
+#[tauri::command(async)]
+pub fn set_part_of(app: AppHandle, part: i64, whole: i64) -> Result<(), String> {
+    command(&app, |store| {
+        match store
+            .set_part_of(part, whole)
+            .map_err(|_| "Lax couldn't save that.".to_string())?
+        {
+            PartOf::Done => Ok(()),
+            PartOf::NotFound => Err("One of them is no longer in the memory.".to_string()),
+            PartOf::NotProjects => Err("Only a project can be part of a project.".to_string()),
+            PartOf::Same => Err("A project can't be part of itself.".to_string()),
+            PartOf::WholeIsAPart => {
+                Err("That project is a part itself. Parts go one level deep.".to_string())
+            }
+            PartOf::PartHasParts => {
+                Err("It has parts of its own. Parts go one level deep.".to_string())
+            }
+        }
+    })?;
+    pages::sync_now(&app);
+    Ok(())
+}
+
+/// Takes project `part` out of its whole.
+#[tauri::command(async)]
+pub fn take_out_part(app: AppHandle, part: i64) -> Result<(), String> {
+    command(&app, |store| {
+        store
+            .take_out(part)
+            .map_err(|_| "Lax couldn't save that.".to_string())
+            .and_then(|done| {
+                if done {
+                    Ok(())
+                } else {
+                    Err("It isn't part of a project any more.".to_string())
+                }
+            })
+    })?;
+    pages::sync_now(&app);
+    Ok(())
 }
 
 /// Forgets everything the memory noted and turns it off.
