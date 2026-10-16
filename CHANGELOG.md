@@ -8,6 +8,10 @@ What changed in each version of Lax, for people who use it.
   day leaves the memory two weeks after your newest journal entry (four weeks
   if it was mentioned three times or more). The journal entries stay, and the
   name can come back. New names are folded away under **New** until then.
+- **Memory: obvious duplicates.** Organisations whose names differ only by a
+  legal suffix or punctuation, such as "Example" and "Example AB", are
+  suggested at the top of Memory, with **Merge**, **Not the same** and
+  **Merge all**. Your "Not the same" is final.
 - **Memory: less noise.** Lax now tells names you work with from names you
   only read about or saw, such as people in the news or the author of an
   article. Only days you worked with a name count toward its page. Names only

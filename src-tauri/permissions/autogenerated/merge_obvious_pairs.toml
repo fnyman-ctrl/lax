@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-merge-obvious-pairs"
+description = "Enables the merge_obvious_pairs command without any pre-configured scope."
+commands.allow = ["merge_obvious_pairs"]
+
+[[permission]]
+identifier = "deny-merge-obvious-pairs"
+description = "Denies the merge_obvious_pairs command without any pre-configured scope."
+commands.deny = ["merge_obvious_pairs"]
