@@ -140,6 +140,11 @@ written to manipulate an AI ("ignore previous instructions and…"). Therefore:
   ([ADR 0009](adr/0009-writing-assistant.md)) inserts a draft only after the user
   has read it and pressed Enter, only into the field they called Lax to, and only
   as text. Lax never presses Return or Send in another app.
+- **The writing assistant's request is the text at the cursor.** The paragraph or
+  selection the user called Lax to is taken as their request, not as captured
+  data, because that is how they ask. In text someone else wrote, such as a
+  shared document, that text becomes the request. The draft is still only shown,
+  and goes into the field only when the user presses Enter.
 - **Structured output is validated.** Model output is parsed against a strict schema;
   anything that doesn't match is discarded.
 - **One exception: Ask may show its answer as it is written.** So the user doesn't

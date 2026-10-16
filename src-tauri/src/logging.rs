@@ -495,4 +495,30 @@ mod tests {
             "{line}"
         );
     }
+
+    /// Crash lines name a file only by `file_code`: two source files with
+    /// the same code would point at the wrong one.
+    #[test]
+    fn every_source_file_has_its_own_code() {
+        let mut codes = std::collections::HashMap::new();
+        let mut dirs = vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("src")];
+        while let Some(dir) = dirs.pop() {
+            for entry in fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if path.extension().is_some_and(|e| e == "rs") {
+                    let relative = path
+                        .strip_prefix(env!("CARGO_MANIFEST_DIR"))
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned();
+                    if let Some(other) = codes.insert(file_code(&relative), relative.clone()) {
+                        panic!("{relative} and {other} have the same file code");
+                    }
+                }
+            }
+        }
+        assert!(codes.len() > 10);
+    }
 }
