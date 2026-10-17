@@ -7,6 +7,9 @@ What changed in each version of Lax, for people who use it.
 - **Brief me.** Before a call or a reply, press **Brief me** on a name in
   Memory: Ask tells you who they are to you, what you discussed lately and
   what is still open, with its sources.
+- **`npm run check`** says what's missing for building and running Lax, and
+  how to get it, before the long build. The user guide has a section **For
+  testers**.
 - **Journal on battery.** The journal now writes on battery too, about once an
   hour, and waits for power only below 20 %. Before, it waited for power
   however long you were unplugged. The Journal and Memory tabs say what
