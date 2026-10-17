@@ -49,7 +49,9 @@ choose.
   shows the journal entries it's based on. Nothing you ask is saved.
 - **Write:** turn the writing assistant on and pick the key that calls it.
 - **Journal:** what you did, a few lines every 15 minutes or so.
-- **Memory:** the people, projects and organisations Lax has learned about. You
+- **Memory:** the people, projects and organisations Lax has learned about.
+  **Brief me** on a name asks Ask who they are to you, what you discussed
+  lately and what is still open, with the entries it's based on. You
   can rename them, merge duplicates, keep them, forget them, or tell Lax never
   to learn about someone. When you merge, what you wrote on the merged one's
   page moves to the other's page. Each has a page you can edit and export (see

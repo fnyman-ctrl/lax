@@ -269,3 +269,37 @@ describe("Ask", () => {
     expect(screen.queryByRole("button", { name: "New conversation" })).toBeNull();
   });
 });
+
+describe("a question from elsewhere", () => {
+  test("is asked at once, and again only for a new request", async () => {
+    mocked.mockReset();
+    mocked.mockResolvedValue(answer("Anna Example leads the Q3 launch."));
+    const { rerender } = render(
+      <Ask onShowJournal={() => {}} request={{ question: "Brief me on Anna Example", n: 1 }} />,
+    );
+    await act(async () => {});
+    expect(mocked).toHaveBeenCalledTimes(1);
+    expect(mocked.mock.calls[0][1]).toMatchObject({ question: "Brief me on Anna Example" });
+    // The same request again, with nothing new: not asked twice.
+    rerender(
+      <Ask onShowJournal={() => {}} request={{ question: "Brief me on Anna Example", n: 1 }} />,
+    );
+    await act(async () => {});
+    expect(mocked).toHaveBeenCalledTimes(1);
+    rerender(<Ask onShowJournal={() => {}} request={{ question: "Brief me on Bo", n: 2 }} />);
+    await act(async () => {});
+    expect(mocked).toHaveBeenCalledTimes(2);
+  });
+
+  test("waits in the box while another question is answered", async () => {
+    mocked.mockReset();
+    pending();
+    const { rerender } = render(<Ask onShowJournal={() => {}} />);
+    await act(async () => ask("What did I do yesterday?"));
+    rerender(<Ask onShowJournal={() => {}} request={{ question: "Brief me on Bo", n: 1 }} />);
+    await act(async () => {});
+    expect(mocked).toHaveBeenCalledTimes(1);
+    const box = screen.getByRole("textbox", { name: "Question" }) as HTMLTextAreaElement;
+    expect(box.value).toBe("Brief me on Bo");
+  });
+});
