@@ -214,6 +214,51 @@ export function Models() {
       <p className={message?.error ? "error" : "muted"} role="status" aria-live="polite">
         {message?.text}
       </p>
+
+      <BugReportDetails />
     </section>
+  );
+}
+
+/**
+ * "Copy details for a bug report" (#171): versions, the Mac, the models,
+ * what's on, and counts. Never anything captured. Shown before it's pasted,
+ * so the user sees exactly what they share.
+ */
+export function BugReportDetails() {
+  const [details, setDetails] = useState<string | null>(null);
+  const [note, setNote] = useState<string | null>(null);
+  const copy = () => {
+    setNote(null);
+    invoke<string>("bug_report_details").then(
+      (text) => {
+        setDetails(text);
+        navigator.clipboard.writeText(text).then(
+          () => setNote("Copied. Paste it into your issue."),
+          () => setNote("Lax couldn't copy it. Select the text below and copy it."),
+        );
+      },
+      (e) => setNote(String(e)),
+    );
+  };
+  return (
+    <div className="card bug-report">
+      <h3>Found a bug?</h3>
+      <p className="muted">
+        Copy what a bug report needs: versions, your Mac, the models and what's on, and counts.
+        Nothing Lax has read, and no names. Nothing is sent.
+      </p>
+      <p className="buttons">
+        <button type="button" className="secondary" onClick={copy}>
+          Copy details for a bug report
+        </button>
+        {note && (
+          <span className="muted" role="status">
+            {note}
+          </span>
+        )}
+      </p>
+      {details && <pre className="details">{details}</pre>}
+    </div>
   );
 }

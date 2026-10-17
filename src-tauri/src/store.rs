@@ -507,6 +507,20 @@ impl Store {
     }
 
     /// How many captures wait to be summarized.
+    /// Journal entries, names and pages, for a bug report (#171): counts
+    /// only.
+    pub fn report_counts(&self) -> Result<(usize, usize, usize)> {
+        let count = |table: &str| -> Result<usize> {
+            let n: i64 =
+                self.conn
+                    .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                        row.get(0)
+                    })?;
+            Ok(usize::try_from(n).unwrap_or(0))
+        };
+        Ok((count("episodes")?, count("entities")?, count("pages")?))
+    }
+
     pub fn unsummarized_count(&self) -> Result<usize> {
         let count: i64 = self.conn.query_row(
             "SELECT count(*) FROM captures WHERE episode_id IS NULL",

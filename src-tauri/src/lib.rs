@@ -27,6 +27,7 @@ mod pages;
 mod pause;
 #[allow(dead_code)] // RemoteRedactor is used by remote providers (#16).
 mod redact;
+mod report;
 mod setup;
 mod site;
 #[allow(dead_code)] // Plain search and setting the capture interval await the settings window.
@@ -53,6 +54,7 @@ pub fn run() {
         .manage(pages::export::ChosenFolder::default())
         .invoke_handler(tauri::generate_handler![
             accessibility::accessibility_status,
+            report::bug_report_details,
             accessibility::open_accessibility_settings,
             filevault::filevault_enabled,
             database::database_status,
