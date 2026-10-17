@@ -428,5 +428,8 @@ The rules are in [GUARDRAILS.md](GUARDRAILS.md), with the test behind each in
   about once an hour, and below 20 % it waits for power. It keeps reading
   meanwhile, and the Journal tab says so.
 
-Found a bug? [Open an issue](https://github.com/fnyman-ctrl/lax/issues), and
-leave out anything personal.
+Found a bug? Under **Models**, press **Copy details for a bug report**: it
+copies the versions, your Mac, the models, what's on and some counts, and shows
+you the text. Nothing Lax has read, no names, and nothing is sent. Then
+[open an issue](https://github.com/fnyman-ctrl/lax/issues), paste the details,
+and leave out anything personal.

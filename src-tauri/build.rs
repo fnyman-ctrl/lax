@@ -14,11 +14,27 @@ fn main() {
         );
     }
 
+    // The commit Lax is built from, for "Copy details for a bug report".
+    // Building from a source archive without git says "unknown".
+    println!("cargo:rerun-if-changed=../.git/HEAD");
+    println!("cargo:rerun-if-changed=../.git/index");
+    let commit = std::process::Command::new("git")
+        .args(["rev-parse", "--short=10", "HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_hexdigit()))
+        .unwrap_or_else(|| "unknown".to_string());
+    println!("cargo:rustc-env=LAX_COMMIT={commit}");
+
     // App commands must be listed here and allowed explicitly in
     // capabilities/, so the web UI can only call what a window is granted.
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
             "accessibility_status",
+            "bug_report_details",
             "open_accessibility_settings",
             "filevault_enabled",
             "capture_status",

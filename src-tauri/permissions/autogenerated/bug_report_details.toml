@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-bug-report-details"
+description = "Enables the bug_report_details command without any pre-configured scope."
+commands.allow = ["bug_report_details"]
+
+[[permission]]
+identifier = "deny-bug-report-details"
+description = "Denies the bug_report_details command without any pre-configured scope."
+commands.deny = ["bug_report_details"]
