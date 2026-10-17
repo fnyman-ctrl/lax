@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
 import {
+  briefQuestion,
   type EntityItem,
   MergeSuggestions,
   NewNames,
@@ -337,6 +338,14 @@ describe("projects in parts", () => {
     controls(all[0], all);
     expect(screen.queryByLabelText("Part of")).toBeNull();
     expect(screen.getByText(/has parts, so it can't be a part itself/)).toBeTruthy();
+  });
+});
+
+describe("brief me", () => {
+  test("asks about the name, what was discussed and what is open", () => {
+    expect(briefQuestion("Anna Example")).toBe(
+      "Brief me on Anna Example: who they are to me, what we discussed lately, and anything still open between us.",
+    );
   });
 });
 

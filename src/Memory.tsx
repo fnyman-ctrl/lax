@@ -1,4 +1,12 @@
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import {
+  createContext,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { ExportPages } from "./ExportPages";
 import { PageEditor } from "./PageEditor";
@@ -58,7 +66,21 @@ const SECTIONS: { kind: Kind; title: string }[] = [
  * the journal's entries name. Off until the user turns it on. Names come
  * from captured text through a model, so they are shown as text only.
  */
-export function Memory({ onShowModels }: { onShowModels: () => void }) {
+/** Asks Ask for a brief on a name (#192), when the Memory view can. */
+const BriefContext = createContext<((name: string) => void) | null>(null);
+
+/** The question Memory's "Brief me" asks (#192). */
+export function briefQuestion(name: string): string {
+  return `Brief me on ${name}: who they are to me, what we discussed lately, and anything still open between us.`;
+}
+
+export function Memory({
+  onShowModels,
+  onBrief,
+}: {
+  onShowModels: () => void;
+  onBrief?: (name: string) => void;
+}) {
   const [status, setStatus] = useState<MemoryStatus | null | "failed">(null);
   const [exportingAll, setExportingAll] = useState(false);
   const [entities, setEntities] = useState<EntityItem[] | null | "failed">(null);
@@ -162,6 +184,7 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
   }
 
   return (
+    <BriefContext.Provider value={onBrief ?? null}>
     <section className="memory">
       <div className="card memory-status">
         {status.enabled ? (
@@ -425,6 +448,7 @@ export function Memory({ onShowModels }: { onShowModels: () => void }) {
         </section>
       )}
     </section>
+    </BriefContext.Provider>
   );
 }
 
@@ -1115,6 +1139,7 @@ function EntityRow({
   onOpen: (open: boolean) => void;
   run: (work: Promise<string>) => Promise<boolean>;
 }) {
+  const brief = useContext(BriefContext);
   const [name, setName] = useState(entity.name);
   const [into, setInto] = useState("");
   // Ids of the names most likely to be the same, best first (ADR 0013).
@@ -1249,6 +1274,16 @@ function EntityRow({
             }
           >
             Keep
+          </button>
+        )}
+        {brief && (
+          <button
+            type="button"
+            className="secondary"
+            aria-label={`Brief me on ${entity.name}`}
+            onClick={() => brief(entity.name)}
+          >
+            Brief me
           </button>
         )}
         <button

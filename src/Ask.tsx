@@ -40,7 +40,16 @@ const REMEMBERED_TURNS = 4;
  * is replaced by the validated answer, or removed and replaced by the error
  * if the answer fails. Only validated answers go along with a follow-up.
  */
-export function Ask({ onShowJournal }: { onShowJournal: () => void }) {
+/** A question asked from elsewhere, such as Memory's "Brief me" (#192). */
+export type AskRequest = { question: string; n: number };
+
+export function Ask({
+  onShowJournal,
+  request,
+}: {
+  onShowJournal: () => void;
+  request?: AskRequest | null;
+}) {
   const [question, setQuestion] = useState("");
   const [asking, setAsking] = useState<string | null>(null);
   // The answer to `asking` as the model writes it, not yet validated.
@@ -155,6 +164,18 @@ export function Ask({ onShowJournal }: { onShowJournal: () => void }) {
         input.current?.focus();
       });
   };
+
+  // A question from elsewhere is asked at once, or waits in the box while
+  // another is being answered.
+  useEffect(() => {
+    if (!request) return;
+    if (asking) {
+      setQuestion(request.question);
+    } else {
+      ask(request.question);
+    }
+    // Only when a new request comes, not when the conversation changes.
+  }, [request?.n]);
 
   const startOver = () => {
     setTurns([]);

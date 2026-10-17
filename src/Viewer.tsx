@@ -1,10 +1,10 @@
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Ask } from "./Ask";
+import { Ask, type AskRequest } from "./Ask";
 import { Exclusions } from "./Exclusions";
 import { Forget } from "./Forget";
 import { Journal } from "./Journal";
-import { Memory } from "./Memory";
+import { Memory, briefQuestion } from "./Memory";
 import { Models } from "./Models";
 import { Outbox } from "./Outbox";
 import { usePaged } from "./usePaged";
@@ -125,6 +125,8 @@ const SECTIONS: { group: string; items: { tab: Tab; label: string; about: string
 
 export function Viewer() {
   const [tab, setTab] = useState<Tab>("ask");
+  // A question for Ask from another section, such as Memory's "Brief me".
+  const [askRequest, setAskRequest] = useState<AskRequest | null>(null);
   const [query, setQuery] = useState("");
   // Bumped after a deletion, so the lists start over from the database.
   const [version, setVersion] = useState(0);
@@ -233,14 +235,20 @@ export function Viewer() {
         {/* Kept mounted, so a question being answered and this session's
             answers survive switching sections. */}
         <div hidden={tab !== "ask"}>
-          <Ask onShowJournal={() => setTab("journal")} />
+          <Ask onShowJournal={() => setTab("journal")} request={askRequest} />
         </div>
         {tab === "ask" ? null : tab === "write" ? (
           <Write />
         ) : tab === "journal" ? (
           <Journal onShowModels={() => setTab("models")} />
         ) : tab === "memory" ? (
-          <Memory onShowModels={() => setTab("models")} />
+          <Memory
+            onShowModels={() => setTab("models")}
+            onBrief={(name) => {
+              setAskRequest((last) => ({ question: briefQuestion(name), n: (last?.n ?? 0) + 1 }));
+              setTab("ask");
+            }}
+          />
         ) : tab === "outbox" ? (
           <Outbox />
         ) : tab === "models" ? (
