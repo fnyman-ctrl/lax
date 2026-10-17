@@ -7,6 +7,7 @@
     "core:default",
     "core:window:allow-set-theme",
     "allow-accessibility-status",
+    "allow-bug-report-details",
     "allow-open-accessibility-settings",
     "allow-database-status",
     "allow-continue-opening",
