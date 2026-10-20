@@ -162,7 +162,8 @@ written to manipulate an AI ("ignore previous instructions and…"). Therefore:
     prompt. Only the validated answer stays in the conversation. Logs may say how
     long it took and how much was shown, never what.
   - When the reply is complete, it is validated in full like any other: its shape,
-    its limits, and its sources against the entries the model was given.
+    its limits, and its sources against the journal entries and captures the model
+    was given.
   - If the reply fails validation, or is stopped by a pause or an error, the
     streamed text is removed and replaced by the usual error, and nothing of it
     is kept.

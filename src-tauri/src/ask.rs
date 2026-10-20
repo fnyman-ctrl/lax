@@ -63,8 +63,9 @@ struct Meaning {
 /// Most captures given with a question that names no time (#193): text as
 /// it was on the screen, found by word, for what the journal only sums up.
 const MAX_CAPTURES: usize = 8;
-/// About this many characters of each capture, around its first match.
-const CAPTURE_CHARS: usize = 600;
+/// About this many characters of each capture, around its first match:
+/// short enough that three or four fit in their third of the budget.
+const CAPTURE_CHARS: usize = 400;
 /// Captures found by word, before those with the same text are left out.
 const CAPTURE_CANDIDATES: usize = 3 * MAX_CAPTURES;
 /// Most characters of a capture's window title.
