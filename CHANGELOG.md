@@ -4,6 +4,10 @@ What changed in each version of Lax, for people who use it.
 
 ## Unreleased
 
+- **Fixed: the journal could stop writing.** A part of your day the model
+  fails to summarize three times is set aside until Lax restarts. Once about
+  200 captures were set aside, the journal stopped writing altogether, even
+  about the captures after them. Now it goes on with the rest.
 - **Brief me.** Before a call or a reply, press **Brief me** on a name in
   Memory: Ask tells you who they are to you, what you discussed lately and
   what is still open, with its sources.

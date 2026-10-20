@@ -284,6 +284,7 @@ struct Work {
 /// The next complete block, if the journal is on and has a model.
 fn next_work(app: &AppHandle, set_aside: &HashSet<i64>) -> Option<Work> {
     let idle = idle_time();
+    let skip: Vec<i64> = set_aside.iter().copied().collect();
     with_store(app, |store| -> crate::store::Result<Option<Work>> {
         if !store.journal_enabled()? {
             return Ok(None);
@@ -292,11 +293,7 @@ fn next_work(app: &AppHandle, set_aside: &HashSet<i64>) -> Option<Work> {
             return Ok(None);
         };
         let now = Utc::now();
-        let waiting: Vec<Capture> = store
-            .unsummarized(now - SETTLE, MAX_CAPTURES)?
-            .into_iter()
-            .filter(|c| !set_aside.contains(&c.id))
-            .collect();
+        let waiting = store.unsummarized(now - SETTLE, &skip, MAX_CAPTURES)?;
         let Some(block) = block(&waiting, now, idle.is_some_and(|i| i >= IDLE_FLUSH)) else {
             return Ok(None);
         };
