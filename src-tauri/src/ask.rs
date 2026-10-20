@@ -3,11 +3,14 @@
 //!
 //! - Finding what the question is about takes no model call: a time named
 //!   in the question ("i tisdags", "last week"), names the memory knows, and
-//!   a full-text search of the journal, within a size budget.
+//!   a full-text search of the journal, within a size budget. A question
+//!   that names no time also gets a few captures found by word, cut to the
+//!   part around the match (#193).
 //! - The question is the user's own request. The journal entries were
-//!   written from captured text, so they go in only as `Captured` data, and
-//!   the answer must be `{"answer": string, "sources": [number]}`, with
-//!   sources among the entries given (GUARDRAILS §5).
+//!   written from captured text, and the captures are captured text, so
+//!   they go in only as `Captured` data, and the answer must be
+//!   `{"answer": string, "sources": [number]}`, with sources among the
+//!   entries and captures given (GUARDRAILS §5).
 //! - The answer's text is shown in the window as the model writes it, as
 //!   plain text, before the reply is validated (the one exception in
 //!   GUARDRAILS §5). Only the window that asked gets it, through the
@@ -57,6 +60,18 @@ struct Meaning {
     vector: Vec<f32>,
 }
 
+/// Most captures given with a question that names no time (#193): text as
+/// it was on the screen, found by word, for what the journal only sums up.
+const MAX_CAPTURES: usize = 8;
+/// About this many characters of each capture, around its first match.
+const CAPTURE_CHARS: usize = 600;
+/// Captures found by word, before those with the same text are left out.
+const CAPTURE_CANDIDATES: usize = 3 * MAX_CAPTURES;
+/// Most characters of a capture's window title.
+const MAX_TITLE_CHARS: usize = 120;
+/// Every source the model can be given: the entries, then the captures.
+const MAX_SOURCES: usize = MAX_ENTRIES + MAX_CAPTURES;
+
 /// Most named entities whose facts are given.
 const MAX_KNOWN_ENTITIES: usize = 5;
 /// Most parts whose facts a named project brings along (ADR 0013).
@@ -82,7 +97,10 @@ is left to do, answer from what the entries say is planned, promised or not done
 sources, as a list of numbers such as [1, 4] (what the memory knows has no number). Don't put \
 entry numbers in the answer. If the blocks don't answer the question, say so plainly; don't \
 guess. A block may hold the conversation so far: use it only to understand what a follow-up \
-question refers to, and answer from the memory and the journal entries.";
+question refers to, and answer from the memory and the journal entries. A numbered block that \
+says \"Captured text\" is not a journal entry but part of what was on the screen then, in that \
+app and window: something the user saw or read, not necessarily did or wrote. Use it, and its \
+number, like an entry.";
 /// The answer's form from TASK, again right before the question, where a
 /// small model follows it.
 const FORM: &str =
@@ -154,7 +172,7 @@ fn numbers(text: &str, out: &mut Vec<u32>) -> Option<()> {
         match part.split_once(['-', '–']) {
             Some((from, to)) => {
                 let (from, to): (u32, u32) = (from.trim().parse().ok()?, to.trim().parse().ok()?);
-                if to < from || to - from > MAX_ENTRIES as u32 {
+                if to < from || to - from > MAX_SOURCES as u32 {
                     return None;
                 }
                 out.extend(from..=to);
@@ -180,7 +198,7 @@ impl Validate for Reply {
         {
             return Err("an answer with control or invisible characters");
         }
-        if self.sources.len() > MAX_ENTRIES {
+        if self.sources.len() > MAX_SOURCES {
             return Err("too many sources");
         }
         Ok(())
@@ -191,6 +209,9 @@ impl Validate for Reply {
 #[derive(Debug)]
 struct Found {
     episodes: Vec<Episode>,
+    /// Captured text the question's words find, oldest first; only for a
+    /// question that names no time. Numbered after the entries.
+    captures: Vec<CapturedText>,
     /// What the memory's pages say about the user and about the entities
     /// the question names, a block each.
     known: Vec<String>,
@@ -304,6 +325,16 @@ where
     let known_chars: usize = known.iter().map(|k| k.chars().count()).sum();
     let mut chars = known_chars.min(MAX_CHARS / 2);
     let tz = now.timezone();
+    // Then captured text, for a question that names no time, in at most a
+    // third of the budget; entries fill the rest.
+    let captures = match range {
+        Some(_) => Vec::new(),
+        None => captured(store, &search, &tz)?,
+    };
+    chars += captures
+        .iter()
+        .map(|c| capture_text(MAX_SOURCES, c, &tz).chars().count())
+        .sum::<usize>();
     let mut episodes = Vec::new();
     for episode in candidates {
         if episodes.len() >= MAX_ENTRIES {
@@ -325,6 +356,7 @@ where
     Ok(Found {
         known,
         episodes,
+        captures,
         recent_only,
         timed: range.is_some(),
     })
@@ -342,6 +374,183 @@ fn in_turns<const N: usize>(lists: [Vec<Episode>; N]) -> Vec<Episode> {
             return out;
         }
     }
+}
+
+/// A capture as the model is given it: where and when, and the part of its
+/// text around the first word the question matched. All of it, the window
+/// title and app name too, is captured text (GUARDRAILS §5).
+#[derive(Debug)]
+struct CapturedText {
+    id: i64,
+    captured_at: DateTime<Utc>,
+    app_name: String,
+    window_title: String,
+    excerpt: String,
+}
+
+/// Words about knowing, seeing or reading, not searched for in captures:
+/// they say how the user came by something, not what it was ("vad har jag
+/// läst om SQLCipher?", "what do I know about SQLCipher?").
+const QUESTION_VERBS: &[&str] = &[
+    "läst", "läste", "läsa", "läser", "sett", "såg", "tittade", "tittat", "kollade", "kollat",
+    "skrev", "skrivit", "vet", "veta", "visste", "minns", "ihåg", "kommer", "lärde", "lärt",
+    "read", "reading", "seen", "saw", "looked", "watched", "wrote", "written", "know", "knew",
+    "remember", "learn", "learned", "learnt",
+];
+
+/// The captures `words` find ([`Store::search`]), at most `MAX_CAPTURES` in
+/// a third of the budget, each cut to the part around its match, oldest
+/// first like the entries. Those with every word come first, best first;
+/// then, with room left, those with one of them, the word with the fewest
+/// matches first, so a word every page has comes last. Only what the store
+/// still has: captures expired or forgotten are gone, and excluded apps and
+/// private windows were never captured.
+fn captured<Tz: TimeZone>(
+    store: &Store,
+    words: &[String],
+    tz: &Tz,
+) -> crate::store::Result<Vec<CapturedText>>
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let words: Vec<String> = words
+        .iter()
+        .filter(|w| !QUESTION_VERBS.contains(&w.as_str()))
+        .cloned()
+        .collect();
+    if words.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut found = store.search(&words.join(" "), CAPTURE_CANDIDATES)?;
+    if found.len() < MAX_CAPTURES && words.len() > 1 {
+        let mut each = words
+            .iter()
+            .map(|word| store.search(word, CAPTURE_CANDIDATES))
+            .collect::<crate::store::Result<Vec<_>>>()?;
+        each.sort_by_key(Vec::len);
+        found.extend(each.into_iter().flatten());
+    }
+    let mut given: Vec<CapturedText> = Vec::new();
+    let mut ids = HashSet::new();
+    let mut seen = HashSet::new();
+    let mut chars = 0;
+    for capture in found {
+        if given.len() >= MAX_CAPTURES {
+            break;
+        }
+        if !ids.insert(capture.id) {
+            continue;
+        }
+        let text = CapturedText {
+            id: capture.id,
+            captured_at: capture.captured_at,
+            app_name: one_line(&capture.app_name, MAX_TITLE_CHARS),
+            window_title: one_line(&capture.window_title, MAX_TITLE_CHARS),
+            excerpt: excerpt(&capture.text, &words),
+        };
+        // The same page, captured again, says nothing new.
+        let key = if text.excerpt.is_empty() {
+            &text.window_title
+        } else {
+            &text.excerpt
+        };
+        if !seen.insert(key.clone()) {
+            continue;
+        }
+        let length = capture_text(MAX_SOURCES, &text, tz).chars().count();
+        if chars + length > MAX_CHARS / 3 {
+            // A shorter one further down may still fit.
+            continue;
+        }
+        chars += length;
+        given.push(text);
+    }
+    given.sort_by_key(|c| (c.captured_at, c.id));
+    Ok(given)
+}
+
+/// `text` on one line, without control or invisible characters, at most
+/// `max` characters.
+fn one_line(text: &str, max: usize) -> String {
+    let line: String = text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .filter(|&c| !c.is_control() && !structured::is_invisible(c))
+        .collect();
+    crate::capture::truncate_chars(&line, max)
+}
+
+/// About `CAPTURE_CHARS` of `text`, on one line, around the first word that
+/// starts with one of `words`, as the search matched it, and cut between
+/// words. From the start when the match was only in the window title.
+fn excerpt(text: &str, words: &[String]) -> String {
+    let chars: Vec<char> = one_line(text, usize::MAX).chars().collect();
+    if chars.len() <= CAPTURE_CHARS {
+        return chars.into_iter().collect();
+    }
+    let starts_word =
+        |i: usize| chars[i].is_alphanumeric() && (i == 0 || !chars[i - 1].is_alphanumeric());
+    let at = (0..chars.len())
+        .find(|&i| {
+            starts_word(i) && {
+                let word: String = chars[i..]
+                    .iter()
+                    .take_while(|c| c.is_alphanumeric())
+                    .collect::<String>()
+                    .to_lowercase();
+                words.iter().any(|w| word.starts_with(w.as_str()))
+            }
+        })
+        .unwrap_or(0);
+    // A little before the match, so its sentence is there.
+    let mut start = at
+        .saturating_sub(CAPTURE_CHARS / 4)
+        .min(chars.len() - CAPTURE_CHARS);
+    let mut end = start + CAPTURE_CHARS;
+    if start > 0 && chars[start - 1] != ' ' {
+        start = chars[start..at]
+            .iter()
+            .position(|&c| c == ' ')
+            .map_or(at, |space| start + space + 1);
+    }
+    if end < chars.len()
+        && chars[end] != ' '
+        && let Some(space) = chars[at..end].iter().rposition(|&c| c == ' ')
+    {
+        end = at + space;
+    }
+    let middle: String = chars[start..end].iter().collect();
+    let mut out = String::new();
+    if start > 0 {
+        out.push('…');
+    }
+    out.push_str(middle.trim());
+    if end < chars.len() {
+        out.push('…');
+    }
+    out
+}
+
+/// One capture as the model sees it: "[13] Captured text, Tue 2026-10-06
+/// 14:05 (Safari, window "Example docs"): …".
+fn capture_text<Tz: TimeZone>(number: usize, capture: &CapturedText, tz: &Tz) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let at = capture.captured_at.with_timezone(tz);
+    let window = if capture.window_title.is_empty() {
+        String::new()
+    } else {
+        format!(", window \"{}\"", capture.window_title)
+    };
+    format!(
+        "[{number}] Captured text, {} ({}{window}): {}",
+        at.format("%a %Y-%m-%d %H:%M"),
+        capture.app_name,
+        capture.excerpt
+    )
 }
 
 /// What the memory knows that bears on `text` (the writing assistant's
@@ -916,13 +1125,58 @@ where
 #[serde(rename_all = "camelCase")]
 pub struct AskAnswer {
     pub answer: String,
-    /// The entries the answer says it is based on.
-    pub sources: Vec<EpisodeItem>,
+    /// The entries and captures the answer says it is based on.
+    pub sources: Vec<AskSource>,
     /// How many entries the model was given.
     pub considered: usize,
     /// Nothing in the question narrowed it down, so the model was given
     /// the latest entries.
     pub recent_only: bool,
+}
+
+/// A source of an answer: a journal entry, or a capture, which the window
+/// shows by its app, window title and time, and opens under Captures.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum AskSource {
+    Entry(EpisodeItem),
+    Capture(CaptureSource),
+}
+
+/// A capture an answer is based on. The app name and window title are
+/// captured text, shown as plain text only.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureSource {
+    pub id: i64,
+    pub captured_at: i64,
+    pub app_name: String,
+    pub window_title: String,
+}
+
+/// The sources the model named, by their numbers (entries 1..n, captures
+/// after them), or `None` if any number wasn't given.
+fn cited(found: &Found, numbers: &[u32]) -> Option<Vec<AskSource>> {
+    let mut numbers: Vec<usize> = numbers.iter().map(|&n| n as usize).collect();
+    numbers.sort_unstable();
+    numbers.dedup();
+    numbers
+        .into_iter()
+        .map(|n| {
+            let i = n.checked_sub(1)?;
+            match found.episodes.get(i) {
+                Some(episode) => Some(AskSource::Entry(item(episode))),
+                None => found.captures.get(i - found.episodes.len()).map(|c| {
+                    AskSource::Capture(CaptureSource {
+                        id: c.id,
+                        captured_at: c.captured_at.timestamp_millis(),
+                        app_name: c.app_name.clone(),
+                        window_title: c.window_title.clone(),
+                    })
+                }),
+            }
+        })
+        .collect()
 }
 
 /// An earlier question and its answer in the same conversation, from the
@@ -1054,7 +1308,10 @@ pub async fn ask_memory(
     };
     // A time with nothing in it is answered as such: what the memory knows
     // in general says nothing about that day.
-    if found.episodes.is_empty() && (found.timed || found.known.is_empty()) {
+    if found.episodes.is_empty()
+        && found.captures.is_empty()
+        && (found.timed || found.known.is_empty())
+    {
         return Ok(AskAnswer {
             answer: if found.timed {
                 "There's nothing in the journal from that time.".to_string()
@@ -1091,14 +1348,9 @@ pub async fn ask_memory(
         if reply.sources.is_empty() {
             reply.sources = references(&reply.answer);
         }
-        if reply
-            .sources
-            .iter()
-            .any(|&n| n == 0 || n as usize > found.episodes.len())
-        {
-            return Err(StructuredError::Invalid("a source that wasn't given"));
-        }
-        Ok(reply)
+        let sources = cited(&found, &reply.sources)
+            .ok_or(StructuredError::Invalid("a source that wasn't given"))?;
+        Ok((reply, sources))
     });
     // Whether the server answered, for the journal's status.
     match &reply {
@@ -1108,13 +1360,16 @@ pub async fn ask_memory(
         _ => app.state::<ModelHealth>().up(),
     }
     match reply {
-        Ok(reply) => {
-            let mut cited: Vec<usize> = reply.sources.iter().map(|&n| n as usize - 1).collect();
-            cited.sort_unstable();
-            cited.dedup();
+        Ok((reply, sources)) => {
+            let cited_captures = sources
+                .iter()
+                .filter(|s| matches!(s, AskSource::Capture(_)))
+                .count();
             let mut fields = vec![
                 Field::Count("entries", found.episodes.len() as u64),
-                Field::Count("cited", cited.len() as u64),
+                Field::Count("captures", found.captures.len() as u64),
+                Field::Count("cited", sources.len() as u64),
+                Field::Count("cited_captures", cited_captures as u64),
                 Field::Flag("recent_only", found.recent_only),
                 Field::Duration("elapsed", started.elapsed()),
             ];
@@ -1124,10 +1379,7 @@ pub async fn ask_memory(
             logging::info("ask.answered", &fields);
             Ok(AskAnswer {
                 answer: without_references(&reply.answer),
-                sources: cited
-                    .into_iter()
-                    .map(|i| item(&found.episodes[i]))
-                    .collect(),
+                sources,
                 considered: found.episodes.len(),
                 recent_only: found.recent_only,
             })
@@ -1251,7 +1503,8 @@ fn is_reference(text: &str) -> bool {
 /// server's prompt cache can reuse the start of the prompt for the next
 /// question: what the memory knows about the user (the same for every
 /// question), what it knows about the entities named, the journal entries,
-/// and the conversation so far, which grows with every turn. The question
+/// the captures, numbered after the entries, and the conversation so far,
+/// which grows with every turn. The question
 /// and today's date and time go after all of them, as the request
 /// ([`structured::ask_streaming`]).
 fn blocks<Tz: TimeZone>(found: &Found, earlier: &[Earlier], tz: &Tz) -> Vec<String>
@@ -1268,6 +1521,13 @@ where
                 .iter()
                 .enumerate()
                 .map(|(i, e)| entry_text(i + 1, e, tz)),
+        )
+        .chain(
+            found
+                .captures
+                .iter()
+                .enumerate()
+                .map(|(i, c)| capture_text(found.episodes.len() + i + 1, c, tz)),
         )
         .chain(conversation(earlier))
         .collect()
@@ -1304,7 +1564,7 @@ fn references(answer: &str) -> Vec<u32> {
     }
     out.sort_unstable();
     out.dedup();
-    out.truncate(MAX_ENTRIES);
+    out.truncate(MAX_SOURCES);
     out
 }
 
@@ -2139,7 +2399,7 @@ mod tests {
         // What was shown as it was written is the answer itself.
         assert_eq!(shown, without_references(&reply.answer));
         assert!(reply.answer.to_lowercase().contains("offert"));
-        assert!(reply.sources.contains(&1));
+        assert!(reply.sources.contains(&1), "{reply:?}");
     }
 
     /// Synthetic entries that overlap, like a week of work for one client.
@@ -2469,6 +2729,285 @@ mod tests {
             second
                 .content
                 .ends_with("Question: Och vad mer?\n\nAnswer in Swedish.")
+        );
+    }
+
+    fn capture(store: &mut Store, when: DateTime<Utc>, title: &str, text: &str) -> i64 {
+        store
+            .insert(&NewCapture {
+                captured_at: when,
+                bundle_id: "com.example.browser",
+                app_name: "Example Browser",
+                window_title: title,
+                site: Some("example.com"),
+                text,
+            })
+            .unwrap()
+            .unwrap()
+    }
+
+    /// A page about SQLCipher, far into a long text.
+    fn page_about_sqlcipher(n: usize) -> String {
+        format!(
+            "{} Page {n}. SQLCipher encrypts the whole database file with a key from the \
+             keychain. {}",
+            "Filler words before it. ".repeat(80),
+            "More words after it. ".repeat(80)
+        )
+    }
+
+    #[test]
+    fn a_question_without_a_time_gets_captures_after_the_entries() {
+        let mut store = sample();
+        capture(
+            &mut store,
+            at(8, 10),
+            "SQLCipher – Example docs",
+            &page_about_sqlcipher(1),
+        );
+        capture(
+            &mut store,
+            at(9, 16),
+            "Notes",
+            "Anna Example asked whether SQLCipher is slower.",
+        );
+        capture(&mut store, at(9, 17), "Other", "Nothing about databases.");
+        let question = "Vad har jag läst om SQLCipher?";
+        let found = gather(&store, question, None, &now()).unwrap();
+        // "läst" is how, not what: the captures with the word are found.
+        assert_eq!(found.captures.len(), 2);
+        // Oldest first, the long page cut around its match, between words.
+        let page = &found.captures[0];
+        assert_eq!(page.window_title, "SQLCipher – Example docs");
+        assert!(
+            page.excerpt
+                .contains("SQLCipher encrypts the whole database")
+        );
+        assert!(page.excerpt.starts_with("…Filler") || page.excerpt.starts_with("…words"));
+        assert!(page.excerpt.ends_with("…"));
+        assert!(page.excerpt.chars().count() <= CAPTURE_CHARS + 2);
+        assert_eq!(
+            found.captures[1].excerpt,
+            "Anna Example asked whether SQLCipher is slower."
+        );
+        // No capture has every word: those with one of them, the rarest
+        // word's first. "databases" is on one page, "sqlcipher" on two.
+        let some = gather(
+            &store,
+            "Hur fungerar SQLCipher med databases?",
+            None,
+            &now(),
+        )
+        .unwrap();
+        let titles: Vec<&str> = some
+            .captures
+            .iter()
+            .map(|c| c.window_title.as_str())
+            .collect();
+        assert_eq!(titles, ["SQLCipher – Example docs", "Notes", "Other"]);
+        let one = gather(&store, "Hur fungerar SQLCipher?", None, &now()).unwrap();
+        assert_eq!(one.captures.len(), 2);
+
+        // Numbered after the entries, as captured blocks with app, title and time.
+        let texts = blocks(&found, &[], &stockholm());
+        let n = found.episodes.len();
+        let entries: Vec<&String> = texts
+            .iter()
+            .filter(|t| !t.contains("Captured text"))
+            .collect();
+        assert_eq!(entries.len(), n + found.known.len());
+        assert!(texts.contains(&format!(
+            "[{}] Captured text, Fri 2026-10-09 16:00 (Example Browser, window \"Notes\"): \
+             Anna Example asked whether SQLCipher is slower.",
+            n + 2
+        )));
+        assert!(texts.iter().any(|t| t.starts_with(&format!(
+            "[{}] Captured text, Thu 2026-10-08 10:00 (Example Browser, window \"SQLCipher – Example docs\"): …",
+            n + 1
+        ))));
+    }
+
+    #[test]
+    fn captures_take_at_most_a_third_of_the_budget() {
+        let mut store = sample();
+        for i in 0..20 {
+            capture(
+                &mut store,
+                at(7, 0) + TimeDelta::minutes(i),
+                &format!("Example docs {i}"),
+                &page_about_sqlcipher(i as usize),
+            );
+        }
+        let found = gather(&store, "What do I know about SQLCipher?", None, &now()).unwrap();
+        assert!(!found.captures.is_empty());
+        assert!(found.captures.len() <= MAX_CAPTURES);
+        let numbered = blocks(&found, &[], &stockholm());
+        let captures: usize = numbered
+            .iter()
+            .filter(|t| t.contains("] Captured text, "))
+            .map(|t| t.chars().count())
+            .sum();
+        assert!(captures <= MAX_CHARS / 3, "{captures}");
+        // Everything given still fits the budget.
+        let all: usize = numbered.iter().map(|t| t.chars().count()).sum();
+        assert!(all <= MAX_CHARS, "{all}");
+        // Short captures: no more than the most.
+        let mut store = sample();
+        for i in 0..20 {
+            capture(
+                &mut store,
+                at(7, 0) + TimeDelta::minutes(i),
+                "Docs",
+                &format!("SQLCipher note {i}."),
+            );
+        }
+        let found = gather(&store, "SQLCipher", None, &now()).unwrap();
+        assert_eq!(found.captures.len(), MAX_CAPTURES);
+    }
+
+    #[test]
+    fn a_time_question_gets_no_captures() {
+        let mut store = sample();
+        capture(
+            &mut store,
+            at(10, 10),
+            "Notes",
+            "SQLCipher and Anna Example.",
+        );
+        for question in [
+            "Vad läste jag om SQLCipher igår?",
+            "What did I read about SQLCipher yesterday?",
+        ] {
+            let found = gather(&store, question, None, &now()).unwrap();
+            assert!(found.timed);
+            assert!(found.captures.is_empty(), "{question}");
+        }
+        // A follow-up that takes the time before it gets none either.
+        let found = gather_after(
+            &store,
+            "Och vad mer?",
+            &["Vad läste jag om SQLCipher igår?"],
+            None,
+            &now(),
+        )
+        .unwrap();
+        assert!(found.timed && found.captures.is_empty());
+        // Only words about reading find nothing.
+        let found = gather(&store, "Vad har jag läst?", None, &now()).unwrap();
+        assert!(found.captures.is_empty());
+    }
+
+    #[test]
+    fn a_capture_cited_is_a_capture_source() {
+        let mut store = sample();
+        let id = capture(
+            &mut store,
+            at(9, 16),
+            "Notes\u{202E} \u{7}about",
+            "Anna Example asked whether SQLCipher is slower.",
+        );
+        let found = gather(&store, "Vad vet jag om SQLCipher?", None, &now()).unwrap();
+        let n = found.episodes.len() as u32;
+        assert_eq!(found.captures.len(), 1);
+        let sources = cited(&found, &[n + 1]).unwrap();
+        assert_eq!(
+            sources,
+            [AskSource::Capture(CaptureSource {
+                id,
+                captured_at: at(9, 16).timestamp_millis(),
+                app_name: "Example Browser".to_string(),
+                // Control and invisible characters left out.
+                window_title: "Notes about".to_string(),
+            })]
+        );
+        let json = serde_json::to_value(&sources[0]).unwrap();
+        assert_eq!(json["kind"], "capture");
+        assert_eq!(json["windowTitle"], "Notes about");
+        // An entry is an entry, before the captures.
+        if n > 0 {
+            let both = cited(&found, &[n + 1, 1]).unwrap();
+            assert!(matches!(both[0], AskSource::Entry(_)));
+            assert!(matches!(both[1], AskSource::Capture(_)));
+            assert_eq!(serde_json::to_value(&both[0]).unwrap()["kind"], "entry");
+        }
+        // A number not given is still refused.
+        assert!(cited(&found, &[n + 2]).is_none());
+        assert!(cited(&found, &[0]).is_none());
+        assert!(cited(&found, &[1, n + 2]).is_none());
+        // Without captures, the numbers after the entries weren't given.
+        let timed = gather(&store, "Vad läste jag om SQLCipher igår?", None, &now()).unwrap();
+        let after = timed.episodes.len() as u32 + 1;
+        assert!(cited(&timed, &[after]).is_none());
+    }
+
+    #[test]
+    fn excerpts_are_around_the_match_between_words() {
+        let words = vec!["sqlcipher".to_string()];
+        // Short text: all of it, on one line.
+        assert_eq!(excerpt("Om\n\nSQLCipher.", &words), "Om SQLCipher.");
+        // The match far in: the part around it.
+        let text = one_line(&page_about_sqlcipher(1), usize::MAX);
+        let cut = excerpt(&text, &words);
+        assert!(cut.contains("SQLCipher encrypts"));
+        let inner = cut.trim_start_matches('…').trim_end_matches('…');
+        assert!(text.contains(inner));
+        // Cut between words: the text right before and after each cut is a space.
+        let at = text.find(inner).unwrap();
+        assert_eq!(&text[at - 1..at], " ");
+        assert_eq!(&text[at + inner.len()..at + inner.len() + 1], " ");
+        // A prefix matches, as in the search; no match in the text: the start.
+        assert!(excerpt(&text, &["sqlciph".to_string()]).contains("SQLCipher"));
+        let start = excerpt(&text, &["nowhere".to_string()]);
+        assert!(start.starts_with("Filler words before it."));
+        assert!(start.ends_with('…'));
+        // A match near the end keeps a whole excerpt.
+        let late = format!("{} SQLCipher.", "Words. ".repeat(200));
+        let cut = excerpt(&late, &words);
+        assert!(cut.ends_with("SQLCipher.") && cut.chars().count() > CAPTURE_CHARS / 2);
+    }
+
+    /// Against a real model server: a question about something read gets
+    /// an answer from captured text, and cites the capture. Synthetic data.
+    #[tokio::test]
+    #[ignore = "needs a local model server: LAX_LIVE_MODEL_URL, LAX_LIVE_CHAT_MODEL"]
+    async fn live_answer_from_captures() {
+        let env = |name| std::env::var(name).unwrap_or_else(|_| panic!("{name} is not set"));
+        let mut store = sample();
+        capture(
+            &mut store,
+            at(8, 10),
+            "SQLCipher – Example docs",
+            &page_about_sqlcipher(1),
+        );
+        capture(
+            &mut store,
+            at(9, 16),
+            "Example forum",
+            "Anna Example wrote that SQLCipher costs about 5 percent in speed.",
+        );
+        let question = "Vad har jag läst om SQLCipher?";
+        let found = gather(&store, question, None, &now()).unwrap();
+        assert_eq!(found.captures.len(), 2);
+        let texts = blocks(&found, &[], &stockholm());
+        let reply = answer(
+            Endpoint::parse(&env("LAX_LIVE_MODEL_URL")).unwrap(),
+            &env("LAX_LIVE_CHAT_MODEL"),
+            &request(question, &now()),
+            &texts,
+            |_| {},
+        )
+        .await
+        .expect("an answer");
+        let sources = cited(&found, &reply.sources).expect("sources that were given");
+        assert!(
+            sources.iter().any(|s| matches!(s, AskSource::Capture(_))),
+            "no capture cited: {reply:?}"
+        );
+        let text = reply.answer.to_lowercase();
+        assert!(
+            text.contains("nyckel") || text.contains("krypter") || text.contains("5"),
+            "{}",
+            reply.answer
         );
     }
 

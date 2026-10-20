@@ -142,9 +142,19 @@ prompt never freezes the window. See
   it is based on. With an embedding model chosen, episodes get vectors in the
   background (`src-tauri/src/vectors.rs`), and Ask also finds entries close in
   meaning to the question.
+- A question that names no time also gets captured text (#193): at most 8
+  captures found by word (`Store::search` over `captures_fts`, the question's
+  words; those with every word first, then those with one), each cut to about
+  600 characters around its first match, in at most a third of the budget,
+  after what the memory knows and before the entries fill the rest. They are
+  numbered after the entries, so the model cites both the same way, and go in
+  only as `Captured`, window title and app name included. A capture cited
+  comes back as a source of kind `capture` (app, window title, time), which
+  the window opens under Captures. Nothing of them is stored or logged, only
+  how many were given and cited.
 - The prompt starts with what changes least: the instructions, what the memory
   knows about the user, then about the people and projects named, the journal
-  entries, the conversation so far, and last the question with today's date.
+  entries, the captures, the conversation so far, and last the question with today's date.
   A server that keeps a prompt cache, as LM Studio does, reads again only
   from the first part that changed: for a follow-up that finds the same
   entries ("and what else?"), only the conversation's new turn and the
