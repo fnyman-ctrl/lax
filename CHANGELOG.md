@@ -39,6 +39,9 @@ What changed in each version of Lax, for people who use it.
   deep, set by you or suggested by the model on your Mac. Parts are listed
   under their project, and the pages name them. Ask and the writing
   assistant read up to three parts' pages when you name the project.
+- **Removed: the paths for databases from before 0.1.** Lax no longer converts
+  an unencrypted database or keeps pages in `~/Lax`; it leaves such a database
+  untouched and says that Lax 0.1 can convert it (#169).
 
 ## 0.1.0 (2026-10-16)
 

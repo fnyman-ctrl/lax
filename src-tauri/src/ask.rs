@@ -1655,8 +1655,7 @@ mod tests {
             store.set_part_of(part, ids[0]).unwrap();
         }
         store.set_memory_enabled(true).unwrap();
-        store.set_pages_in_database().unwrap();
-        crate::pages::sync_rows(&mut store, &HashSet::new(), at(6, 21), &stockholm()).unwrap();
+        crate::pages::sync(&mut store, &HashSet::new(), at(6, 21), &stockholm()).unwrap();
         for (&id, name) in ids.iter().zip(projects) {
             let page = store.page_of(id).unwrap().unwrap();
             store
@@ -1702,8 +1701,7 @@ mod tests {
         store.keep_entity(export).unwrap();
         store.set_part_of(export, app).unwrap();
         store.set_memory_enabled(true).unwrap();
-        store.set_pages_in_database().unwrap();
-        crate::pages::sync_rows(&mut store, &HashSet::new(), at(6, 21), &stockholm()).unwrap();
+        crate::pages::sync(&mut store, &HashSet::new(), at(6, 21), &stockholm()).unwrap();
         // The whole's page takes most of the room: the part's doesn't fit.
         let long: Vec<String> = (0..12)
             .map(|i| format!("{i}: {}", "x".repeat(180)))
@@ -1723,20 +1721,8 @@ mod tests {
         let mut store = sample();
         let anna = store.entity_names().unwrap()[0].0;
         store.keep_entity(anna).unwrap();
-        let folder = std::env::temp_dir().join(format!(
-            "lax-ask-test-{}",
-            crate::pages::block::new_id().unwrap()
-        ));
-        crate::pages::prepare_folder(&folder).unwrap();
         store.set_memory_enabled(true).unwrap();
-        crate::pages::sync(
-            &mut store,
-            &folder,
-            &mut crate::pages::ScanCache::new(),
-            at(11, 12),
-            &stockholm(),
-        )
-        .unwrap();
+        crate::pages::sync(&mut store, &HashSet::new(), at(11, 12), &stockholm()).unwrap();
         let page = store.page_of(anna).unwrap().unwrap();
         let sources: Vec<i64> = store
             .episodes_mentioning(&[anna], None, 10)
@@ -1781,7 +1767,6 @@ mod tests {
             .map(|e| entry_text(MAX_ENTRIES, e, &stockholm()).chars().count())
             .sum();
         assert!(known + entries <= MAX_CHARS);
-        let _ = std::fs::remove_dir_all(folder);
     }
 
     #[test]
@@ -1867,20 +1852,8 @@ mod tests {
         let mut store = sample();
         let anna = store.entity_names().unwrap()[0].0;
         store.keep_entity(anna).unwrap();
-        let folder = std::env::temp_dir().join(format!(
-            "lax-ask-room-test-{}",
-            crate::pages::block::new_id().unwrap()
-        ));
-        crate::pages::prepare_folder(&folder).unwrap();
         store.set_memory_enabled(true).unwrap();
-        crate::pages::sync(
-            &mut store,
-            &folder,
-            &mut crate::pages::ScanCache::new(),
-            at(11, 12),
-            &stockholm(),
-        )
-        .unwrap();
+        crate::pages::sync(&mut store, &HashSet::new(), at(11, 12), &stockholm()).unwrap();
         let sources: Vec<i64> = store
             .episodes(None, 10)
             .unwrap()
@@ -1905,7 +1878,6 @@ mod tests {
         assert!(known + 60 > MAX_CHARS, "{known}");
         // Yesterday's entry about Anna is still given.
         assert_eq!(summaries(&found), ["Ringde Anna om leveransen."]);
-        let _ = std::fs::remove_dir_all(folder);
     }
 
     #[test]

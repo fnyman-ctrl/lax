@@ -5,9 +5,9 @@
 //!   web UI never hands Lax a path to write to.
 //! - The window shows a notice first that the copy is not encrypted, and
 //!   asks again for a folder inside iCloud Drive or another synced folder.
-//! - Lax writes a new folder, `Lax pages <date>` (`0700`), with the layout
-//!   the pages had in `~/Lax` and files `0600`, each page's whole text with
-//!   its markers. It never overwrites anything.
+//! - Lax writes a new folder, `Lax pages <date>` (`0700`), laid out by the
+//!   pages' paths (`people/…`, `about-me.md`) with files `0600`, each page's
+//!   whole text with its markers. It never overwrites anything.
 //! - Logs hold the count, never names or paths.
 
 #[cfg(test)]

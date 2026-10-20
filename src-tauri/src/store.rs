@@ -2,9 +2,9 @@
 //!
 //! Everything lives in one data folder that only the user can open (`0700`).
 //! The database is SQLite with an FTS5 index, so it can be inspected without
-//! Lax. See docs/adr/0006-sqlite-with-rusqlite.md. Lax is built with
-//! SQLCipher's SQLite, but databases have no key yet, so they are still
-//! plaintext (docs/adr/0010-encrypted-database.md, rollout step 2).
+//! Lax. See docs/adr/0006-sqlite-with-rusqlite.md. It is encrypted with
+//! SQLCipher (docs/adr/0010-encrypted-database.md, [`cipher`]); the tests
+//! also open databases without a key.
 //!
 //! The store redacts titles and text itself before writing them, so a caller
 //! can't store a secret by forgetting to redact (GUARDRAILS §4).
@@ -30,11 +30,11 @@ mod pages;
 mod pairs;
 mod vectors;
 #[cfg(target_os = "macos")]
-pub use cipher::{FileKind, Opened, Postponed, conversion_fits, file_kind};
+pub use cipher::{FileKind, Opened, file_kind};
 pub use memory::{Entity, EntityKind, Merged, PartOf, Renamed, UnrecognizedEpisode, name_key};
 #[cfg(test)]
 pub use pages::{LAX_VERSIONS_KEPT, USER_EDITS_KEPT};
-pub use pages::{MovedFile, MovedPage, Page, PageKind, PageState, fact_key, facts_in};
+pub use pages::{Page, PageKind, PageState, fact_key, facts_in};
 #[cfg(test)]
 pub use pairs::Signal;
 pub use pairs::{Candidate, ObviousPair, PartSuggestion, Relation, Suggestion, Verdict};
@@ -117,6 +117,10 @@ pub enum StoreError {
     /// The key doesn't open the database: a wrong key, or a damaged file.
     /// The two look the same.
     CannotUnlock,
+    /// The database isn't encrypted: only a Lax from before 0.1 made one.
+    /// Lax 0.1 is the last that converts it, and this one never opens,
+    /// converts or writes it (#169).
+    Plaintext,
 }
 
 impl fmt::Display for StoreError {
@@ -143,6 +147,10 @@ impl fmt::Display for StoreError {
             StoreError::CannotUnlock => {
                 f.write_str("the database doesn't open with Lax's key (a wrong key, or damaged)")
             }
+            StoreError::Plaintext => f.write_str(
+                "the database isn't encrypted: it was made by a Lax from before 0.1, and Lax 0.1 \
+                 is the last that converts it",
+            ),
         }
     }
 }
@@ -262,9 +270,11 @@ const INCREMENTAL: i64 = 2;
 /// 30 seconds, so this leaves plenty of room.
 const FORGET_MEMORY: TimeDelta = TimeDelta::minutes(10);
 
-/// Whether a connection has a key, for the settings that differ.
+/// Whether a connection has a key, for the settings that differ. Only
+/// the tests open a database without one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Layout {
+    #[cfg_attr(not(test), allow(dead_code))]
     Plaintext,
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Encrypted,
@@ -289,14 +299,14 @@ pub struct Store {
     conn: Connection,
     /// Recent forgets and when they happened.
     recent_forgets: RefCell<Vec<(Forget, DateTime<Utc>)>>,
-    /// Whether the database has a key (ADR 0010). The pages move in only
-    /// then (ADR 0011).
-    encrypted: bool,
 }
 
 impl Store {
-    /// Opens (or creates) the database in `data_dir`, without a key.
-    pub fn open(data_dir: &Path) -> Result<Self> {
+    /// For tests: opens (or creates) the database in `data_dir`, without a
+    /// key. Lax itself opens only encrypted databases
+    /// ([`Store::open_keyed`]).
+    #[cfg(test)]
+    pub(crate) fn open(data_dir: &Path) -> Result<Self> {
         let conn = Connection::open(database_file(data_dir)?)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         Self::init(conn, Layout::Plaintext)
@@ -323,8 +333,8 @@ impl Store {
         conn.pragma_update(None, "secure_delete", "ON")?;
         // SQLCipher encrypts the database, its journal and the write-ahead
         // log, but not temporary files, so an encrypted database keeps
-        // temporary data in memory. A plaintext one keeps it in files, as
-        // before: they hold nothing the database doesn't, and VACUUM in
+        // temporary data in memory. A plaintext one (only the tests') keeps
+        // it in files: they hold nothing the database doesn't, and VACUUM in
         // `scrub` would otherwise build its copy of the whole database in
         // RAM (ADR 0010, "Settings").
         let temp_store = match layout {
@@ -338,20 +348,7 @@ impl Store {
         Ok(Store {
             conn,
             recent_forgets: RefCell::new(Vec::new()),
-            encrypted: layout == Layout::Encrypted,
         })
-    }
-
-    /// Whether the database is encrypted (ADR 0010).
-    pub fn is_encrypted(&self) -> bool {
-        self.encrypted
-    }
-
-    /// For tests: as if the database were encrypted, so the pages may move
-    /// in.
-    #[cfg(test)]
-    pub(crate) fn pretend_encrypted(&mut self) {
-        self.encrypted = true;
     }
 
     /// Stores a capture and returns its id. The window title and text are

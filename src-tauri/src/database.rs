@@ -11,6 +11,9 @@
 //!   read until the user chooses **Continue** ([`continue_opening`]).
 //! - **Failed:** what went wrong, with **Try again** ([`retry_opening`]) and,
 //!   where the key can't open the file, **Start over** ([`start_over`]).
+//! - **Not encrypted:** a database from a Lax before 0.1. Lax never opens,
+//!   converts or overwrites it, and says which version can convert it
+//!   (#169).
 //!
 //! Capture, expiry, the journal and the writing assistant start only once
 //! the store is open, as before.
@@ -30,9 +33,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use crate::keychain::{self, ACCOUNT, BuildHash, KeyError, KeySource, LoginKeychain};
 use crate::logging::{self, ErrorKind, Field};
 use crate::pause::{CaptureState, Pause};
-use crate::store::{
-    DATABASE_FILE, FileKind, Opened, Postponed, Store, StoreError, conversion_fits, file_kind,
-};
+use crate::store::{DATABASE_FILE, FileKind, Opened, Store, StoreError, file_kind};
 
 /// Tells the window that the database's state changed.
 pub const CHANGED_EVENT: &str = "database-changed";
@@ -47,13 +48,7 @@ enum State {
     Opening,
     /// A new build is about to read the key: Lax's note first.
     UpdateNote,
-    /// A plaintext database is about to be encrypted: the one-time notice
-    /// first.
-    ConvertNotice,
-    /// Converting.
-    Encrypting,
-    /// Open, and if the conversion was put off, why.
-    Open(Option<Postponed>),
+    Open,
     Failed(Failure),
 }
 
@@ -69,6 +64,8 @@ enum Failure {
     CannotUnlock,
     /// Made by a newer Lax.
     NewerSchema,
+    /// Not encrypted: made by a Lax before 0.1, and left as it is.
+    Plaintext,
     /// Anything else: the folder or the disk.
     Other,
 }
@@ -102,44 +99,37 @@ impl Database {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DatabaseStatus {
-    /// "opening", "update", "convert", "encrypting", "open",
-    /// "keyUnavailable", "keyMissing", "cannotUnlock", "newerSchema" or
-    /// "failed".
+    /// "opening", "update", "open", "keyUnavailable", "keyMissing",
+    /// "cannotUnlock", "newerSchema", "plaintext" or "failed".
     state: &'static str,
-    /// When open but still plaintext: "lowSpace" or "notEncrypted".
-    postponed: Option<&'static str>,
 }
 
 #[tauri::command]
 pub fn database_status(app: AppHandle) -> DatabaseStatus {
-    let current = app.state::<Database>().get();
-    let state = match current {
+    DatabaseStatus {
+        state: state_name(app.state::<Database>().get()),
+    }
+}
+
+fn state_name(state: Option<State>) -> &'static str {
+    match state {
         None | Some(State::Opening) => "opening",
         Some(State::UpdateNote) => "update",
-        Some(State::ConvertNotice) => "convert",
-        Some(State::Encrypting) => "encrypting",
-        Some(State::Open(_)) => "open",
+        Some(State::Open) => "open",
         Some(State::Failed(Failure::KeyUnavailable)) => "keyUnavailable",
         Some(State::Failed(Failure::KeyMissing)) => "keyMissing",
         Some(State::Failed(Failure::CannotUnlock)) => "cannotUnlock",
         Some(State::Failed(Failure::NewerSchema)) => "newerSchema",
+        Some(State::Failed(Failure::Plaintext)) => "plaintext",
         Some(State::Failed(Failure::Other)) => "failed",
-    };
-    let postponed = match current {
-        Some(State::Open(Some(Postponed::LowSpace))) => Some("lowSpace"),
-        Some(State::Open(Some(Postponed::Failed))) => Some("notEncrypted"),
-        _ => None,
-    };
-    DatabaseStatus { state, postponed }
+    }
 }
 
-/// After Lax's note or the notice before encrypting: reads the key, and
-/// macOS may ask.
+/// After Lax's note: reads the key, and macOS may ask.
 #[tauri::command]
 pub fn continue_opening(app: AppHandle) {
     let database = app.state::<Database>();
-    let from = [Some(State::UpdateNote), Some(State::ConvertNotice)];
-    if database.change(&from, State::Opening) {
+    if database.change(&[Some(State::UpdateNote)], State::Opening) {
         open_in_background(app.clone(), true);
     }
 }
@@ -201,6 +191,7 @@ fn failed() -> Vec<Option<State>> {
         Failure::KeyMissing,
         Failure::CannotUnlock,
         Failure::NewerSchema,
+        Failure::Plaintext,
         Failure::Other,
     ]
     .into_iter()
@@ -222,10 +213,7 @@ fn open_in_background(app: AppHandle, noted: bool) {
         changed(&app);
         // Lax waits for the user, or can't go on: show them why, also when
         // the window would otherwise stay hidden.
-        if matches!(
-            next,
-            State::UpdateNote | State::ConvertNotice | State::Failed(_)
-        ) {
+        if matches!(next, State::UpdateNote | State::Failed(_)) {
             crate::tray::open_window(&app);
         }
     });
@@ -239,34 +227,22 @@ fn open(app: &AppHandle, noted: bool) -> State {
         Ok(kind) => kind,
         Err(_) => return State::Failed(Failure::Other),
     };
-    let build = keychain::own_build_hash();
-    // Too little room to encrypt: open it as before, without the notice
-    // or the key, and try again next start.
-    if kind == FileKind::Plaintext && !conversion_fits(&dir) {
-        logging::info("store.conversion_postponed", &[]);
-        return match Store::open(&dir) {
-            Ok(store) => {
-                opened(app, store);
-                State::Open(Some(Postponed::LowSpace))
-            }
-            Err(error) => State::Failed(failure(&error)),
-        };
-    }
-    if !noted {
-        // A plaintext database is encrypted once, after a notice that
-        // also says what macOS may ask.
-        if kind == FileKind::Plaintext {
-            logging::info("store.convert_notice", &[]);
-            return State::ConvertNotice;
-        }
-        if needs_note(kind, recorded_build(&dir).as_deref(), build.as_ref()) {
-            logging::info("store.update_note", &[]);
-            return State::UpdateNote;
-        }
-    }
+    // A Lax before 0.1 made it, and only Lax 0.1 converts it: no note, no
+    // key, and the file stays exactly as it is.
     if kind == FileKind::Plaintext {
-        app.state::<Database>().set(State::Encrypting);
-        changed(app);
+        logging::warn(
+            "store.open_failed",
+            &[
+                Field::Flag("plaintext", true),
+                Field::Error(Failure::Plaintext.kind()),
+            ],
+        );
+        return State::Failed(Failure::Plaintext);
+    }
+    let build = keychain::own_build_hash();
+    if !noted && needs_note(kind, recorded_build(&dir).as_deref(), build.as_ref()) {
+        logging::info("store.update_note", &[]);
+        return State::UpdateNote;
     }
     let started = Instant::now();
     match Store::open_keyed(&dir, &LoginKeychain::lax()) {
@@ -276,21 +252,15 @@ fn open(app: &AppHandle, noted: bool) -> State {
             if let Some(build) = build {
                 let _ = record_build(&dir, &build);
             }
-            let postponed = match how {
-                Opened::Postponed(why) => Some(why),
-                Opened::New | Opened::Encrypted | Opened::Converted => None,
-            };
             logging::info(
                 "store.opened",
                 &[
                     Field::Flag("new", how == Opened::New),
-                    Field::Flag("converted", how == Opened::Converted),
-                    Field::Flag("postponed", postponed.is_some()),
                     Field::Duration("elapsed", started.elapsed()),
                 ],
             );
             opened(app, store);
-            State::Open(postponed)
+            State::Open
         }
         Err(error) => {
             let failure = failure(&error);
@@ -316,7 +286,9 @@ impl Failure {
     fn kind(self) -> ErrorKind {
         match self {
             Failure::KeyUnavailable | Failure::KeyMissing => ErrorKind::Permission,
-            Failure::CannotUnlock | Failure::NewerSchema => ErrorKind::Database,
+            Failure::CannotUnlock | Failure::NewerSchema | Failure::Plaintext => {
+                ErrorKind::Database
+            }
             Failure::Other => ErrorKind::Io,
         }
     }
@@ -328,6 +300,7 @@ fn failure(error: &StoreError) -> Failure {
         StoreError::KeyMissing => Failure::KeyMissing,
         StoreError::CannotUnlock => Failure::CannotUnlock,
         StoreError::NewerSchema { .. } => Failure::NewerSchema,
+        StoreError::Plaintext => Failure::Plaintext,
         _ => Failure::Other,
     }
 }
@@ -562,7 +535,20 @@ mod tests {
             failure(&StoreError::Io(std::io::Error::other("disk"))),
             Failure::Other
         );
+        assert_eq!(failure(&StoreError::Plaintext), Failure::Plaintext);
         assert!(Failure::KeyMissing.is_key());
         assert!(!Failure::CannotUnlock.is_key());
+        assert!(!Failure::Plaintext.is_key());
+    }
+
+    #[test]
+    fn a_plaintext_database_is_a_state_of_its_own() {
+        // The window shows its own message for it (Database.tsx).
+        assert_eq!(
+            state_name(Some(State::Failed(Failure::Plaintext))),
+            "plaintext"
+        );
+        // A failure like the others, so the window may ask again.
+        assert!(failed().contains(&Some(State::Failed(Failure::Plaintext))));
     }
 }

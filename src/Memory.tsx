@@ -17,14 +17,8 @@ type MemoryStatus = {
   model: string | null;
   waiting: number;
   journal: boolean;
-  folder: string | null;
-  folderProblem: string | null;
   ownNames: string[];
   aboutMe: PageItem | null;
-  /** The pages are in the encrypted database and edited here (ADR 0011). */
-  pagesInDatabase: boolean;
-  /** The old page files in ~/Lax after the move, while there are any. */
-  oldPageFiles: { count: number; kept: boolean } | null;
   /** On battery, the memory's work waits for power. */
   onBattery: boolean;
 };
@@ -208,54 +202,16 @@ export function Memory({
                 looks for names that are the same once the Mac is plugged in.
               </p>
             )}
-            {status.pagesInDatabase ? (
-              <>
-                <p className="buttons">
-                  <span className="muted">
-                    Lax keeps a page for each name it's sure of, in its encrypted database. Write
-                    in them freely: Lax only changes its own part.
-                  </span>
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={() => setExportingAll(true)}
-                  >
-                    Export pages…
-                  </button>
-                </p>
-                {exportingAll && (
-                  <ExportPages scope="all" onClose={() => setExportingAll(false)} />
-                )}
-              </>
-            ) : status.folderProblem ? (
-              <p className="error">{status.folderProblem}</p>
-            ) : (
-              status.folder && (
-                <p className="buttons">
-                  <span className="muted">
-                    Lax keeps a page for each name it's sure of in {status.folder}. Write in them
-                    freely: Lax only changes its own part.
-                  </span>
-                  <button
-                    type="button"
-                    className="secondary"
-                    onClick={() =>
-                      invoke("open_memory_folder").catch((e) => setMessage(String(e)))
-                    }
-                  >
-                    Open in Finder
-                  </button>
-                </p>
-              )
-            )}
-            {status.oldPageFiles && (
-              <OldPageFiles
-                files={status.oldPageFiles}
-                busy={busy}
-                run={run}
-                onKept={setStatus}
-              />
-            )}
+            <p className="buttons">
+              <span className="muted">
+                Lax keeps a page for each name it's sure of, in its encrypted database. Write in
+                them freely: Lax only changes its own part.
+              </span>
+              <button type="button" className="secondary" onClick={() => setExportingAll(true)}>
+                Export pages…
+              </button>
+            </p>
+            {exportingAll && <ExportPages scope="all" onClose={() => setExportingAll(false)} />}
             <p className="buttons">
               <button type="button" className="secondary" onClick={() => toggle(false)}>
                 Turn the memory off
@@ -315,11 +271,8 @@ export function Memory({
           <div className="confirm" role="alertdialog" aria-label="Confirm">
             <p>
               {status.enabled ? "Turn the memory off and forget" : "Forget"} every name it
-              noted?{" "}
-              {status.pagesInDatabase
-                ? "All its pages go too, your page and what you wrote on them included: export them first if you want to keep them."
-                : "Lax's part of the pages goes too; anything you wrote on them stays."}{" "}
-              The journal entries stay, and so does the list of names not to learn. If you turn
+              noted? All its pages go too, your page and what you wrote on them included: export
+              them first if you want to keep them. The journal entries stay, and so does the list of names not to learn. If you turn
               it on again, it starts with new entries.
             </p>
             <p className="buttons">
@@ -379,7 +332,6 @@ export function Memory({
               key={entity.id}
               entity={entity}
               all={entities}
-              editable={status.pagesInDatabase}
               busy={busy}
               open={open === entity.id}
               onOpen={(on) => setOpen(on ? entity.id : null)}
@@ -402,7 +354,6 @@ export function Memory({
                       part={list.some((e) => e.id === entity.partOf)}
                       entity={entity}
                       all={entities}
-                      editable={status.pagesInDatabase}
                       busy={busy}
                       open={open === entity.id}
                       onOpen={(on) => setOpen(on ? entity.id : null)}
@@ -510,13 +461,7 @@ function AboutYou({
           Save
         </button>
       </p>
-      {status.aboutMe?.state === "ok" && !status.pagesInDatabase && (
-        <p className="muted hint">
-          {status.aboutMe.path} says who and what you work with most, and what Lax learned about
-          your work.
-        </p>
-      )}
-      {status.pagesInDatabase && status.aboutMe && status.aboutMe.state !== "missing" && (
+      {status.aboutMe && status.aboutMe.state !== "missing" && (
         <>
           <p className="buttons">
             <span className="muted">
@@ -533,15 +478,15 @@ function AboutYou({
         <p className="buttons page-problem">
           <span>
             {status.aboutMe.state === "missing"
-              ? "Lax can't find about-me.md. It won't write it again unless you ask."
-              : "Lax's part was removed from about-me.md, so Lax leaves that file alone."}
+              ? "Your page has no text, so Lax doesn't write it. It won't write it again unless you ask."
+              : "Lax's part was removed from your page, so Lax leaves it alone."}
           </span>
           <button
             type="button"
             className="secondary"
             disabled={busy}
             onClick={() =>
-              run(invoke("recreate_about_me").then(() => "Wrote about-me.md again."))
+              run(invoke("recreate_about_me").then(() => "Wrote your page again."))
             }
           >
             {status.aboutMe.state === "missing" ? "Recreate page" : "Write a new page"}
@@ -549,89 +494,6 @@ function AboutYou({
         </p>
       )}
     </div>
-  );
-}
-
-/**
- * After the pages moved into the database (ADR 0011): asks once whether to
- * delete the old files in ~/Lax, with Delete as the default; after "Keep
- * them", a quiet line that still offers it. Only files that still hold
- * exactly what was moved are deleted.
- */
-export function OldPageFiles({
-  files,
-  busy,
-  run,
-  onKept,
-}: {
-  files: { count: number; kept: boolean };
-  busy: boolean;
-  run: (work: Promise<string>) => Promise<boolean>;
-  onKept: (status: MemoryStatus) => void;
-}) {
-  const [confirming, setConfirming] = useState(false);
-  const remove = () =>
-    run(
-      invoke<{ deleted: number; changed: string[] }>("delete_old_page_files").then((done) => {
-        const deleted = `Deleted ${done.deleted} old ${done.deleted === 1 ? "file" : "files"}.`;
-        return done.changed.length === 0
-          ? deleted
-          : `${deleted} Kept ${done.changed.join(", ")}: changed after the move.`;
-      }),
-    );
-  if (files.kept && !confirming) {
-    return (
-      <p className="buttons">
-        <span className="muted">Your old page files are still in ~/Lax.</span>
-        <button type="button" className="secondary" disabled={busy} onClick={() => setConfirming(true)}>
-          Delete the old files
-        </button>
-      </p>
-    );
-  }
-  return (
-    <section className="card confirm" role="alertdialog" aria-label="The old page files">
-      <h3>Your pages are now in Lax's encrypted database. Delete the old files in ~/Lax?</h3>
-      <ul>
-        <li>Edits to the old files are no longer read.</li>
-        <li>
-          Deleting doesn't reliably erase the old text from the disk: on APFS and SSDs, old blocks
-          can stay until they're reused. FileVault, if it's on, keeps them unreadable. Time Machine
-          backups and local snapshots keep the files until they expire.
-        </li>
-        <li>If you keep them, they stay readable by every program, as now.</li>
-      </ul>
-      <p className="muted">
-        Only the {files.count} {files.count === 1 ? "file" : "files"} Lax moved, and only if they
-        still hold what was moved. Your own files stay.
-      </p>
-      <p className="actions">
-        <button type="button" className="danger" disabled={busy} autoFocus onClick={remove}>
-          Delete the old files
-        </button>{" "}
-        {files.kept ? (
-          <button type="button" className="secondary" onClick={() => setConfirming(false)}>
-            Cancel
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="secondary"
-            disabled={busy}
-            onClick={() =>
-              run(
-                invoke<MemoryStatus>("keep_old_page_files").then((status) => {
-                  onKept(status);
-                  return "Kept the old files. You can still delete them here.";
-                }),
-              )
-            }
-          >
-            Keep them
-          </button>
-        )}
-      </p>
-    </section>
   );
 }
 
@@ -1122,7 +984,6 @@ function EntityRow({
   entity,
   part = false,
   all,
-  editable,
   busy,
   open,
   onOpen,
@@ -1132,8 +993,6 @@ function EntityRow({
   /** Listed under its whole, indented. */
   part?: boolean;
   all: EntityItem[];
-  /** The page can be edited here (the pages are in the database). */
-  editable: boolean;
   busy: boolean;
   open: boolean;
   onOpen: (open: boolean) => void;
@@ -1196,10 +1055,10 @@ function EntityRow({
   };
 
   useEffect(() => {
-    if (confirming && editable && entity.page) {
+    if (confirming && entity.page) {
       invoke<string | null>("page_notes", { entity: entity.id }).then(setNotes, () => setNotes(null));
     }
-  }, [confirming, editable, entity.id, entity.page]);
+  }, [confirming, entity.id, entity.page]);
 
   const forget = () =>
     run(
@@ -1223,10 +1082,7 @@ function EntityRow({
           <p className="muted aliases">Also: {entity.aliases.join(", ")}</p>
         )}
         <p className="muted seen">{seen(entity)}</p>
-        {entity.page?.state === "ok" && !editable && (
-          <p className="muted seen">Page: {entity.page.path}</p>
-        )}
-        {editable && entity.page && entity.page.state !== "missing" && (
+        {entity.page && entity.page.state !== "missing" && (
           <p className="buttons">
             <button type="button" className="secondary" onClick={() => setEditing(!editing)}>
               {editing ? "Close the page" : "Edit page"}
@@ -1238,12 +1094,8 @@ function EntityRow({
           <p className="buttons page-problem">
             <span>
               {entity.page.state === "missing"
-                ? editable
-                  ? "This page has no text, so Lax doesn't write it. It won't write it again unless you ask."
-                  : "Lax can't find its page in the memory folder. It won't write it again unless you ask."
-                : editable
-                  ? "Lax's part was removed from this page, so Lax leaves it alone."
-                  : `Lax's part was removed from ${entity.page.path}, so Lax leaves that file alone.`}
+                ? "This page has no text, so Lax doesn't write it. It won't write it again unless you ask."
+                : "Lax's part was removed from this page, so Lax leaves it alone."}
             </span>
             <button
               type="button"
@@ -1363,15 +1215,12 @@ function EntityRow({
               <p>
                 Forget {entity.name}? Lax removes the name and where it was mentioned. The
                 journal entries stay.{" "}
-                {entity.page &&
-                  !editable &&
-                  "Lax's part of its page goes too; anything you wrote there stays. "}
-                {entity.page && editable && !notes && "Its page goes too. "}
+                {entity.page && !notes && "Its page goes too. "}
                 {dontLearn
                   ? "Lax won't learn about it again until you allow it."
                   : "If a new entry names it again, Lax starts over."}
               </p>
-              {editable && notes && (
+              {notes && (
                 <>
                   <p>Its page goes too, with what you wrote on it:</p>
                   <pre className="notes">{notes}</pre>
