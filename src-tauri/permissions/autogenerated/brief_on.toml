@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-brief-on"
+description = "Enables the brief_on command without any pre-configured scope."
+commands.allow = ["brief_on"]
+
+[[permission]]
+identifier = "deny-brief-on"
+description = "Denies the brief_on command without any pre-configured scope."
+commands.deny = ["brief_on"]

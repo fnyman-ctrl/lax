@@ -117,6 +117,7 @@ pub fn run() {
             memory::take_out_part,
             merges::merge_suggestions,
             merges::likely_same,
+            ask::brief_on,
             merges::part_suggestions,
             merges::not_part,
             memory::dont_learn_list,
