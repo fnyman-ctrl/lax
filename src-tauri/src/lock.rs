@@ -269,7 +269,7 @@ impl Action {
             (Action::TurnOnMemory, En) => "turn on the memory",
             (Action::TurnOnMemory, Sv) => "slå på minnet",
             (Action::TurnOnWriting, En) => "turn on the writing assistant",
-            (Action::TurnOnWriting, Sv) => "slå på skrivassistenten",
+            (Action::TurnOnWriting, Sv) => "slå på skrivhjälpen",
         }
     }
 }
@@ -393,9 +393,13 @@ struct State {
     window_unlocked: bool,
     /// Since when the window has been hidden (closed or minimised).
     window_hidden_since: Option<Stamp>,
-    /// Changes at every lock, so the answer to a request made before it is
+    /// Changes when Lax locks, so the answer to a request made before it is
     /// thrown away.
-    generation: u64,
+    lax_generation: u64,
+    /// Changes when the window locks, Lax's lock included. Kept apart from
+    /// `lax_generation` so a window that stays hidden can't throw away the
+    /// panel's unlock, which only needs Lax.
+    window_generation: u64,
 }
 
 impl State {
@@ -408,17 +412,28 @@ impl State {
 
     /// Locks Lax and the window.
     fn lock_lax(&mut self) -> Option<Locked> {
-        self.generation = self.generation.wrapping_add(1);
+        self.lax_generation = self.lax_generation.wrapping_add(1);
+        self.window_generation = self.window_generation.wrapping_add(1);
         self.window_unlocked = false;
         self.unlocked.take().map(|_| Locked::Lax)
     }
 
     /// Locks the window only.
     fn lock_window(&mut self) -> Option<Locked> {
-        self.generation = self.generation.wrapping_add(1);
         let was = self.status().window_unlocked;
         self.window_unlocked = false;
+        if was {
+            self.window_generation = self.window_generation.wrapping_add(1);
+        }
         was.then_some(Locked::Window)
+    }
+
+    /// The generation a request from `asker` depends on.
+    fn generation(&self, asker: Asker) -> u64 {
+        match asker {
+            Asker::Window => self.window_generation,
+            Asker::Panel => self.lax_generation,
+        }
     }
 
     fn unlock(&mut self, asker: Asker, now: Stamp) {
@@ -516,7 +531,7 @@ impl<A: Authenticator, C: Clock> Lock<A, C> {
             if already {
                 return Ok(());
             }
-            state.generation
+            state.generation(asker)
         };
         let action = match asker {
             Asker::Window => Action::OpenWindow,
@@ -524,7 +539,7 @@ impl<A: Authenticator, C: Clock> Lock<A, C> {
         };
         let outcome = self.ask(action);
         let mut state = self.state();
-        if state.generation != generation {
+        if state.generation(asker) != generation {
             // Lax locked while asking.
             return Err(Refused::Cancelled);
         }
@@ -547,11 +562,11 @@ impl<A: Authenticator, C: Clock> Lock<A, C> {
             if !state.status().window_unlocked {
                 return Err(Refused::Locked);
             }
-            state.generation
+            state.window_generation
         };
         let outcome = self.ask(action);
         let state = self.state();
-        if state.generation != generation || !state.status().window_unlocked {
+        if state.window_generation != generation || !state.status().window_unlocked {
             return Err(Refused::Locked);
         }
         match outcome {
@@ -1220,6 +1235,25 @@ mod tests {
         }));
         assert_eq!(lock.unlock(Asker::Window), Err(Refused::Cancelled));
         assert_eq!(lock.status(), locked());
+    }
+
+    #[test]
+    fn a_hidden_window_never_throws_away_the_panels_unlock() {
+        // The window has been closed for longer than the away time, and the
+        // watcher keeps ticking while the panel asks.
+        let lock = Arc::new(lock_answering(&[Outcome::Success]));
+        lock.window_visible(false);
+        lock.clock.advance(AWAY + MINUTE);
+        assert_eq!(lock.tick(Some(SECOND), false), None);
+        let during = Arc::clone(&lock);
+        *lock.authenticator.while_asking.lock().unwrap() = Some(Box::new(move || {
+            during.clock.advance(SECOND);
+            during.tick(Some(SECOND), false);
+            during.clock.advance(SECOND);
+            during.tick(Some(SECOND), false);
+        }));
+        assert_eq!(lock.unlock(Asker::Panel), Ok(()));
+        assert_eq!(lock.status(), only_lax());
     }
 
     #[test]
