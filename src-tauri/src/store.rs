@@ -452,15 +452,29 @@ pub struct Episode {
 
 /// The journal (Stage 3).
 impl Store {
-    /// Captures not yet summarized, oldest first, captured before `before`.
-    pub fn unsummarized(&self, before: DateTime<Utc>, limit: usize) -> Result<Vec<Capture>> {
-        let mut statement = self.conn.prepare(
+    /// Captures not yet summarized, oldest first, captured before `before`,
+    /// leaving out those in `skip`. They are left out by the query, not
+    /// after it, so however many are skipped, they never take the place of
+    /// captures that wait.
+    pub fn unsummarized(
+        &self,
+        before: DateTime<Utc>,
+        skip: &[i64],
+        limit: usize,
+    ) -> Result<Vec<Capture>> {
+        // Ids are numbers from the database, so joining them is safe.
+        let ids = skip
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut statement = self.conn.prepare(&format!(
             "SELECT id, captured_at, app_name, bundle_id, window_title, site, text
              FROM captures
-             WHERE episode_id IS NULL AND captured_at < ?1
+             WHERE episode_id IS NULL AND captured_at < ?1 AND id NOT IN ({ids})
              ORDER BY captured_at, id
-             LIMIT ?2",
-        )?;
+             LIMIT ?2"
+        ))?;
         let rows = statement.query_map(
             params![before.timestamp_millis(), sql_limit(limit)],
             capture_from_row,
@@ -2363,7 +2377,7 @@ mod tests {
         let b = insert_at(&store, 5, "Inbox", "Svar från Anna");
         insert_at(&store, 30, "Inbox", "Later");
         assert_eq!(store.unsummarized_count().unwrap(), 3);
-        let waiting = store.unsummarized(at(20), 10).unwrap();
+        let waiting = store.unsummarized(at(20), &[], 10).unwrap();
         assert_eq!(waiting.iter().map(|c| c.id).collect::<Vec<_>>(), [a, b]);
 
         let id = store
@@ -2380,6 +2394,23 @@ mod tests {
         assert_eq!(episodes[0].captures, 2);
         // Already summarized captures can't be summarized again.
         assert_eq!(store.record_episode(&episode("again"), &[a]).unwrap(), None);
+    }
+
+    #[test]
+    fn skipped_captures_never_take_the_place_of_waiting_ones() {
+        let store = Store::open_in_memory().unwrap();
+        let a = insert_at(&store, 0, "Inbox", "first");
+        let b = insert_at(&store, 1, "Inbox", "second");
+        let c = insert_at(&store, 2, "Inbox", "third");
+        // More are skipped than the limit: the next waiting one still comes.
+        let waiting = store.unsummarized(at(20), &[a, b], 1).unwrap();
+        assert_eq!(waiting.iter().map(|w| w.id).collect::<Vec<_>>(), [c]);
+        assert!(
+            store
+                .unsummarized(at(20), &[a, b, c], 1)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -2425,7 +2456,7 @@ mod tests {
             .collect();
         assert_eq!(left, ["Senare mejl."]);
         // The mail from the forgotten episode waits to be summarized again.
-        assert_eq!(store.unsummarized(at(30), 10).unwrap()[0].id, a);
+        assert_eq!(store.unsummarized(at(30), &[], 10).unwrap()[0].id, a);
 
         store.forget(&Forget::Everything).unwrap();
         assert!(store.episodes(None, 10).unwrap().is_empty());
