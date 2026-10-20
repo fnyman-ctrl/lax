@@ -49,10 +49,21 @@ company):
 | Prompt injection ("ignore all previous instructions…" inside the captured text) | 11 s. Ignored it and returned the one person | Ran out of a 5,000-token budget while reasoning, no answer |
 
 Qwen 3.5 reasons before every answer, and in LM Studio that couldn't be turned
-off with `/no_think` or `enable_thinking: false`. With a 1,200-token budget it
-gave no answer at all. That makes it six to ten times slower here, too slow for
-summarizing all day in the background on a 16 GB machine. Gemma 4 E4B is fast
+off with `/no_think` or `enable_thinking: false` (`reasoning_effort: "none"`
+can, see below). With a 1,200-token budget it gave no answer at all. That
+makes it six to ten times slower here, too slow for summarizing all day in the
+background on a 16 GB machine. Gemma 4 E4B is fast
 enough, answers in the user's language, and kept to the data it was given.
+
+Measured again on 2026-10-19 on a MacBook Pro with an M1 Max and 64 GB, in LM
+Studio 0.4.26: `reasoning_effort: "none"`, which Lax sends for Ask and the
+writing assistant, does turn Qwen 3.5 9B's reasoning off. With reasoning on,
+it spent the whole 2,000-token budget of a journal entry on reasoning, even
+for two short synthetic captures, and gave no answer after 56 s. Asked not to
+reason, it wrote the entry in 1.9 s. The journal and the memory let models
+reason, so when a model runs out of room, Lax asks it once more not to
+reason. With Qwen 3.5 the journal works that way, but each entry first spends
+about a minute reasoning.
 
 These are first measurements with a handful of examples, not a benchmark. They
 are repeated when the journal (Stage 3) has real prompts.
