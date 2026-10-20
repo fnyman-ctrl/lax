@@ -189,8 +189,10 @@ impl ModelClient {
     /// each new piece of it. Returns the whole reply, which the caller must
     /// still validate: the pieces are the model's raw output.
     ///
-    /// The timeout, retries and fallback are the same as for `chat`, and
-    /// dropping the future (as `Pause::unless_paused` does) closes the
+    /// The timeout, retries and fallback are the same as for `chat`, but a
+    /// model that runs out of room isn't asked again without reasoning: the
+    /// callers, Ask and the writing assistant, don't let models reason.
+    /// Dropping the future (as `Pause::unless_paused` does) closes the
     /// connection, so the server can stop. Logs carry counts and timings
     /// only.
     pub async fn chat_stream(
