@@ -154,6 +154,11 @@ impl ModelClient {
     }
 
     /// The assistant's reply to `messages`.
+    ///
+    /// A model that reasons can think through its whole token budget and
+    /// leave no answer: Qwen 3.5 in LM Studio did with every journal entry.
+    /// Then it is asked once more not to reason. A server that refuses that
+    /// can't be helped, and the model ran out of room.
     pub async fn chat(
         &self,
         model: &str,
@@ -161,16 +166,22 @@ impl ModelClient {
         max_tokens: Option<u32>,
     ) -> Result<String, ModelError> {
         let started = Instant::now();
-        let request = self.chat_request(model, messages, max_tokens, false);
+        let request = self.chat_request(model, messages, max_tokens, false, self.reasoning);
         let (opened, attempts) = self.open_chat(request).await;
-        let result = match opened {
-            Ok(response) => read(response).await,
-            Err(error) => Err(error),
-        };
-        log_call("model.chat", &result, attempts, started, &[]);
-        let reply: ChatReply =
-            serde_json::from_slice(&result?).map_err(|_| ModelError::InvalidResponse)?;
-        reply.content()
+        let reply = chat_reply(opened, attempts, started, &[]).await;
+        if !self.reasoning || reply != Err(ModelError::OutOfRoom) {
+            return reply;
+        }
+        let started = Instant::now();
+        let request = self.chat_request(model, messages, max_tokens, false, false);
+        let (opened, attempts) = self
+            .open("chat/completions", Some(&request), CHAT_TIMEOUT)
+            .await;
+        let again = [Field::Flag("without_reasoning", true)];
+        match chat_reply(opened, attempts, started, &again).await {
+            Err(ModelError::Status(400 | 422)) => Err(ModelError::OutOfRoom),
+            reply => reply,
+        }
     }
 
     /// Like [`chat`](Self::chat), but the server sends the reply as it is
@@ -190,7 +201,7 @@ impl ModelClient {
         mut on_text: impl FnMut(&str),
     ) -> Result<String, ModelError> {
         let started = Instant::now();
-        let request = self.chat_request(model, messages, max_tokens, true);
+        let request = self.chat_request(model, messages, max_tokens, true, self.reasoning);
         let (opened, attempts) = self.open_chat(request).await;
         let mut first: Option<Duration> = None;
         let mut pieces: u64 = 0;
@@ -219,12 +230,13 @@ impl ModelClient {
         messages: &'a [ChatMessage],
         max_tokens: Option<u32>,
         stream: bool,
+        reasoning: bool,
     ) -> ChatRequest<'a> {
         ChatRequest {
             model,
             messages,
             max_tokens,
-            reasoning_effort: (!self.reasoning).then_some("none"),
+            reasoning_effort: (!reasoning).then_some("none"),
             stream,
             temperature: self.temperature,
         }
@@ -402,6 +414,23 @@ fn log_call<T>(
     ];
     fields.extend_from_slice(extra);
     logging::info(event, &fields);
+}
+
+/// Reads the reply to a chat request, logged as `model.chat` with `extra`.
+async fn chat_reply(
+    opened: Result<Response, ModelError>,
+    attempts: usize,
+    started: Instant,
+    extra: &[Field],
+) -> Result<String, ModelError> {
+    let result = match opened {
+        Ok(response) => read(response).await,
+        Err(error) => Err(error),
+    };
+    log_call("model.chat", &result, attempts, started, extra);
+    let reply: ChatReply =
+        serde_json::from_slice(&result?).map_err(|_| ModelError::InvalidResponse)?;
+    reply.content()
 }
 
 #[derive(Serialize)]
@@ -840,14 +869,53 @@ mod tests {
         assert!(server.requests()[0].0.starts_with("GET /v1/models"));
     }
 
+    const OUT_OF_ROOM: &str = r#"{"choices":[{"message":{"content":"","reasoning_content":"Let me think"},"finish_reason":"length"}]}"#;
+
     #[tokio::test]
     async fn running_out_of_room_is_told_apart() {
-        let server = MockServer::start(vec![(
-            200,
-            r#"{"choices":[{"message":{"content":"","reasoning_content":"Let me think"},"finish_reason":"length"}]}"#,
-        )]);
-        let reply = server.client().chat("qwen", &[user("x")], Some(10)).await;
+        let server = MockServer::start(vec![(200, OUT_OF_ROOM)]);
+        let reply = server
+            .client()
+            .without_reasoning()
+            .chat("qwen", &[user("x")], Some(10))
+            .await;
         assert_eq!(reply, Err(ModelError::OutOfRoom));
+        // It was already asked not to reason.
+        assert_eq!(server.requests().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_model_that_reasons_until_out_of_room_is_asked_not_to() {
+        let server = MockServer::start(vec![
+            (200, OUT_OF_ROOM),
+            (
+                200,
+                r#"{"choices":[{"message":{"content":"Hej"},"finish_reason":"stop"}]}"#,
+            ),
+        ]);
+        let reply = server.client().chat("qwen", &[user("x")], Some(10)).await;
+        assert_eq!(reply.as_deref(), Ok("Hej"));
+        let requests = server.requests();
+        assert_eq!(requests.len(), 2);
+        let first: serde_json::Value = serde_json::from_str(&requests[0].1).unwrap();
+        let second: serde_json::Value = serde_json::from_str(&requests[1].1).unwrap();
+        assert!(first.get("reasoning_effort").is_none());
+        assert_eq!(second["reasoning_effort"], "none");
+        assert_eq!(second["messages"], first["messages"]);
+        assert_eq!(second["max_tokens"], 10);
+    }
+
+    #[tokio::test]
+    async fn out_of_room_on_a_server_that_refuses_no_reasoning_stays_out_of_room() {
+        let server = MockServer::start(vec![
+            (200, OUT_OF_ROOM),
+            (400, r#"{"error":"unknown reasoning_effort"}"#),
+        ]);
+        let reply = server.client().chat("qwen", &[user("x")], Some(10)).await;
+        // Not a server error, which would make the journal wait for it.
+        assert_eq!(reply, Err(ModelError::OutOfRoom));
+        // And not sent a third time as it was first.
+        assert_eq!(server.requests().len(), 2);
     }
 
     #[tokio::test]
