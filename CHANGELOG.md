@@ -20,7 +20,8 @@ What changed in each version of Lax, for people who use it.
   about the captures after them. Now it goes on with the rest.
 - **Brief me.** Before a call or a reply, press **Brief me** on a name in
   Memory: Ask tells you who they are to you, what you discussed lately and
-  what is still open, with its sources.
+  what is still open, with its sources, in the language your entries about
+  them are in.
 - **Copy details for a bug report**, under Models: versions, your Mac, the
   models, what's on and counts, shown before you paste it. Nothing Lax has
   read, and nothing is sent.
@@ -48,6 +49,9 @@ What changed in each version of Lax, for people who use it.
   deep, set by you or suggested by the model on your Mac. Parts are listed
   under their project, and the pages name them. Ask and the writing
   assistant read up to three parts' pages when you name the project.
+- **Removed: the paths for databases from before 0.1.** Lax no longer converts
+  an unencrypted database or keeps pages in `~/Lax`; it leaves such a database
+  untouched and says that Lax 0.1 can convert it (#169).
 
 ## 0.1.0 (2026-10-16)
 

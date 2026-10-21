@@ -264,28 +264,12 @@ pub struct MemoryStatus {
     pub waiting: usize,
     /// Whether the journal is on; without it no new episodes arrive.
     pub journal: bool,
-    /// The memory folder, with `~` for the home folder.
-    pub folder: Option<String>,
-    /// Why pages can't be written there, if they can't.
-    pub folder_problem: Option<String>,
     /// Other names the user goes by, as they gave them.
     pub own_names: Vec<String>,
     /// `about-me.md`, once written.
     pub about_me: Option<PageItem>,
-    /// Whether the pages are in the database and edited in Lax (ADR 0011).
-    pub pages_in_database: bool,
-    /// The old page files in `~/Lax` after the move, while there are any.
-    pub old_page_files: Option<OldPageFiles>,
     /// The Mac runs on battery: the memory's work waits for power.
     pub on_battery: bool,
-}
-
-#[derive(Debug, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct OldPageFiles {
-    pub count: usize,
-    /// The user answered "Keep them": a quiet line instead of the question.
-    pub kept: bool,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -308,7 +292,7 @@ pub struct EntityItem {
 #[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PageItem {
-    /// Relative to the memory folder.
+    /// The file an export writes it to, such as `people/anna-example.md`.
     pub path: String,
     /// "ok", "missing", "detached" or "recreate".
     pub state: &'static str,
@@ -339,48 +323,17 @@ fn status(store: &Store) -> crate::store::Result<MemoryStatus> {
         model: store.model_choice(ModelTask::Chat)?.map(|c| c.model),
         waiting: store.unrecognized_count()?,
         journal: store.journal_enabled()?,
-        folder: None,
-        folder_problem: None,
         own_names: store.own_names()?,
         about_me: store.about_me_page()?.map(|p| page_item(&p)),
-        pages_in_database: store.pages_in_database()?,
-        old_page_files: {
-            let count = store.moved_page_files()?.len();
-            (count > 0)
-                .then(|| {
-                    store
-                        .old_page_files_kept()
-                        .map(|kept| OldPageFiles { count, kept })
-                })
-                .transpose()?
-        },
         on_battery: crate::journal::power() != crate::journal::Power::Mains,
     })
 }
 
 #[tauri::command(async)]
 pub fn memory_status(app: AppHandle) -> Result<MemoryStatus, String> {
-    let mut status = command(&app, |store| {
+    command(&app, |store| {
         status(store).map_err(|_| "Lax couldn't read the memory.".to_string())
-    })?;
-    with_folder(&app, &mut status);
-    Ok(status)
-}
-
-/// Adds where the pages are, and, with the memory on, whether they can be
-/// written there.
-fn with_folder(app: &AppHandle, status: &mut MemoryStatus) {
-    let folder = pages::folder_of(app);
-    let home = app.path().home_dir().ok();
-    status.folder = folder.map(
-        |f| match home.as_ref().and_then(|h| f.strip_prefix(h).ok()) {
-            Some(relative) => format!("~/{}", relative.display()),
-            None => f.display().to_string(),
-        },
-    );
-    if status.enabled {
-        status.folder_problem = pages::folder_problem(app);
-    }
+    })
 }
 
 /// Turns the memory on or off. It can only be turned on with a chat model
@@ -401,11 +354,7 @@ pub fn set_memory_enabled(app: AppHandle, enabled: bool) -> Result<MemoryStatus,
         store.set_memory_enabled(enabled).map_err(failed)?;
         status(store).map_err(failed)
     })
-    .map(|mut status| {
-        with_folder(&app, &mut status);
-        pages::sync_now(&app);
-        status
-    })
+    .inspect(|_| pages::sync_now(&app))
 }
 
 #[tauri::command(async)]
@@ -614,7 +563,7 @@ pub fn set_own_names(app: AppHandle, names: Vec<String>) -> Result<MemoryStatus,
             clean.push(name);
         }
     }
-    let mut status = command(&app, |store| {
+    let status = command(&app, |store| {
         let failed = |_| "Lax couldn't save your names.".to_string();
         store.set_own_names(&clean).map_err(failed)?;
         // Noted before the user named them as theirs: forgotten now.
@@ -623,7 +572,6 @@ pub fn set_own_names(app: AppHandle, names: Vec<String>) -> Result<MemoryStatus,
             .map_err(failed)?;
         status(store).map_err(failed)
     })?;
-    with_folder(&app, &mut status);
     pages::sync_now(&app);
     Ok(status)
 }
@@ -705,8 +653,8 @@ pub fn recreate_about_me(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Writes a missing page again, or a new one for a page whose markers the
-/// user removed (that file is left as it is).
+/// Writes a missing page again, or a new block of Lax's below the user's
+/// text on a page whose markers they removed.
 #[tauri::command(async)]
 pub fn recreate_page(app: AppHandle, id: i64) -> Result<(), String> {
     command(&app, |store| {
@@ -723,13 +671,9 @@ pub fn recreate_page(app: AppHandle, id: i64) -> Result<(), String> {
     Ok(())
 }
 
-/// The page for `entity`, or the About me page for `None`, once the pages
-/// are in the database.
+/// The page for `entity`, or the About me page for `None`.
 fn page_to_edit(store: &Store, entity: Option<i64>) -> Result<Page, String> {
     let failed = |_| "Lax couldn't read the page.".to_string();
-    if !store.pages_in_database().map_err(failed)? {
-        return Err("Your pages are still files in ~/Lax. Edit them there for now.".into());
-    }
     let page = match entity {
         Some(id) => store.page_of(id).map_err(failed)?,
         None => store.about_me_page().map_err(failed)?,
@@ -862,9 +806,6 @@ pub fn export_pages(
     let exported = command(&app, |store| {
         let failed = |_| "Lax couldn't read the pages.".to_string();
         let chosen = if all {
-            if !store.pages_in_database().map_err(failed)? {
-                return Err("Your pages are still files in ~/Lax.".into());
-            }
             store.pages().map_err(failed)?
         } else {
             vec![page_to_edit(store, entity)?]
@@ -896,45 +837,6 @@ pub fn page_notes(app: AppHandle, entity: i64) -> Result<Option<String>, String>
             .filter(|rest| !pages::block::only_a_title(rest))
             .map(|rest| rest.trim().to_string()))
     })
-}
-
-/// Deletes the old page files in `~/Lax` that still hold exactly what was
-/// moved into the database, after the user agreed (ADR 0011). Files changed
-/// since are kept and listed.
-#[tauri::command(async)]
-pub fn delete_old_page_files(app: AppHandle) -> Result<pages::moving::Deleted, String> {
-    let folder = pages::folder_of(&app).ok_or("Lax couldn't find the memory folder.")?;
-    command(&app, |store| {
-        pages::moving::delete_old_files(store, &folder)
-            .map_err(|_| "Lax couldn't delete the old files.".to_string())
-    })
-}
-
-/// "Keep them": the one-time question about the old files isn't asked
-/// again; a quiet line stays.
-#[tauri::command(async)]
-pub fn keep_old_page_files(app: AppHandle) -> Result<MemoryStatus, String> {
-    command(&app, |store| {
-        let failed = |_| "Lax couldn't save that.".to_string();
-        store.keep_old_page_files().map_err(failed)?;
-        status(store).map_err(failed)
-    })
-}
-
-/// Opens the memory folder in Finder.
-#[tauri::command(async)]
-pub fn open_memory_folder(app: AppHandle) -> Result<(), String> {
-    let folder = pages::folder_of(&app).ok_or("Lax couldn't find the memory folder.")?;
-    if !folder.is_dir() {
-        return Err("There are no pages yet.".to_string());
-    }
-    std::process::Command::new("/usr/bin/open")
-        .arg(&folder)
-        .status()
-        .ok()
-        .filter(|s| s.success())
-        .map(|_| ())
-        .ok_or_else(|| "Lax couldn't open the folder.".to_string())
 }
 
 #[tauri::command(async)]

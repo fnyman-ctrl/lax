@@ -1542,6 +1542,53 @@ where
         .collect()
 }
 
+/// Entries read to tell which language a name's brief is asked in.
+const BRIEF_ENTRIES: usize = 10;
+
+/// The question Memory's "Brief me" asks Ask about an entity (#192), in the
+/// language most entries that name it are written in: Swedish or English,
+/// English when it can't tell. Ask answers in the question's language.
+fn brief_question(kind: EntityKind, name: &str, language: Option<&str>) -> String {
+    match (language, kind) {
+        (Some("Swedish"), EntityKind::Person) => format!(
+            "Sammanfatta {name} för mig: vem hen är för mig, vad vi har pratat om på sistone och \
+             vad som fortfarande är öppet mellan oss."
+        ),
+        (Some("Swedish"), _) => format!(
+            "Sammanfatta {name} för mig: vad det är för mig, vad som har hänt med det på sistone \
+             och vad som fortfarande är öppet."
+        ),
+        (_, EntityKind::Person) => format!(
+            "Brief me on {name}: who they are to me, what we discussed lately, and anything still \
+             open between us."
+        ),
+        _ => format!(
+            "Brief me on {name}: what it is to me, what happened with it lately, and anything \
+             still open."
+        ),
+    }
+}
+
+/// The "Brief me" question for entity `id`.
+#[tauri::command(async)]
+pub fn brief_on(app: AppHandle, id: i64) -> Result<String, String> {
+    with_store(&app, |store| -> crate::store::Result<Option<String>> {
+        let Some(entity) = store.entities()?.into_iter().find(|e| e.id == id) else {
+            return Ok(None);
+        };
+        let entries: Vec<String> = store
+            .episodes_mentioning(&[id], None, BRIEF_ENTRIES)?
+            .into_iter()
+            .map(|e| e.summary)
+            .collect();
+        let language = crate::write::window_language(&entries.join("\n"));
+        Ok(Some(brief_question(entity.kind, &entity.name, language)))
+    })
+    .unwrap_or_else(|| Ok(None))
+    .map_err(|_| "Lax couldn't read the memory.".to_string())?
+    .ok_or_else(|| "That name is no longer in the memory.".to_string())
+}
+
 fn with_store<T>(app: &AppHandle, work: impl FnOnce(&Store) -> T) -> Option<T> {
     let store = app.try_state::<Mutex<Store>>()?;
     let store = store.lock().unwrap_or_else(PoisonError::into_inner);
@@ -1935,8 +1982,7 @@ mod tests {
             store.set_part_of(part, ids[0]).unwrap();
         }
         store.set_memory_enabled(true).unwrap();
-        store.set_pages_in_database().unwrap();
-        crate::pages::sync_rows(&mut store, &HashSet::new(), at(6, 21), &stockholm()).unwrap();
+        crate::pages::sync(&mut store, &HashSet::new(), at(6, 21), &stockholm()).unwrap();
         for (&id, name) in ids.iter().zip(projects) {
             let page = store.page_of(id).unwrap().unwrap();
             store
@@ -1982,8 +2028,7 @@ mod tests {
         store.keep_entity(export).unwrap();
         store.set_part_of(export, app).unwrap();
         store.set_memory_enabled(true).unwrap();
-        store.set_pages_in_database().unwrap();
-        crate::pages::sync_rows(&mut store, &HashSet::new(), at(6, 21), &stockholm()).unwrap();
+        crate::pages::sync(&mut store, &HashSet::new(), at(6, 21), &stockholm()).unwrap();
         // The whole's page takes most of the room: the part's doesn't fit.
         let long: Vec<String> = (0..12)
             .map(|i| format!("{i}: {}", "x".repeat(180)))
@@ -2003,20 +2048,8 @@ mod tests {
         let mut store = sample();
         let anna = store.entity_names().unwrap()[0].0;
         store.keep_entity(anna).unwrap();
-        let folder = std::env::temp_dir().join(format!(
-            "lax-ask-test-{}",
-            crate::pages::block::new_id().unwrap()
-        ));
-        crate::pages::prepare_folder(&folder).unwrap();
         store.set_memory_enabled(true).unwrap();
-        crate::pages::sync(
-            &mut store,
-            &folder,
-            &mut crate::pages::ScanCache::new(),
-            at(11, 12),
-            &stockholm(),
-        )
-        .unwrap();
+        crate::pages::sync(&mut store, &HashSet::new(), at(11, 12), &stockholm()).unwrap();
         let page = store.page_of(anna).unwrap().unwrap();
         let sources: Vec<i64> = store
             .episodes_mentioning(&[anna], None, 10)
@@ -2061,7 +2094,6 @@ mod tests {
             .map(|e| entry_text(MAX_ENTRIES, e, &stockholm()).chars().count())
             .sum();
         assert!(known + entries <= MAX_CHARS);
-        let _ = std::fs::remove_dir_all(folder);
     }
 
     #[test]
@@ -2147,20 +2179,8 @@ mod tests {
         let mut store = sample();
         let anna = store.entity_names().unwrap()[0].0;
         store.keep_entity(anna).unwrap();
-        let folder = std::env::temp_dir().join(format!(
-            "lax-ask-room-test-{}",
-            crate::pages::block::new_id().unwrap()
-        ));
-        crate::pages::prepare_folder(&folder).unwrap();
         store.set_memory_enabled(true).unwrap();
-        crate::pages::sync(
-            &mut store,
-            &folder,
-            &mut crate::pages::ScanCache::new(),
-            at(11, 12),
-            &stockholm(),
-        )
-        .unwrap();
+        crate::pages::sync(&mut store, &HashSet::new(), at(11, 12), &stockholm()).unwrap();
         let sources: Vec<i64> = store
             .episodes(None, 10)
             .unwrap()
@@ -2185,7 +2205,6 @@ mod tests {
         assert!(known + 60 > MAX_CHARS, "{known}");
         // Yesterday's entry about Anna is still given.
         assert_eq!(summaries(&found), ["Ringde Anna om leveransen."]);
-        let _ = std::fs::remove_dir_all(folder);
     }
 
     #[test]
@@ -3053,5 +3072,42 @@ mod tests {
         let long = "x".repeat(2500);
         let block = conversation(&[turn("Gammal", &long), turn("Ny", &long)]).unwrap();
         assert!(block.contains("Ny") && !block.contains("Gammal"));
+    }
+
+    #[test]
+    fn a_brief_is_asked_in_the_language_of_the_entries() {
+        let mut store = Store::open_in_memory().unwrap();
+        let entries = [
+            "Mailade Anna Example om offerten till Exempelbolaget och bokade ett möte.",
+            "Planerade lanseringen med Anna Example och skrev en sammanfattning av mötet.",
+        ];
+        for (i, entry) in entries.iter().enumerate() {
+            let id = episode(&mut store, at(6, 8 + i as u32), entry);
+            store
+                .record_mentions(
+                    id,
+                    &[(EntityKind::Person, "Anna Example".to_string())],
+                    at(6, 20),
+                )
+                .unwrap();
+        }
+        let summaries: Vec<String> = store
+            .episodes_mentioning(&[store.entities().unwrap()[0].id], None, BRIEF_ENTRIES)
+            .unwrap()
+            .into_iter()
+            .map(|e| e.summary)
+            .collect();
+        let language = crate::write::window_language(&summaries.join("\n"));
+        assert_eq!(language, Some("Swedish"));
+        assert!(
+            brief_question(EntityKind::Person, "Anna Example", language)
+                .starts_with("Sammanfatta Anna Example för mig: vem hen är för mig")
+        );
+        assert!(
+            brief_question(EntityKind::Project, "Q3", Some("English"))
+                .starts_with("Brief me on Q3: what it is to me")
+        );
+        // Can't tell: English, like the window.
+        assert!(brief_question(EntityKind::Person, "Bo", None).starts_with("Brief me on Bo: who"));
     }
 }

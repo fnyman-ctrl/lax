@@ -208,8 +208,8 @@ pub trait KeySource {
 /// What `lax.sqlite` is when Lax asks for its key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DatabaseFile {
-    /// Absent, empty or plaintext: nothing is locked to a key yet, so a
-    /// missing key may be made.
+    /// Absent or empty: nothing is locked to a key yet, so a missing key
+    /// may be made. (A plaintext file is refused before any key is read.)
     NotEncrypted,
     /// Encrypted: only its own key opens it, so a missing key is an error,
     /// never a reason to make a new one.
