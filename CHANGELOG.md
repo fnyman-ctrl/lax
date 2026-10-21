@@ -7,7 +7,10 @@ What changed in each version of Lax, for people who use it.
 - **Fixed: models that think too long wrote nothing.** Some models, such as
   Qwen 3.5, think before every answer until they run out of room, so the
   journal and the memory got no answer at all. When that happens, Lax now
-  asks once more without thinking, and gets one.
+  asks once more without thinking, and gets one. From then on, until Lax
+  restarts, it asks that model not to think from the start, so background
+  work no longer waits about a minute for every answer. **Test** under
+  Models says when a model only answers like that.
 - **Fixed: the journal could stop writing.** A part of your day the model
   fails to summarize three times is set aside until Lax restarts. Once about
   200 captures were set aside, the journal stopped writing altogether, even

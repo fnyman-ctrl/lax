@@ -69,7 +69,15 @@ pub struct TestResult {
     pub elapsed_ms: u64,
     /// What was checked, in a sentence; never the model's own words.
     pub detail: String,
+    /// Something to know about the model even though it worked, in a
+    /// sentence.
+    pub note: Option<String>,
 }
+
+/// A chat model that answered the test only when asked again not to reason.
+const SLOW_REASONING: &str = "It answered only after being asked not to think first, \
+    so background work may be slow with this model: after each start, Lax waits once \
+    for it to think until it runs out of room.";
 
 /// How long a probed server gets to list its models.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -149,10 +157,15 @@ pub async fn test_model(app: AppHandle, task: Task) -> Result<TestResult, String
     let endpoint = Endpoint::parse(&choice.base_url).map_err(|e| e.to_string())?;
     let client = ModelClient::new(endpoint).map_err(|e| e.to_string())?;
     let started = Instant::now();
+    let mut note = None;
     let (ok, detail) = match task {
         Task::Chat => {
-            let reply = client
-                .chat(
+            // Checked afresh, and not remembered after: the test's budget is
+            // smaller than background work's, so only background work's own
+            // calls decide whether it is asked not to reason.
+            client.forget_unreasoning(&choice.model);
+            let answer = client
+                .answer(
                     &choice.model,
                     &[
                         ChatMessage {
@@ -166,9 +179,13 @@ pub async fn test_model(app: AppHandle, task: Task) -> Result<TestResult, String
                     ],
                     Some(400),
                 )
-                .await
-                .map_err(|e| e.to_string())?;
-            if reply.to_lowercase().contains("stockholm") {
+                .await;
+            client.forget_unreasoning(&choice.model);
+            let answer = answer.map_err(|e| e.to_string())?;
+            if answer.without_reasoning {
+                note = Some(SLOW_REASONING.to_string());
+            }
+            if answer.text.to_lowercase().contains("stockholm") {
                 (
                     true,
                     "Asked in Swedish for the capital of Sweden, and it answered right."
@@ -198,6 +215,7 @@ pub async fn test_model(app: AppHandle, task: Task) -> Result<TestResult, String
         ok,
         elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
         detail,
+        note,
     })
 }
 
