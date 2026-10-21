@@ -35,9 +35,12 @@ Tools (`xcode-select --install`), [rustup](https://rustup.rs) and
 ```sh
 git clone https://github.com/fnyman-ctrl/lax.git
 cd lax
+npm run check
 npm run build:app
 open ~/Applications/Lax.app
 ```
+
+Testing Lax? See [For testers](docs/USER-GUIDE.md#for-testers).
 
 A Lax you build yourself opens without warnings and needs no Apple account.
 Lax then asks for the Accessibility permission and explains what it reads. For
