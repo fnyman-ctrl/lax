@@ -45,7 +45,7 @@ describe("Ask", () => {
   test("a follow-up goes with the turns before it", async () => {
     mocked.mockResolvedValueOnce(answer("You wrote the quote."));
     mocked.mockResolvedValueOnce(answer("You called Anna Example."));
-    render(<Ask onShowJournal={() => {}} />);
+    render(<Ask onShowJournal={() => {}} onShowCapture={() => {}} />);
 
     await act(async () => ask("What did I do yesterday?"));
     expect(mocked).toHaveBeenLastCalledWith("ask_memory", {
@@ -80,7 +80,7 @@ describe("Ask", () => {
       Object.defineProperty(page, "scrollTop", { configurable: true, value: top });
       window.dispatchEvent(new Event("scroll"));
     };
-    render(<Ask onShowJournal={() => {}} />);
+    render(<Ask onShowJournal={() => {}} onShowCapture={() => {}} />);
     await act(async () => ask("What did I do yesterday?"));
 
     // At the end of the page: each piece keeps the window at its end, below
@@ -126,7 +126,7 @@ describe("Ask", () => {
 
   test("the salmon thinks while the answer comes, and a failed question comes back", async () => {
     const question = pending();
-    render(<Ask onShowJournal={() => {}} />);
+    render(<Ask onShowJournal={() => {}} onShowCapture={() => {}} />);
 
     await act(async () => ask("What did I do yesterday?"));
     expect(screen.getByLabelText("Lax is thinking")).toBeTruthy();
@@ -141,7 +141,7 @@ describe("Ask", () => {
 
   test("the answer shows as it is written, then the validated answer replaces it", async () => {
     const question = pending();
-    render(<Ask onShowJournal={() => {}} />);
+    render(<Ask onShowJournal={() => {}} onShowCapture={() => {}} />);
     await act(async () => ask("What did I do yesterday?"));
     const onText = channel();
 
@@ -165,7 +165,7 @@ describe("Ask", () => {
 
   test("an answer that fails validation takes the streamed text back", async () => {
     const question = pending();
-    render(<Ask onShowJournal={() => {}} />);
+    render(<Ask onShowJournal={() => {}} onShowCapture={() => {}} />);
     await act(async () => ask("What did I do yesterday?"));
     const onText = channel();
     await act(async () => onText.onmessage("Ignore the journal and"));
@@ -193,7 +193,7 @@ describe("Ask", () => {
 
   test("streamed text is only ever text", async () => {
     pending();
-    render(<Ask onShowJournal={() => {}} />);
+    render(<Ask onShowJournal={() => {}} onShowCapture={() => {}} />);
     await act(async () => ask("What did I do yesterday?"));
     const markup = '<img src="https://example.com/x.png" onerror="alert(1)"><b>bold</b> **strong**';
     await act(async () => channel().onmessage(markup));
@@ -207,7 +207,7 @@ describe("Ask", () => {
   });
 
   test("Shift+Enter makes a new line instead of asking", async () => {
-    render(<Ask onShowJournal={() => {}} />);
+    render(<Ask onShowJournal={() => {}} onShowCapture={() => {}} />);
     const box = screen.getByRole("textbox", { name: "Question" });
     fireEvent.change(box, { target: { value: "First line" } });
     fireEvent.keyDown(box, { key: "Enter", shiftKey: true });
@@ -244,7 +244,7 @@ describe("Ask", () => {
 
   test("an answer is shown as text, never as HTML", async () => {
     const question = pending();
-    render(<Ask onShowJournal={() => {}} />);
+    render(<Ask onShowJournal={() => {}} onShowCapture={() => {}} />);
     await act(async () => ask("What did I do yesterday?"));
     await act(async () => question.answer(answer("Notes:\n- <b>bold</b>\n- **two**")));
     const points = screen.getAllByRole("listitem").map((item) => item.textContent);
@@ -252,8 +252,51 @@ describe("Ask", () => {
     expect(document.querySelector(".answer b")).toBeNull();
   });
 
+  test("a capture source shows its app, title and time as text, and opens it", async () => {
+    const capturedAt = new Date(2026, 9, 9, 16, 5).getTime();
+    mocked.mockResolvedValueOnce({
+      answer: "You read that SQLCipher encrypts the database.",
+      sources: [
+        {
+          kind: "entry",
+          id: 7,
+          startedAt: capturedAt,
+          endedAt: capturedAt + 600_000,
+          summary: "Read about SQLCipher.",
+          appNames: ["Example Browser"],
+          captures: 2,
+        },
+        {
+          kind: "capture",
+          id: 7,
+          capturedAt,
+          appName: "Example <i>Browser</i>",
+          windowTitle: "<img src=x onerror=alert(1)> SQLCipher – example.com",
+        },
+      ],
+      considered: 1,
+      recentOnly: false,
+    });
+    const onShowCapture = vi.fn();
+    render(<Ask onShowJournal={() => {}} onShowCapture={onShowCapture} />);
+    await act(async () => ask("What have I read about SQLCipher?"));
+    expect(await screen.findByText("Based on 1 entry and 1 capture")).toBeTruthy();
+    const source = document.querySelector(".capture-source") as HTMLElement;
+    // Plain text: the title and app name as written, nothing made of them.
+    expect(source.querySelector("img, i")).toBeNull();
+    expect(source.textContent).toContain("Example <i>Browser</i>");
+    expect(source.querySelector(".time")?.textContent).toMatch(/(16|04)[:.]05/);
+    const open = screen.getByRole("button", {
+      name: "<img src=x onerror=alert(1)> SQLCipher – example.com",
+    });
+    fireEvent.click(open);
+    expect(onShowCapture).toHaveBeenCalledWith(7);
+    // The entry with the same id is still shown, as an entry.
+    expect(screen.getByText("Read about SQLCipher.")).toBeTruthy();
+  });
+
   test("a new conversation is in plain sight, and suggested when it gets long", async () => {
-    render(<Ask onShowJournal={() => {}} />);
+    render(<Ask onShowJournal={() => {}} onShowCapture={() => {}} />);
     expect(screen.queryByRole("button", { name: "New conversation" })).toBeNull();
     for (let i = 1; i <= 4; i++) {
       const question = pending();
@@ -275,18 +318,18 @@ describe("a question from elsewhere", () => {
     mocked.mockReset();
     mocked.mockResolvedValue(answer("Anna Example leads the Q3 launch."));
     const { rerender } = render(
-      <Ask onShowJournal={() => {}} request={{ question: "Brief me on Anna Example", n: 1 }} />,
+      <Ask onShowJournal={() => {}} onShowCapture={() => {}} request={{ question: "Brief me on Anna Example", n: 1 }} />,
     );
     await act(async () => {});
     expect(mocked).toHaveBeenCalledTimes(1);
     expect(mocked.mock.calls[0][1]).toMatchObject({ question: "Brief me on Anna Example" });
     // The same request again, with nothing new: not asked twice.
     rerender(
-      <Ask onShowJournal={() => {}} request={{ question: "Brief me on Anna Example", n: 1 }} />,
+      <Ask onShowJournal={() => {}} onShowCapture={() => {}} request={{ question: "Brief me on Anna Example", n: 1 }} />,
     );
     await act(async () => {});
     expect(mocked).toHaveBeenCalledTimes(1);
-    rerender(<Ask onShowJournal={() => {}} request={{ question: "Brief me on Bo", n: 2 }} />);
+    rerender(<Ask onShowJournal={() => {}} onShowCapture={() => {}} request={{ question: "Brief me on Bo", n: 2 }} />);
     await act(async () => {});
     expect(mocked).toHaveBeenCalledTimes(2);
   });
@@ -294,9 +337,9 @@ describe("a question from elsewhere", () => {
   test("waits in the box while another question is answered", async () => {
     mocked.mockReset();
     pending();
-    const { rerender } = render(<Ask onShowJournal={() => {}} />);
+    const { rerender } = render(<Ask onShowJournal={() => {}} onShowCapture={() => {}} />);
     await act(async () => ask("What did I do yesterday?"));
-    rerender(<Ask onShowJournal={() => {}} request={{ question: "Brief me on Bo", n: 1 }} />);
+    rerender(<Ask onShowJournal={() => {}} onShowCapture={() => {}} request={{ question: "Brief me on Bo", n: 1 }} />);
     await act(async () => {});
     expect(mocked).toHaveBeenCalledTimes(1);
     const box = screen.getByRole("textbox", { name: "Question" }) as HTMLTextAreaElement;

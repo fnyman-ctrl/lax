@@ -328,15 +328,9 @@ impl Store {
                 params![id, now.timestamp_millis()],
             )?;
         }
-        // Once the pages are in the database (ADR 0011), the page goes in
-        // the same transaction, the user's text on it too: the forget
-        // dialog showed it first. Before, the next page round takes Lax's
-        // part out of the file.
-        tx.execute(
-            "DELETE FROM pages WHERE entity_id = ?1
-             AND EXISTS (SELECT 1 FROM settings WHERE key = ?2 AND value = '1')",
-            params![id, super::pages::PAGES_IN_DATABASE_KEY],
-        )?;
+        // The page goes in the same transaction (ADR 0011), the user's
+        // text on it too: the forget dialog showed it first.
+        tx.execute("DELETE FROM pages WHERE entity_id = ?1", [id])?;
         let deleted = tx.execute("DELETE FROM entities WHERE id = ?1", [id])?;
         tx.commit()?;
         if deleted > 0 {
@@ -608,29 +602,13 @@ impl Store {
     /// how many entities were forgotten.
     pub fn forget_memory(&mut self) -> Result<usize> {
         self.set_memory_enabled(false)?;
-        let in_database = self.pages_in_database()?;
         // All of it at once, or nothing.
         let tx = self.conn.transaction()?;
-        // Once the pages are in the database (ADR 0011), every page goes now,
-        // About me and the user's text on them included, as the
-        // confirmation says.
-        if in_database {
-            tx.execute("DELETE FROM pages", [])?;
-        }
+        // Every page goes now (ADR 0011), About me and the user's text on
+        // them included, as the confirmation says; their versions and fact
+        // sources go with them.
+        tx.execute("DELETE FROM pages", [])?;
         let deleted = tx.execute("DELETE FROM entities", [])?;
-        // Before: the About me page is something the memory noted too: its
-        // facts go, and its page is handed to the next sync like a forgotten
-        // entity's, which takes Lax's part out of the file.
-        tx.execute(
-            "DELETE FROM page_fact_sources
-             WHERE page_id IN (SELECT id FROM pages WHERE kind = 'about-me')",
-            [],
-        )?;
-        tx.execute(
-            "UPDATE pages SET kind = 'entity', entity_id = NULL, facts = NULL
-             WHERE kind = 'about-me'",
-            [],
-        )?;
         tx.commit()?;
         if deleted > 0 {
             self.checkpoint()?;
@@ -693,10 +671,9 @@ fn carry_page(
     };
     match page_of(into)? {
         None => move_page(tx)?,
-        // Pages still in files: the file keeps the user's text when Lax
-        // takes its block out.
+        // A page without text (missing) has nothing of the user's on it:
+        // `from`'s goes like a forgotten entity's, `into`'s makes room.
         Some(_) if from_text.is_none() => {}
-        // A page without text has nothing of the user's on it.
         Some((into_page, None)) => {
             tx.execute("DELETE FROM pages WHERE id = ?1", [&into_page])?;
             move_page(tx)?;

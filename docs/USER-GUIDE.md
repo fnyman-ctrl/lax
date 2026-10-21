@@ -7,14 +7,16 @@ Mac: the AI runs on a model server on your Mac too.
 
 ## Install
 
-Lax 0.1 is built from source, which takes a few minutes and needs no Apple
+Lax is built from source, which takes a few minutes and needs no Apple
 account. You need macOS, the Xcode Command Line Tools
 (`xcode-select --install`), [rustup](https://rustup.rs) and
-[Node.js](https://nodejs.org).
+[Node.js](https://nodejs.org). `npm run check` says what's missing, and how to
+get it, before the build.
 
 ```sh
 git clone https://github.com/fnyman-ctrl/lax.git
 cd lax
+npm run check
 npm run build:app
 open ~/Applications/Lax.app
 ```
@@ -24,6 +26,26 @@ After a new build, macOS may ask you to turn Lax on under **System Settings →
 Privacy & Security → Accessibility** again, and asks once for your login
 password so the new build may read the key to its database (see
 [Encryption](#encryption)).
+
+### For testers
+
+Thank you for trying Lax. A few things that make it easier for both of us:
+
+- **Check first.** `npm run check` looks for the build tools, disk space, memory
+  and a model server on this Mac, and says what to do about anything missing.
+  It installs and changes nothing, and talks only to this Mac.
+- **Updating.** `git pull`, then `npm run build:app`. Your data stays. After
+  each build, macOS asks once for your login password so the new build may
+  read Lax's key: choose **Always Allow**. It may also ask you to turn Lax on
+  again under Accessibility (see [When something doesn't work](#when-something-doesnt-work)).
+- **Reporting a bug.** Under **Models**, press **Copy details for a bug
+  report** and paste it into a
+  [new issue](https://github.com/fnyman-ctrl/lax/issues/new/choose), with what
+  you did and what happened.
+- **What not to paste.** Nothing Lax has read: no screenshots of your Captures,
+  Journal, Memory or Ask, no journal entries, names or page text. Describe it
+  with made-up names instead ("Anna Example at example.com"). A security or
+  privacy problem goes to [SECURITY.md](../SECURITY.md), not an issue.
 
 ## The first start
 
@@ -46,12 +68,17 @@ choose.
 - **Ask:** a conversation about your work. "What did I do yesterday?", "What did
   I work on with Anna last week?", then ask on: "and the day before?". Ask in
   English or Swedish. The answer appears as it's written, and each answer
-  shows the journal entries it's based on. Nothing you ask is saved.
+  shows the journal entries it's based on. A question that names no time,
+  such as "what have I read about SQLCipher?", also looks in what Lax has
+  captured, by word, and the answer can be based on a few captures too:
+  each shows its app, window title and time, and opens under **Captures**.
+  Nothing you ask is saved.
 - **Write:** turn the writing assistant on and pick the key that calls it.
 - **Journal:** what you did, a few lines every 15 minutes or so.
 - **Memory:** the people, projects and organisations Lax has learned about.
   **Brief me** on a name asks Ask who they are to you, what you discussed
-  lately and what is still open, with the entries it's based on. You
+  lately and what is still open, with the entries it's based on. It asks in
+  the language your entries about the name are in, Swedish or English. You
   can rename them, merge duplicates, keep them, forget them, or tell Lax never
   to learn about someone. When you merge, what you wrote on the merged one's
   page moves to the other's page. Each has a page you can edit and export (see
@@ -134,47 +161,10 @@ Lax writes only between two marker lines, `<!-- lax:begin … -->` and
 - A fact you delete between the markers is never written again.
 - If you remove the markers, Lax stops writing to the page and offers
   **Write a new page**, which adds a new block below your text.
-- A page Lax can't find is shown as missing. Lax never writes it again, and
-  never forgets it, unless you ask.
-
-### Your pages move into the database, once
-
-Earlier versions of Lax kept the pages as Markdown files in `~/Lax`. If you
-have those, Lax moves them into the database once, in the background, as soon
-as the database is encrypted, and not before.
-
-- It reads each file whole, with every line you added, and keeps it as the
-  page. It moves all pages in one step. If Lax stops halfway, nothing has
-  changed, and it tries again.
-- Nothing is deleted by the move. A page whose file is gone stays missing, with
-  **Recreate page** and **Forget**. A file whose markers you removed moves in as
-  yours, and Lax leaves it alone. If two
-  files carry the same page, one moves in and the other stays where it is.
-  Files that aren't Lax's pages are never moved and never deleted.
-- A new install has no files to move. Its pages start in the database.
-
-Then Lax asks once: **Your pages are now in Lax's encrypted database. Delete
-the old files in ~/Lax?** It tells you:
-
-- Edits to the old files are no longer read.
-- Deleting doesn't reliably erase the old text from the disk. On APFS and
-  SSDs, old blocks can stay until they are reused. FileVault, if it is on,
-  keeps them unreadable. Time Machine backups and local snapshots keep the
-  files until they expire.
-- If you keep the files, every program can still read them.
-
-**Delete the old files** is the default button. It deletes only the files Lax
-moved, and only those that still hold exactly what was moved. A file you
-changed since is kept, and Lax lists it. Then it removes the folders left
-empty, and `~/Lax` itself if it is empty. Your own files stay. You confirm
-this in the dialog, every time.
-
-**Keep them** leaves the files. Lax doesn't ask again. Memory shows a quiet
-line, **Your old page files are still in ~/Lax**, with **Delete the old files**
-if you change your mind.
-
-An older Lax can't read pages that have moved. The move is one-way, like the
-encryption.
+- A page without any text is shown as missing, with **Recreate page**. Only
+  a page whose file was gone when Lax 0.1 moved the pages into the database
+  can be missing. Lax never writes it again, and never forgets it, unless you
+  ask.
 
 ### Export your pages
 
@@ -205,8 +195,8 @@ and doesn't read them back.
 ### No app lock yet
 
 An app lock comes after release 0.1 (issue #158). Until then, the page editor
-is open whenever Lax's window is. Export and **Delete the old files** ask you
-to confirm in their dialogs instead.
+is open whenever Lax's window is. Export asks you to confirm in its dialog
+instead.
 
 ### Forgetting a name
 
@@ -218,17 +208,6 @@ way, About me included.
 
 Forgetting a time range or an app doesn't touch your text. It rewrites Lax's
 block on the pages that drew on what you forgot.
-
-### If the database isn't encrypted yet
-
-Pages move into the database only once it is encrypted. If Lax couldn't
-convert the database (see [Encryption](#encryption)), because the disk was
-too full or the check of the copy failed, the pages stay as Markdown files in
-`~/Lax`. They work as before: edit them in any editor, and Lax writes only
-between its markers. Lax doesn't write them if `~/Lax` is inside iCloud Drive or
-another synced folder. In this case the Memory view has no page editor and no
-export, because the files already are the export. Once the database has been
-encrypted, the pages move in, in the background.
 
 ## Encryption
 
@@ -249,17 +228,10 @@ Encrypted, in the database `lax.sqlite` in the data folder
 
 Not encrypted by Lax:
 
-- **Pages that are still files in `~/Lax`.** Pages move into the database once
-  it is encrypted. Until then, and for old files you chose to keep, they are
-  plain Markdown files that only FileVault and the folder's permissions
-  protect. Lax warns you if FileVault is off.
 - **Pages you export.** An exported page is a plain Markdown file in the folder
-  you chose. Lax tells you so first.
+  you chose. Lax tells you so first. Only FileVault protects it on the disk,
+  and Lax warns you if FileVault is off.
 - **The logs.** They hold counts and timings, never what you did.
-- **Backups and snapshots from before the conversion.** If you used Lax before
-  it encrypted its database, Time Machine and local snapshots may still hold the
-  old, unencrypted file. They are not changed, and they go away only when the
-  backups do. FileVault covers the disk blocks the old file left behind.
 
 Encryption keeps the database safe from other programs that read files, from
 copies of your folder (a backup, a USB stick) and from someone who takes the
@@ -283,24 +255,6 @@ another Mac. Never put it anywhere else: not in a note, a message or an issue.
 Raw captures expire after a few weeks anyway, but the journal and the memory,
 pages included, are only in the database. Export your pages now and then if
 they matter to you: an exported copy survives a lost key.
-
-### The first start after encrypting
-
-If you used Lax before it encrypted its database, the first start shows
-**Lax encrypts its database**. It says what is about to happen: Lax makes an
-encrypted copy, checks it, and puts it in the old file's place. Press
-**Encrypt**. It takes a moment and happens once. Nothing is captured until it
-is done.
-
-- It is one-way. An older version of Lax can't open the encrypted database.
-- Lax needs free space of twice the database's size. If there isn't enough,
-  Lax skips the notice, opens the old database as before and says so. If the
-  check of the copy fails, nothing is changed either. Either way Lax tries
-  again the next time it starts.
-- macOS may ask whether Lax may use its key. Type your login password and
-  choose **Always Allow**.
-
-A new install has no notice: its database is encrypted from the start.
 
 ### After every update, macOS asks once
 
@@ -348,6 +302,12 @@ without one. It shows what went wrong instead.
 - **Something went wrong with the data folder or the disk.** Check that the disk
   isn't full, then press **Try again**.
 - **It was made by a newer version of Lax.** Build or install the newer version.
+- **This database was made by a Lax from before 0.1 and isn't encrypted.**
+  Only development builds before 0.1 made such a database. This version of
+  Lax never opens, converts or changes it, and leaves the file exactly as it
+  is. Lax 0.1 is the last version that can convert it: build v0.1.0 once
+  (`git checkout v0.1.0`), open it, then update. Lax 0.1 also moves pages
+  that are still files in `~/Lax` into the database.
 
 **Start over** is offered only when the key is missing or doesn't open the
 file, and asks you to confirm. Use it only when you have no other way back. It:
@@ -358,8 +318,7 @@ file, and asks you to confirm. Use it only when you have no other way back. It:
   and keeps it
 - starts again with a new key, an empty journal and an empty memory
 
-It doesn't touch `~/Lax`. Pages that had already moved into the old database
-are in the old file, not in the new one. The old file and the old key are kept, so if the right
+Your pages are in the old file, not in the new one. The old file and the old key are kept, so if the right
 key turns up you can still open the old file (see the next section). Lax doesn't
 delete them. If you are sure you don't want them, delete the file in the data
 folder, and the old key in Keychain Access, by hand.

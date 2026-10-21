@@ -11,9 +11,10 @@ use super::{EntityKind, Result, Store};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PageState {
     Ok,
-    /// No file in the memory folder has its id.
+    /// The page has no text: its file was gone when Lax 0.1 moved the
+    /// pages into the database.
     Missing,
-    /// The user removed the markers from its file.
+    /// The user removed Lax's markers from it.
     Detached,
     /// The user asked for it to be written again.
     Recreate,
@@ -45,7 +46,7 @@ pub struct Page {
     pub id: String,
     /// `None` once its entity is forgotten.
     pub entity_id: Option<i64>,
-    /// Relative to the memory folder.
+    /// The file an export writes it to, such as `people/anna-example.md`.
     pub path: String,
     pub state: PageState,
     /// The block Lax last wrote (normalized), if that version still exists.
@@ -128,29 +129,6 @@ fn page_from_row(row: &Row) -> rusqlite::Result<Page> {
 const PAGE_COLUMNS: &str = "p.id, p.entity_id, p.path, p.state,
     (SELECT block FROM page_versions WHERE id = p.last_version), p.facts, p.kind, p.facts_at";
 
-pub(super) const PAGES_IN_DATABASE_KEY: &str = "pages_in_database";
-const OLD_FILES_KEY: &str = "old_page_files";
-
-/// A page as it moves into the database.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MovedPage {
-    pub id: String,
-    /// The file's whole text; `None` for a page whose file wasn't found.
-    pub text: Option<String>,
-    pub state: PageState,
-    pub path: String,
-}
-
-/// A page file moved in, with a fingerprint of what it held then.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MovedFile {
-    /// Relative to `~/Lax`.
-    pub path: String,
-    /// FNV-1a of its bytes.
-    pub hash: u64,
-    pub bytes: u64,
-}
-
 /// How many versions of the user's own text on a page are kept.
 pub const USER_EDITS_KEPT: i64 = 20;
 
@@ -197,13 +175,12 @@ impl Store {
             .optional()?)
     }
 
-    /// Starts keeping track of the About me page, with its `text` once the
-    /// pages are in the database, or `None` when its file is written first.
+    /// Starts keeping track of the About me page, with its `text`.
     pub fn add_about_me_page(
         &self,
         id: &str,
         path: &str,
-        text: Option<&str>,
+        text: &str,
         now: DateTime<Utc>,
     ) -> Result<()> {
         self.conn.execute(
@@ -278,15 +255,14 @@ impl Store {
         Ok(apps.into_iter().take(limit).map(|(name, _)| name).collect())
     }
 
-    /// Starts keeping track of a page, with its `text` once the pages are
-    /// in the database (in the same statement, so no row is left without
-    /// it), or `None` when its file is written first.
+    /// Starts keeping track of a page, with its `text` in the same
+    /// statement, so no row is left without it.
     pub fn add_page(
         &self,
         id: &str,
         entity: i64,
         path: &str,
-        text: Option<&str>,
+        text: &str,
         now: DateTime<Utc>,
     ) -> Result<()> {
         self.conn.execute(
@@ -554,18 +530,7 @@ impl Store {
         Ok(())
     }
 
-    /// Whether the pages live in the database (ADR 0011), not in files.
-    pub fn pages_in_database(&self) -> Result<bool> {
-        Ok(self.setting(PAGES_IN_DATABASE_KEY)?.as_deref() == Some("1"))
-    }
-
-    /// Records that the pages now live in the database. Set once, by the
-    /// move; never unset.
-    pub fn set_pages_in_database(&self) -> Result<()> {
-        self.set_setting(PAGES_IN_DATABASE_KEY, "1")
-    }
-
-    /// A page's whole text, if it has moved into the database.
+    /// A page's whole text; `None` for a page without any (missing).
     pub fn page_text(&self, id: &str) -> Result<Option<String>> {
         Ok(self
             .conn
@@ -574,6 +539,15 @@ impl Store {
             })
             .optional()?
             .flatten())
+    }
+
+    /// For tests: takes a page's text away, as Lax 0.1 left a page whose
+    /// file was gone when it moved the pages into the database.
+    #[cfg(test)]
+    pub fn drop_page_text(&self, id: &str) -> Result<()> {
+        self.conn
+            .execute("UPDATE pages SET text = NULL WHERE id = ?1", [id])?;
+        Ok(())
     }
 
     /// Sets a page's text to `text` if it still holds `expected` (`None`:
@@ -640,84 +614,6 @@ impl Store {
             .prepare("SELECT text FROM page_edits WHERE page_id = ?1 ORDER BY id DESC")?;
         let rows = statement.query_map([id], |row| row.get(0))?;
         Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-
-    /// Moves the pages in, in one transaction (ADR 0011): each page's text
-    /// (none for a page whose file wasn't found), its state and path; the
-    /// fingerprints of the files moved, for deleting them later; and the
-    /// setting that pages now live in the database. If anything fails,
-    /// nothing changed and the move runs again next time.
-    pub fn move_pages_in(&mut self, pages: &[MovedPage], files: &[MovedFile]) -> Result<()> {
-        let tx = self.conn.transaction()?;
-        for page in pages {
-            tx.execute(
-                "UPDATE pages SET text = ?2, state = ?3, path = ?4 WHERE id = ?1",
-                params![page.id, page.text, page.state.as_str(), page.path],
-            )?;
-        }
-        for file in files {
-            tx.execute(
-                "INSERT OR REPLACE INTO moved_page_files (path, hash, bytes) VALUES (?1, ?2, ?3)",
-                params![
-                    file.path,
-                    i64::from_ne_bytes(file.hash.to_ne_bytes()),
-                    i64::try_from(file.bytes).unwrap_or(i64::MAX)
-                ],
-            )?;
-        }
-        tx.execute(
-            "INSERT INTO settings (key, value) VALUES (?1, '1')
-             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-            [PAGES_IN_DATABASE_KEY],
-        )?;
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// For tests: makes setting the text of page `id` fail, as a full disk
-    /// would halfway through a move.
-    #[cfg(test)]
-    pub fn fail_text_updates_of(&self, id: &str) -> Result<()> {
-        self.conn.execute_batch(&format!(
-            "CREATE TRIGGER fail_text BEFORE UPDATE OF text ON pages WHEN new.id = '{id}'
-             BEGIN SELECT RAISE(ABORT, 'disk full'); END"
-        ))?;
-        Ok(())
-    }
-
-    /// The page files moved in and not dealt with yet.
-    pub fn moved_page_files(&self) -> Result<Vec<MovedFile>> {
-        let mut statement = self
-            .conn
-            .prepare("SELECT path, hash, bytes FROM moved_page_files ORDER BY path")?;
-        let rows = statement.query_map([], |row| {
-            Ok(MovedFile {
-                path: row.get(0)?,
-                hash: u64::from_ne_bytes(row.get::<_, i64>(1)?.to_ne_bytes()),
-                bytes: u64::try_from(row.get::<_, i64>(2)?).unwrap_or(0),
-            })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    }
-
-    /// Stops keeping track of moved files: deleted, or no longer the text
-    /// that was moved.
-    pub fn forget_moved_page_files(&self, paths: &[String]) -> Result<()> {
-        for path in paths {
-            self.conn
-                .execute("DELETE FROM moved_page_files WHERE path = ?1", [path])?;
-        }
-        Ok(())
-    }
-
-    /// Whether the user answered the one-time question about the old
-    /// files with "Keep them".
-    pub fn old_page_files_kept(&self) -> Result<bool> {
-        Ok(self.setting(OLD_FILES_KEY)?.as_deref() == Some("kept"))
-    }
-
-    pub fn keep_old_page_files(&self) -> Result<()> {
-        self.set_setting(OLD_FILES_KEY, "kept")
     }
 
     /// The paths pages have, for naming a new one.

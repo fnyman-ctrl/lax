@@ -162,7 +162,8 @@ written to manipulate an AI ("ignore previous instructions and…"). Therefore:
     prompt. Only the validated answer stays in the conversation. Logs may say how
     long it took and how much was shown, never what.
   - When the reply is complete, it is validated in full like any other: its shape,
-    its limits, and its sources against the entries the model was given.
+    its limits, and its sources against the journal entries and captures the model
+    was given.
   - If the reply fails validation, or is stopped by a pause or an error, the
     streamed text is removed and replaced by the usual error, and nothing of it
     is kept.
@@ -190,10 +191,29 @@ written to manipulate an AI ("ignore previous instructions and…"). Therefore:
   folder the user picks, after a notice that the copy is not encrypted. Lax
   warns, and asks again, before exporting into iCloud Drive or another synced
   folder, since that copies the memory off the machine (§1).
-- Until Lax has moved them in (ADR 0011 is built in steps), the pages are
-  Markdown files in `~/Lax` (`0700`, files `0600`) that the user edits in any
-  editor, protected by FileVault and those permissions, and Lax refuses to write
-  them if that folder is inside a synced folder. Lax warns if FileVault is off.
+- Lax warns if FileVault is off, since the database key is in the login
+  keychain and an exported page is a plain file.
+- **Lax's window is locked** ([ADR 0012](adr/0012-app-lock.md)). Lax starts
+  locked and shows nothing until the user confirms with Touch ID or the login
+  password. It locks again after 5 minutes without input or with the window
+  hidden, and at once when the Mac's screen locks, the Mac sleeps or the user
+  switches accounts. The lock is enforced in Rust, in front of the commands,
+  not drawn over the window: while Lax is locked, no command returns what it
+  captured or learned, and a command not yet given a lock rule is refused. It
+  fails closed: a cancel, an error, or a Mac where Lax can't ask leaves Lax
+  locked, and no setting or build turns the lock off. Lax asks only when the
+  user just did something in Lax, never on its own.
+- **Some changes ask again every time,** even in an unlocked window: forgets,
+  exports, and every change that loosens privacy, such as removing an
+  exclusion, allowing a name back, changing retention or the user's other
+  names, turning on the journal, the memory or the writing assistant, or
+  choosing a model that doesn't run on this Mac. Ordinary settings need only
+  the unlocked window. Capture and pausing keep working while Lax is locked,
+  and the writing assistant drafts without the memory pages.
+- **The lock guards the window, not the data.** It encrypts nothing, and it
+  doesn't change who can read the database key: while Lax runs, locked or not,
+  the database is open and the key is in Lax's memory. The lock is built in
+  steps; until its gate is in, the window is not locked.
 - **Logs never contain captured content**, only metadata such as counts and timings.
 - Everything is stored in open formats so the user can export, back up or
   inspect it without Lax: the database is SQLite (SQLCipher, opened with the key

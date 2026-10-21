@@ -13,7 +13,10 @@ previous one, so they can be built, tested and improved independently.
 The database is encrypted with SQLCipher. Its random key lives in the login
 keychain, and Lax opens the database on a thread of its own, so a Keychain
 prompt never freezes the window. See
-[ADR 0010](adr/0010-encrypted-database.md).
+[ADR 0010](adr/0010-encrypted-database.md). A database that isn't
+encrypted, which only a Lax before 0.1 made, is never opened, converted or
+written: the window says that Lax 0.1 can convert it
+(`src-tauri/src/store/cipher.rs`, #169).
 
 ## 1. Capture
 
@@ -104,13 +107,6 @@ prompt never freezes the window. See
   database, and the user edits it in Lax's Memory view
   ([ADR 0011](adr/0011-pages-in-the-database.md)). Lax writes only between its
   own markers, and versions every block in SQLite.
-- Until the pages have moved in, they are files in `~/Lax`. The move runs
-  once, only on an encrypted database, in one transaction
-  (`src-tauri/src/pages/moving.rs`). The code that writes pages works on
-  either, through `Shelf`: files in `~/Lax` while the database is still
-  plaintext, rows after. Nothing is deleted by the move. Lax asks once whether
-  to delete the old files, and then removes only those that still hold what
-  was moved.
 - The editor (`src/PageEditor.tsx`) shows a page as plain text, never as
   HTML, and saves over the text it loaded, so a page that changed meanwhile
   is never overwritten. A page open in it is not written by the background
@@ -142,9 +138,19 @@ prompt never freezes the window. See
   it is based on. With an embedding model chosen, episodes get vectors in the
   background (`src-tauri/src/vectors.rs`), and Ask also finds entries close in
   meaning to the question.
+- A question that names no time also gets captured text (#193): at most 8
+  captures found by word (`Store::search` over `captures_fts`, the question's
+  words; those with every word first, then those with one), each cut to about
+  600 characters around its first match, in at most a third of the budget,
+  after what the memory knows and before the entries fill the rest. They are
+  numbered after the entries, so the model cites both the same way, and go in
+  only as `Captured`, window title and app name included. A capture cited
+  comes back as a source of kind `capture` (app, window title, time), which
+  the window opens under Captures. Nothing of them is stored or logged, only
+  how many were given and cited.
 - The prompt starts with what changes least: the instructions, what the memory
   knows about the user, then about the people and projects named, the journal
-  entries, the conversation so far, and last the question with today's date.
+  entries, the captures, the conversation so far, and last the question with today's date.
   A server that keeps a prompt cache, as LM Studio does, reads again only
   from the first part that changed: for a follow-up that finds the same
   entries ("and what else?"), only the conversation's new turn and the

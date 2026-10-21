@@ -516,3 +516,12 @@ conversion is in.
 
 The export (4) ships in the same release as the move (3), so pages are
 never in the database without a way out.
+
+## 2026-10-20: the pre-0.1 paths removed in 0.2
+
+Rollout step 5 is done in 0.2 (#169): the pages kept as files in `~/Lax`,
+the move into the database (`pages/moving.rs`) and the **Delete the old
+files** question were removed, with their tests. Lax 0.1 is the last version
+that moves pages in. The `moved_page_files` table and the `pages_in_database`
+and `old_page_files` settings stay in existing databases, unused, since a
+merged migration is never changed. The decisions above are unchanged.

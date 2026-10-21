@@ -128,6 +128,8 @@ export function Viewer() {
   // A question for Ask from another section, such as Memory's "Brief me".
   const [askRequest, setAskRequest] = useState<AskRequest | null>(null);
   const [query, setQuery] = useState("");
+  // A capture opened from one of Ask's sources, shown on its own under Captures.
+  const [shownCapture, setShownCapture] = useState<number | null>(null);
   // Bumped after a deletion, so the lists start over from the database.
   const [version, setVersion] = useState(0);
   const searching = query.trim() !== "";
@@ -196,7 +198,10 @@ export function Viewer() {
                 key={item.tab}
                 type="button"
                 aria-current={tab === item.tab ? "page" : undefined}
-                onClick={() => setTab(item.tab)}
+                onClick={() => {
+                  setShownCapture(null);
+                  setTab(item.tab);
+                }}
               >
                 {item.label}
               </button>
@@ -235,7 +240,15 @@ export function Viewer() {
         {/* Kept mounted, so a question being answered and this session's
             answers survive switching sections. */}
         <div hidden={tab !== "ask"}>
-          <Ask onShowJournal={() => setTab("journal")} request={askRequest} />
+          <Ask
+            onShowJournal={() => setTab("journal")}
+            onShowCapture={(id) => {
+              setQuery("");
+              setShownCapture(id);
+              setTab("captures");
+            }}
+            request={askRequest}
+          />
         </div>
         {tab === "ask" ? null : tab === "write" ? (
           <Write />
@@ -244,9 +257,14 @@ export function Viewer() {
         ) : tab === "memory" ? (
           <Memory
             onShowModels={() => setTab("models")}
-            onBrief={(name) => {
-              setAskRequest((last) => ({ question: briefQuestion(name), n: (last?.n ?? 0) + 1 }));
+            onBrief={(entity) => {
               setTab("ask");
+              // In the language of the entries about the name, if Lax can tell.
+              invoke<string>("brief_on", { id: entity.id })
+                .catch(() => briefQuestion(entity.name))
+                .then((question) =>
+                  setAskRequest((last) => ({ question, n: (last?.n ?? 0) + 1 })),
+                );
             }}
           />
         ) : tab === "outbox" ? (
@@ -264,11 +282,20 @@ export function Viewer() {
                 placeholder="Search what Lax has captured"
                 value={query}
                 maxLength={200}
-                onChange={(event) => setQuery(event.target.value)}
+                onChange={(event) => {
+                  setShownCapture(null);
+                  setQuery(event.target.value);
+                }}
               />
             </label>
             <Forget onForgotten={forgotten} />
-            {searching ? (
+            {shownCapture !== null ? (
+              <OneCapture
+                key={`${shownCapture}-${version}`}
+                id={shownCapture}
+                onBack={() => setShownCapture(null)}
+              />
+            ) : searching ? (
               <SearchResults key={version} query={query} />
             ) : (
               <Timeline key={version} />
@@ -485,6 +512,37 @@ function Detail({ detail }: { detail: CaptureDetail | null | "missing" | "failed
         <p className="muted">No text, only the window title.</p>
       )}
     </div>
+  );
+}
+
+/** One capture, opened from a source of an answer in Ask. Its title, app and
+ * text are captured text, shown as text only. */
+export function OneCapture({ id, onBack }: { id: number; onBack: () => void }) {
+  const [detail, setDetail] = useState<CaptureDetail | null | "missing" | "failed">(null);
+
+  useEffect(() => {
+    let current = true;
+    invoke<CaptureDetail | null>("capture_detail", { id }).then(
+      (found) => current && setDetail(found ?? "missing"),
+      () => current && setDetail("failed"),
+    );
+    return () => {
+      current = false;
+    };
+  }, [id]);
+
+  return (
+    <section className="day one-capture">
+      <p className="actions">
+        <button type="button" className="secondary" onClick={onBack}>
+          All captures
+        </button>
+      </p>
+      {detail !== null && typeof detail === "object" && (
+        <h2>{detail.windowTitle || "Untitled window"}</h2>
+      )}
+      <Detail detail={detail} />
+    </section>
   );
 }
 

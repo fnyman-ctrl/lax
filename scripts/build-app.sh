@@ -13,6 +13,7 @@ command -v cargo >/dev/null 2>&1 || missing="$missing\n  Rust: https://rustup.rs
 command -v node >/dev/null 2>&1 || missing="$missing\n  Node.js $(cat .nvmrc): https://nodejs.org"
 if [ -n "$missing" ]; then
   printf "Lax can't be built yet. Install first:%b\n" "$missing"
+  echo "npm run check says more."
   exit 1
 fi
 
@@ -22,7 +23,7 @@ npm run tauri build -- --bundles app
 app="src-tauri/target/release/bundle/macos/Lax.app"
 mkdir -p "$HOME/Applications"
 # A Lax built earlier is replaced; its data in ~/Library/Application Support
-# and ~/Lax stays.
+# stays.
 rm -rf "$HOME/Applications/Lax.app"
 # Moved, not copied: a second Lax.app left in the build folder shows up in
 # Spotlight and Launchpad next to the real one.

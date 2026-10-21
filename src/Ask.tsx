@@ -4,13 +4,24 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import salmon from "../src-tauri/icons/salmon.svg";
 
 // Shapes returned by src-tauri/src/ask.rs.
-type Source = {
+type EntrySource = {
+  kind: "entry";
   id: number;
   startedAt: number;
   endedAt: number;
   summary: string;
   appNames: string[];
 };
+/** Captured text an answer is based on. The app name and window title are
+ * captured text too: shown as plain text only. */
+type CaptureSource = {
+  kind: "capture";
+  id: number;
+  capturedAt: number;
+  appName: string;
+  windowTitle: string;
+};
+type Source = EntrySource | CaptureSource;
 type AskAnswer = {
   answer: string;
   sources: Source[];
@@ -45,9 +56,12 @@ export type AskRequest = { question: string; n: number };
 
 export function Ask({
   onShowJournal,
+  onShowCapture,
   request,
 }: {
   onShowJournal: () => void;
+  /** Opens a capture an answer is based on, under Captures. */
+  onShowCapture: (id: number) => void;
   request?: AskRequest | null;
 }) {
   const [question, setQuestion] = useState("");
@@ -216,7 +230,10 @@ export function Ask({
             <p className="bubble from-you">{turn.question}</p>
             <div className="bubble from-lax">
               <AnswerText text={turn.answer.answer} />
-              {turn.answer.recentOnly && turn.answer.considered > 0 && (
+              {turn.answer.recentOnly &&
+                turn.answer.considered > 0 &&
+                // Captures cited were found by the question's words.
+                !turn.answer.sources.some((s) => s.kind === "capture") && (
                 <p className="muted hint">
                   The question didn't name a time, or a person, project or word Lax could
                   find, so it answered from the latest {turn.answer.considered} entries.
@@ -231,20 +248,38 @@ export function Ask({
               )}
               {turn.answer.sources.length > 0 && (
                 <details className="sources">
-                  <summary>
-                    Based on {turn.answer.sources.length}{" "}
-                    {turn.answer.sources.length === 1 ? "entry" : "entries"}
-                  </summary>
+                  <summary>Based on {basedOn(turn.answer.sources)}</summary>
                   <ul className="episodes">
-                    {turn.answer.sources.map((source) => (
-                      <li key={source.id} className="episode">
-                        <p className="when">
-                          <span className="time">{when(source)}</span>
-                          <span className="muted"> · {source.appNames.join(", ")}</span>
-                        </p>
-                        <p className="summary">{source.summary}</p>
-                      </li>
-                    ))}
+                    {turn.answer.sources.map((source) =>
+                      source.kind === "capture" ? (
+                        // Captured text: the title is shown as text, and
+                        // opens the capture under Captures.
+                        <li key={`capture-${source.id}`} className="episode capture-source">
+                          <p className="when">
+                            <span className="time">{capturedWhen(source.capturedAt)}</span>
+                            <span className="muted"> · {source.appName}</span>
+                          </p>
+                          <p className="summary">
+                            <button
+                              type="button"
+                              className="link"
+                              title="Open in Captures"
+                              onClick={() => onShowCapture(source.id)}
+                            >
+                              {source.windowTitle || "Untitled window"}
+                            </button>
+                          </p>
+                        </li>
+                      ) : (
+                        <li key={`entry-${source.id}`} className="episode">
+                          <p className="when">
+                            <span className="time">{when(source)}</span>
+                            <span className="muted"> · {source.appNames.join(", ")}</span>
+                          </p>
+                          <p className="summary">{source.summary}</p>
+                        </li>
+                      ),
+                    )}
                   </ul>
                 </details>
               )}
@@ -327,7 +362,7 @@ export function Ask({
         </div>
       </form>
       <p className="muted hint">
-        Lax answers from the journal and memory, with the model on this Mac. Nothing leaves this
+        Lax answers from the journal, memory and what it has captured, with the model on this Mac. Nothing leaves this
         Mac, and nothing you ask is saved.
       </p>
     </section>
@@ -401,13 +436,29 @@ function AnswerText({ text }: { text: string }) {
   );
 }
 
-function when(source: Source): string {
+/** "2 entries and 1 capture". */
+function basedOn(sources: Source[]): string {
+  const count = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+  const captures = sources.filter((s) => s.kind === "capture").length;
+  const entries = sources.length - captures;
+  return [
+    entries > 0 ? count(entries, "entry", "entries") : null,
+    captures > 0 ? count(captures, "capture", "captures") : null,
+  ]
+    .filter((part) => part !== null)
+    .join(" and ");
+}
+
+const day = (d: Date) =>
+  d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+const time = (d: Date) => d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+
+function when(source: EntrySource): string {
   const start = new Date(source.startedAt);
-  const day = start.toLocaleDateString(undefined, {
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-  });
-  const time = (d: Date) => d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-  return `${day} ${time(start)}–${time(new Date(source.endedAt))}`;
+  return `${day(start)} ${time(start)}–${time(new Date(source.endedAt))}`;
+}
+
+function capturedWhen(millis: number): string {
+  const at = new Date(millis);
+  return `${day(at)} ${time(at)}`;
 }

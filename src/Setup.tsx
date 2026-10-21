@@ -23,7 +23,7 @@ const FEATURES: {
     key: "memory",
     title: "Memory",
     about:
-      "Lax learns the people, projects and organisations in your journal, and keeps a page about each in ~/Lax.",
+      "Lax learns the people, projects and organisations in your journal, and keeps a page about each in its encrypted database.",
     status: "memory_status",
     set: "set_memory_enabled",
   },
