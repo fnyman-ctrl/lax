@@ -6,7 +6,7 @@ type Task = "chat" | "embeddings";
 type Choice = { baseUrl: string; model: string };
 type ModelSettings = { chat: Choice | null; embeddings: Choice | null };
 type LocalServer = { name: string; baseUrl: string; models: string[] };
-type TestResult = { ok: boolean; elapsedMs: number; detail: string };
+type TestResult = { ok: boolean; elapsedMs: number; detail: string; note: string | null };
 
 const TASKS: { task: Task; title: string; hint: string; recommended: string }[] = [
   {
@@ -121,6 +121,9 @@ export function Models() {
                       ? result
                       : `${result.ok ? "✓" : "✕"} ${result.detail} (${(result.elapsedMs / 1000).toFixed(1)} s)`}
                   </p>
+                )}
+                {result && typeof result === "object" && result.note && (
+                  <p className="warning">{result.note}</p>
                 )}
               </>
             ) : (

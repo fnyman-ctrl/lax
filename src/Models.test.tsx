@@ -34,6 +34,38 @@ describe("models on this Mac", () => {
   });
 });
 
+describe("testing a model", () => {
+  async function runTest(result: object) {
+    mocked.mockReset();
+    mocked.mockImplementation(async (command: string) => {
+      if (command === "model_settings")
+        return { chat: { baseUrl: "http://127.0.0.1:1234/v1", model: "qwen" }, embeddings: null };
+      if (command === "test_model") return result;
+      return null;
+    });
+    render(<Models />);
+    const button = await screen.findByRole("button", { name: "Test" });
+    await act(async () => fireEvent.click(button));
+  }
+
+  test("a note from the test is shown with the result", async () => {
+    await runTest({
+      ok: true,
+      elapsedMs: 2100,
+      detail: "It answered right.",
+      note: "It answered only after being asked not to think first.",
+    });
+    expect(await screen.findByText(/It answered right/)).toBeTruthy();
+    expect(screen.getByText(/only after being asked not to think/).className).toBe("warning");
+  });
+
+  test("no note, no warning", async () => {
+    await runTest({ ok: true, elapsedMs: 900, detail: "It answered right.", note: null });
+    await screen.findByText(/It answered right/);
+    expect(document.querySelector(".warning")).toBeNull();
+  });
+});
+
 describe("details for a bug report", () => {
   test("are copied and shown, as the Rust side made them", async () => {
     mocked.mockReset();

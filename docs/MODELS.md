@@ -62,8 +62,10 @@ it spent the whole 2,000-token budget of a journal entry on reasoning, even
 for two short synthetic captures, and gave no answer after 56 s. Asked not to
 reason, it wrote the entry in 1.9 s. The journal and the memory let models
 reason, so when a model runs out of room, Lax asks it once more not to
-reason. With Qwen 3.5 the journal works that way, but each entry first spends
-about a minute reasoning.
+reason. If it then answers, Lax asks that model on that server not to reason
+from the start until Lax restarts. With Qwen 3.5 the first entry after a start
+spends about a minute reasoning, and the rest take about 2 s each. The Test
+button under Models says when a model only answered once asked not to reason.
 
 These are first measurements with a handful of examples, not a benchmark. They
 are repeated when the journal (Stage 3) has real prompts.
