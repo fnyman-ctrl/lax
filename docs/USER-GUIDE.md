@@ -7,14 +7,16 @@ Mac: the AI runs on a model server on your Mac too.
 
 ## Install
 
-Lax 0.1 is built from source, which takes a few minutes and needs no Apple
+Lax is built from source, which takes a few minutes and needs no Apple
 account. You need macOS, the Xcode Command Line Tools
 (`xcode-select --install`), [rustup](https://rustup.rs) and
-[Node.js](https://nodejs.org).
+[Node.js](https://nodejs.org). `npm run check` says what's missing, and how to
+get it, before the build.
 
 ```sh
 git clone https://github.com/fnyman-ctrl/lax.git
 cd lax
+npm run check
 npm run build:app
 open ~/Applications/Lax.app
 ```
@@ -24,6 +26,26 @@ After a new build, macOS may ask you to turn Lax on under **System Settings →
 Privacy & Security → Accessibility** again, and asks once for your login
 password so the new build may read the key to its database (see
 [Encryption](#encryption)).
+
+### For testers
+
+Thank you for trying Lax. A few things that make it easier for both of us:
+
+- **Check first.** `npm run check` looks for the build tools, disk space, memory
+  and a model server on this Mac, and says what to do about anything missing.
+  It installs and changes nothing, and talks only to this Mac.
+- **Updating.** `git pull`, then `npm run build:app`. Your data stays. After
+  each build, macOS asks once for your login password so the new build may
+  read Lax's key: choose **Always Allow**. It may also ask you to turn Lax on
+  again under Accessibility (see [When something doesn't work](#when-something-doesnt-work)).
+- **Reporting a bug.** Under **Models**, press **Copy details for a bug
+  report** and paste it into a
+  [new issue](https://github.com/fnyman-ctrl/lax/issues/new/choose), with what
+  you did and what happened.
+- **What not to paste.** Nothing Lax has read: no screenshots of your Captures,
+  Journal, Memory or Ask, no journal entries, names or page text. Describe it
+  with made-up names instead ("Anna Example at example.com"). A security or
+  privacy problem goes to [SECURITY.md](../SECURITY.md), not an issue.
 
 ## The first start
 
@@ -51,7 +73,8 @@ choose.
 - **Journal:** what you did, a few lines every 15 minutes or so.
 - **Memory:** the people, projects and organisations Lax has learned about.
   **Brief me** on a name asks Ask who they are to you, what you discussed
-  lately and what is still open, with the entries it's based on. You
+  lately and what is still open, with the entries it's based on. It asks in
+  the language your entries about the name are in, Swedish or English. You
   can rename them, merge duplicates, keep them, forget them, or tell Lax never
   to learn about someone. When you merge, what you wrote on the merged one's
   page moves to the other's page. Each has a page you can edit and export (see

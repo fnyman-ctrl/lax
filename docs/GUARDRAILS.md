@@ -192,6 +192,27 @@ written to manipulate an AI ("ignore previous instructions and…"). Therefore:
   folder, since that copies the memory off the machine (§1).
 - Lax warns if FileVault is off, since the database key is in the login
   keychain and an exported page is a plain file.
+- **Lax's window is locked** ([ADR 0012](adr/0012-app-lock.md)). Lax starts
+  locked and shows nothing until the user confirms with Touch ID or the login
+  password. It locks again after 5 minutes without input or with the window
+  hidden, and at once when the Mac's screen locks, the Mac sleeps or the user
+  switches accounts. The lock is enforced in Rust, in front of the commands,
+  not drawn over the window: while Lax is locked, no command returns what it
+  captured or learned, and a command not yet given a lock rule is refused. It
+  fails closed: a cancel, an error, or a Mac where Lax can't ask leaves Lax
+  locked, and no setting or build turns the lock off. Lax asks only when the
+  user just did something in Lax, never on its own.
+- **Some changes ask again every time,** even in an unlocked window: forgets,
+  exports, and every change that loosens privacy, such as removing an
+  exclusion, allowing a name back, changing retention or the user's other
+  names, turning on the journal, the memory or the writing assistant, or
+  choosing a model that doesn't run on this Mac. Ordinary settings need only
+  the unlocked window. Capture and pausing keep working while Lax is locked,
+  and the writing assistant drafts without the memory pages.
+- **The lock guards the window, not the data.** It encrypts nothing, and it
+  doesn't change who can read the database key: while Lax runs, locked or not,
+  the database is open and the key is in Lax's memory. The lock is built in
+  steps; until its gate is in, the window is not locked.
 - **Logs never contain captured content**, only metadata such as counts and timings.
 - Everything is stored in open formats so the user can export, back up or
   inspect it without Lax: the database is SQLite (SQLCipher, opened with the key

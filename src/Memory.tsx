@@ -61,9 +61,12 @@ const SECTIONS: { kind: Kind; title: string }[] = [
  * from captured text through a model, so they are shown as text only.
  */
 /** Asks Ask for a brief on a name (#192), when the Memory view can. */
-const BriefContext = createContext<((name: string) => void) | null>(null);
+const BriefContext = createContext<((entity: EntityItem) => void) | null>(null);
 
-/** The question Memory's "Brief me" asks (#192). */
+/**
+ * The question Memory's "Brief me" asks (#192) when Lax can't word it in
+ * the entries' language (the `brief_on` command does that).
+ */
 export function briefQuestion(name: string): string {
   return `Brief me on ${name}: who they are to me, what we discussed lately, and anything still open between us.`;
 }
@@ -73,7 +76,7 @@ export function Memory({
   onBrief,
 }: {
   onShowModels: () => void;
-  onBrief?: (name: string) => void;
+  onBrief?: (entity: EntityItem) => void;
 }) {
   const [status, setStatus] = useState<MemoryStatus | null | "failed">(null);
   const [exportingAll, setExportingAll] = useState(false);
@@ -1133,7 +1136,7 @@ function EntityRow({
             type="button"
             className="secondary"
             aria-label={`Brief me on ${entity.name}`}
-            onClick={() => brief(entity.name)}
+            onClick={() => brief(entity)}
           >
             Brief me
           </button>

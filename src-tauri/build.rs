@@ -79,6 +79,7 @@ fn main() {
             "take_out_part",
             "merge_suggestions",
             "likely_same",
+            "brief_on",
             "part_suggestions",
             "not_part",
             "dont_learn_list",

@@ -11,6 +11,8 @@ How a version of Lax is released. Lax 0.1 is built from source by its users
 3. `npm run perf` is within the budget in [PERFORMANCE.md](PERFORMANCE.md).
 4. `CHANGELOG.md` has a section for the version, written for users: what's
    new, what changed, anything they have to do.
+5. `upgrade::tests` passes: every earlier release's database (in
+   `src-tauri/fixtures/`) opens with this version, with everything in it.
 
 ## Release
 
@@ -40,6 +42,21 @@ How a version of Lax is released. Lax 0.1 is built from source by its users
    before announcing the release.
 
 ## After
+
+- Add the release's own upgrade fixture, so every later version is tested
+  against it (#170). In a worktree of the tag, copy the previous release's
+  `make_fixture.rs` into `src-tauri/src/`, add `mod make_fixture;` to
+  `lib.rs` there, adjust it to anything new the release stores, and run it:
+  ```sh
+  git worktree add --detach /tmp/lax-fixture v0.2.0
+  cd /tmp/lax-fixture/src-tauri
+  FIXTURE_OUT=/tmp/lax-fixture-out cargo test make_upgrade_fixture -- --ignored
+  ```
+  Copy `lax.sqlite`, renamed `database.fixture`, and the maker to
+  `src-tauri/fixtures/0.2.0/` on `main`,
+  add `"0.2.0"` to `RELEASES` in `src-tauri/src/upgrade.rs`, and extend
+  `check` for what the release added. Synthetic data only; the key is the
+  test key.
 
 - Move unfinished issues to the next milestone and close the version's one.
 - Announce it where the maintainer posts updates.

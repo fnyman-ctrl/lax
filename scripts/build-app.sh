@@ -13,6 +13,7 @@ command -v cargo >/dev/null 2>&1 || missing="$missing\n  Rust: https://rustup.rs
 command -v node >/dev/null 2>&1 || missing="$missing\n  Node.js $(cat .nvmrc): https://nodejs.org"
 if [ -n "$missing" ]; then
   printf "Lax can't be built yet. Install first:%b\n" "$missing"
+  echo "npm run check says more."
   exit 1
 fi
 
