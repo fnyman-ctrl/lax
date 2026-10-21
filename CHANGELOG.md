@@ -8,8 +8,8 @@ What changed in each version of Lax, for people who use it.
   press **Unlock** and confirm with Touch ID or your login password; **Open
   Lax** in the menu bar asks at once. It locks again after 5 minutes without
   keyboard or mouse input, when the window has been closed for 5 minutes,
-  and at once when your Mac's screen locks, it sleeps or you switch
-  accounts. Capture, pausing and the writing assistant keep working while
+  and at once when your Mac's screen locks, its display or the Mac goes to
+  sleep, or you switch accounts. Capture, pausing and the writing assistant keep working while
   it is locked.
 - **Ask looks in what you read.** A question that names no time, such as
   "what have I read about SQLCipher?", now also finds a few captures by word,

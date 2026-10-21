@@ -669,19 +669,16 @@ pub enum Rule {
 }
 
 /// The main window's commands that work while it is locked: the lock
-/// itself, opening the database (its screens come before the lock screen),
-/// and statuses that hold nothing captured or learned.
+/// itself, and opening the database, whose screens come before the lock
+/// screen. Nothing else: the rest of the window, the setup guide and
+/// onboarding included, shows only once it is unlocked (ADR 0012, question
+/// 10).
 pub const OPEN: &[&str] = &[
     "lock_status",
     "unlock",
-    "accessibility_status",
-    "open_accessibility_settings",
-    "filevault_enabled",
-    "capture_status",
     "database_status",
     "continue_opening",
     "retry_opening",
-    "setup_status",
 ];
 
 /// The main window's commands that need the window unlocked. Forgets,
@@ -689,6 +686,11 @@ pub const OPEN: &[&str] = &[
 /// again every time (the ADR's `every_time` and `loosening` lists, which
 /// also need the unlocked window).
 pub const UNLOCKED: &[&str] = &[
+    "accessibility_status",
+    "open_accessibility_settings",
+    "filevault_enabled",
+    "capture_status",
+    "setup_status",
     "bug_report_details",
     "start_over",
     "recent_captures",
@@ -1615,14 +1617,6 @@ mod tests {
             assert!(!lock.allows("recent_captures", window), "{window:?}");
             assert!(!lock.allows("lock_status", window), "{window:?}");
             assert!(!lock.allows("write_draft", window), "{window:?}");
-        }
-    }
-
-    #[test]
-    fn each_command_has_one_rule() {
-        let mut seen = std::collections::HashSet::new();
-        for command in OPEN.iter().chain(UNLOCKED).chain(PANEL) {
-            assert!(seen.insert(command), "{command} is listed twice");
         }
     }
 

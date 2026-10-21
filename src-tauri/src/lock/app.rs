@@ -148,7 +148,8 @@ pub fn ask_on_open(app: &AppHandle) {
         return;
     }
     let app = app.clone();
-    thread::spawn(move || {
+    // The dialog blocks until the user answers, as in `unlock`.
+    tauri::async_runtime::spawn_blocking(move || {
         let lock = app.state::<AppLock>();
         let result = lock.unlock(Asker::Window);
         let _ = app.emit(
@@ -190,8 +191,8 @@ pub fn watch(app: &AppHandle) {
     thread::spawn(move || {
         loop {
             thread::sleep(TICK);
-            let lock = handle.state::<AppLock>();
-            if let Some(what) = reading(&lock, crate::ax::idle_time, || window_visible(&handle)) {
+            let (idle, visible) = (crate::ax::idle_time(), window_visible(&handle));
+            if let Some(what) = handle.state::<AppLock>().tick(idle, visible) {
                 locked(&handle, what);
             }
         }
@@ -203,15 +204,6 @@ pub fn watch(app: &AppHandle) {
             locked(&handle, what);
         }
     });
-}
-
-/// One of the watcher's readings.
-fn reading<A: Authenticator, C: Clock>(
-    lock: &Lock<A, C>,
-    idle: impl FnOnce() -> Option<Duration>,
-    visible: impl FnOnce() -> bool,
-) -> Option<Locked> {
-    lock.tick(idle(), visible())
 }
 
 /// One of the Mac's notifications, `which` in [`NOTIFICATIONS`].
@@ -317,7 +309,7 @@ mod notifications {
 #[cfg(test)]
 mod tests {
     use super::super::fake::{FakeAuthenticator, FakeClock};
-    use super::super::{AWAY, Language, Outcome, Status};
+    use super::super::{AWAY, Language, Outcome, PANEL_WINDOW, Status};
     use super::*;
 
     fn unlocked() -> Lock<FakeAuthenticator, FakeClock> {
@@ -344,7 +336,7 @@ mod tests {
         while idle < AWAY {
             lock.clock.advance(TICK);
             idle += TICK;
-            let seen = reading(&lock, || Some(idle), || true);
+            let seen = lock.tick(Some(idle), true);
             assert!(first.is_none() || seen.is_none(), "locked twice");
             first = first.or(seen);
         }
@@ -363,30 +355,11 @@ mod tests {
             lock.clock.advance(TICK);
             waited += TICK;
             // The user types elsewhere, with Lax's window closed.
-            first = first.or(reading(&lock, || Some(Duration::from_secs(1)), || false));
+            first = first.or(lock.tick(Some(Duration::from_secs(1)), false));
         }
         assert_eq!(first, Some(Locked::Window));
         assert!(lock.status().unlocked);
         assert!(!lock.status().window_unlocked);
-    }
-
-    #[test]
-    fn the_watcher_reads_idle_time_and_visibility_once_each() {
-        let lock = unlocked();
-        let (mut idle_reads, mut visible_reads) = (0, 0);
-        lock.clock.advance(TICK);
-        reading(
-            &lock,
-            || {
-                idle_reads += 1;
-                None
-            },
-            || {
-                visible_reads += 1;
-                true
-            },
-        );
-        assert_eq!((idle_reads, visible_reads), (1, 1));
     }
 
     #[test]
@@ -463,9 +436,93 @@ mod tests {
         assert_eq!(until_locked(&lock, check, async { 7 }).await, None);
     }
 
+    // The gate itself, wrapping real invokes on Tauri's mock runtime.
+
+    /// An app whose only handler, behind the gate, answers with the name of
+    /// the command it was asked to run: the gate goes by name.
+    fn mock_app(with_lock: bool) -> tauri::App<tauri::test::MockRuntime> {
+        let builder = tauri::test::mock_builder();
+        let builder = if with_lock {
+            builder.manage(new())
+        } else {
+            builder
+        };
+        builder
+            .invoke_handler(gate(|invoke: Invoke<tauri::test::MockRuntime>| {
+                let ran = invoke.message.command().to_string();
+                invoke.resolver.resolve(ran);
+                true
+            }))
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("the mock app")
+    }
+
+    fn window(
+        app: &tauri::App<tauri::test::MockRuntime>,
+        label: &str,
+    ) -> tauri::WebviewWindow<tauri::test::MockRuntime> {
+        tauri::WebviewWindowBuilder::new(app, label, Default::default())
+            .build()
+            .expect("the window")
+    }
+
+    /// What `command` answers, called from `window`.
+    fn call(
+        window: &tauri::WebviewWindow<tauri::test::MockRuntime>,
+        command: &str,
+    ) -> Result<String, serde_json::Value> {
+        tauri::test::get_ipc_response(
+            window,
+            tauri::webview::InvokeRequest {
+                cmd: command.into(),
+                callback: tauri::ipc::CallbackFn(0),
+                error: tauri::ipc::CallbackFn(1),
+                url: "tauri://localhost".parse().expect("the url"),
+                body: tauri::ipc::InvokeBody::default(),
+                headers: Default::default(),
+                invoke_key: tauri::test::INVOKE_KEY.to_string(),
+            },
+        )
+        .map(|body| body.deserialize::<String>().expect("a string"))
+    }
+
+    fn refused() -> Result<String, serde_json::Value> {
+        Err(serde_json::Value::String(LOCKED.to_string()))
+    }
+
     #[test]
-    fn the_gate_answers_with_the_fixed_message() {
-        assert_eq!(LOCKED, "Lax is locked.");
-        assert_eq!(Refused::Locked.message(), Some(LOCKED));
+    fn the_gate_refuses_before_the_command_runs() {
+        let app = mock_app(true);
+        let (main, panel) = (window(&app, MAIN_WINDOW), window(&app, PANEL_WINDOW));
+
+        // Locked: only what the lock screen needs runs.
+        assert_eq!(call(&main, "recent_captures"), refused());
+        assert_eq!(call(&main, "database_status"), Ok("database_status".into()));
+        assert_eq!(call(&main, "not_in_any_list"), refused());
+        // The panel's commands from the panel only.
+        assert_eq!(call(&panel, "write_draft"), Ok("write_draft".into()));
+        assert_eq!(call(&main, "write_draft"), refused());
+        assert_eq!(call(&panel, "database_status"), refused());
+
+        // Unlocked: the window's commands run, and a command without a rule
+        // is still refused.
+        let lock = app.state::<AppLock>();
+        lock.state().unlock(Asker::Window, lock.clock.now());
+        assert_eq!(call(&main, "recent_captures"), Ok("recent_captures".into()));
+        assert_eq!(call(&main, "not_in_any_list"), refused());
+        assert_eq!(call(&panel, "recent_captures"), refused());
+
+        // Locked again.
+        lock.mac_event(MacEvent::ScreenLocked);
+        assert_eq!(call(&main, "recent_captures"), refused());
+    }
+
+    #[test]
+    fn without_the_lock_the_gate_refuses_everything() {
+        let app = mock_app(false);
+        let (main, panel) = (window(&app, MAIN_WINDOW), window(&app, PANEL_WINDOW));
+        assert_eq!(call(&main, "database_status"), refused());
+        assert_eq!(call(&main, "recent_captures"), refused());
+        assert_eq!(call(&panel, "write_draft"), refused());
     }
 }
