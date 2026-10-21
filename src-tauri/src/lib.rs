@@ -34,6 +34,7 @@ mod site;
 mod store;
 mod summon;
 mod tray;
+mod upgrade;
 mod vectors;
 mod viewer;
 mod write;
