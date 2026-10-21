@@ -244,9 +244,14 @@ export function Viewer() {
         ) : tab === "memory" ? (
           <Memory
             onShowModels={() => setTab("models")}
-            onBrief={(name) => {
-              setAskRequest((last) => ({ question: briefQuestion(name), n: (last?.n ?? 0) + 1 }));
+            onBrief={(entity) => {
               setTab("ask");
+              // In the language of the entries about the name, if Lax can tell.
+              invoke<string>("brief_on", { id: entity.id })
+                .catch(() => briefQuestion(entity.name))
+                .then((question) =>
+                  setAskRequest((last) => ({ question, n: (last?.n ?? 0) + 1 })),
+                );
             }}
           />
         ) : tab === "outbox" ? (
