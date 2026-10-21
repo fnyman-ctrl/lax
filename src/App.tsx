@@ -102,18 +102,17 @@ function FileVaultWarning() {
   if (enabled === null) {
     return (
       <aside className="notice">
-        Lax couldn't check whether FileVault is on. Lax encrypts its database, but your memory
-        pages in ~/Lax are protected only by FileVault. You can check in System Settings →
-        Privacy &amp; Security → FileVault.
+        Lax couldn't check whether FileVault is on. Lax encrypts its database, but pages you
+        export are protected only by FileVault. You can check in System Settings → Privacy &amp;
+        Security → FileVault.
       </aside>
     );
   }
   return (
     <aside className="warning" role="alert">
-      <strong>FileVault is off.</strong> Lax encrypts its database, but your memory pages in
-      ~/Lax, and anything stored before the database was encrypted, are protected only by
-      FileVault. Without it, anyone who gets hold of the disk can read them. Turn FileVault on in
-      System Settings → Privacy &amp; Security → FileVault.
+      <strong>FileVault is off.</strong> Lax encrypts its database, but pages you export are
+      protected only by FileVault. Without it, anyone who gets hold of the disk can read them.
+      Turn FileVault on in System Settings → Privacy &amp; Security → FileVault.
     </aside>
   );
 }

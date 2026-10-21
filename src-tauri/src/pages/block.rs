@@ -64,7 +64,8 @@ pub fn new_id() -> std::io::Result<String> {
     Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// The id in a page's begin marker, if it has a block.
+/// For tests: the id in a page's begin marker, if it has a block.
+#[cfg(test)]
 pub fn page_id(text: &str) -> Option<&str> {
     split(text).map(|s| s.id)
 }

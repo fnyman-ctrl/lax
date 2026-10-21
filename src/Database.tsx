@@ -12,13 +12,12 @@ const OPENING_SHOWN_AFTER_MS = 400;
 type State =
   | "opening"
   | "update"
-  | "convert"
-  | "encrypting"
   | "open"
   | "keyUnavailable"
   | "keyMissing"
   | "cannotUnlock"
   | "newerSchema"
+  | "plaintext"
   | "failed";
 
 /**
@@ -28,16 +27,10 @@ type State =
  */
 export function DatabaseGate({ children }: { children: ReactNode }) {
   const [state, setState] = useState<State | null>(null);
-  const [postponed, setPostponed] = useState<"lowSpace" | "notEncrypted" | null>(null);
 
   const refresh = useCallback(() => {
-    invoke<{ state: State; postponed: "lowSpace" | "notEncrypted" | null }>(
-      "database_status",
-    ).then(
-      (status) => {
-        setState(status.state);
-        setPostponed(status.postponed);
-      },
+    invoke<{ state: State }>("database_status").then(
+      (status) => setState(status.state),
       () => setState("failed"),
     );
   }, []);
@@ -54,18 +47,10 @@ export function DatabaseGate({ children }: { children: ReactNode }) {
   }, [refresh]);
 
   if (state === "open") {
-    return (
-      <>
-        {postponed && <NotEncryptedYet why={postponed} />}
-        {children}
-      </>
-    );
+    return <>{children}</>;
   }
   if (state === null || state === "opening") {
     return <Opening text="Opening the database…" />;
-  }
-  if (state === "encrypting") {
-    return <Opening text="Encrypting the database…" />;
   }
   return <NotOpen state={state} />;
 }
@@ -89,19 +74,7 @@ function Opening({ text }: { text: string }) {
   );
 }
 
-/** The database is open but still plaintext; Lax tries again next start. */
-function NotEncryptedYet({ why }: { why: "lowSpace" | "notEncrypted" }) {
-  return (
-    <aside className="notice" role="status">
-      {why === "lowSpace"
-        ? "Lax couldn't encrypt its database: the disk needs free space of twice its size. "
-        : "Lax couldn't encrypt its database this time. "}
-      It works as before, and Lax tries again the next time it starts.
-    </aside>
-  );
-}
-
-function NotOpen({ state }: { state: Exclude<State, "open" | "opening" | "encrypting"> }) {
+function NotOpen({ state }: { state: Exclude<State, "open" | "opening"> }) {
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -113,38 +86,6 @@ function NotOpen({ state }: { state: Exclude<State, "open" | "opening" | "encryp
       .catch((e) => setError(String(e)))
       .finally(() => setBusy(false));
   };
-
-  if (state === "convert") {
-    return (
-      <main className="container database">
-        <h1>Lax encrypts its database</h1>
-        <p>
-          From now on, everything Lax keeps in its database is encrypted, with a key that only
-          your login keychain holds. Lax makes an encrypted copy, checks it, and then puts it in
-          the old one's place. It takes a moment, and only happens once.
-        </p>
-        <p>
-          macOS may ask whether Lax may use its key. Type your login password and choose{" "}
-          <strong>Always Allow</strong>.
-        </p>
-        <p className="muted">
-          This is one-way: an older version of Lax can't open the encrypted database. Backups
-          and snapshots made before now still hold the old, unencrypted file until they are
-          gone. Your memory pages in ~/Lax are not part of the database yet.
-        </p>
-        <p className="actions">
-          <button type="button" onClick={() => run("continue_opening")} disabled={busy}>
-            Encrypt
-          </button>
-        </p>
-        {error && (
-          <p className="error" role="alert">
-            {error}
-          </p>
-        )}
-      </main>
-    );
-  }
 
   if (state === "update") {
     return (
@@ -237,6 +178,19 @@ function NotOpen({ state }: { state: Exclude<State, "open" | "opening" | "encryp
       <>
         <h1>Lax can't open its database</h1>
         <p>It was made by a newer version of Lax. Build or install the newer version again.</p>
+      </>
+    );
+  } else if (state === "plaintext") {
+    content = (
+      <>
+        <h1>Lax can't open its database</h1>
+        <p>
+          This database was made by a Lax from before 0.1 and isn't encrypted. Lax 0.1 can convert
+          it: build v0.1.0 once, open it, then update.
+        </p>
+        <p className="muted">
+          This version of Lax leaves the file as it is: it doesn't open, convert or change it.
+        </p>
       </>
     );
   } else {

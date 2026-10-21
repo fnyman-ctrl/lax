@@ -190,10 +190,8 @@ written to manipulate an AI ("ignore previous instructions and…"). Therefore:
   folder the user picks, after a notice that the copy is not encrypted. Lax
   warns, and asks again, before exporting into iCloud Drive or another synced
   folder, since that copies the memory off the machine (§1).
-- Until Lax has moved them in (ADR 0011 is built in steps), the pages are
-  Markdown files in `~/Lax` (`0700`, files `0600`) that the user edits in any
-  editor, protected by FileVault and those permissions, and Lax refuses to write
-  them if that folder is inside a synced folder. Lax warns if FileVault is off.
+- Lax warns if FileVault is off, since the database key is in the login
+  keychain and an exported page is a plain file.
 - **Lax's window is locked** ([ADR 0012](adr/0012-app-lock.md)). Lax starts
   locked and shows nothing until the user confirms with Touch ID or the login
   password. It locks again after 5 minutes without input or with the window

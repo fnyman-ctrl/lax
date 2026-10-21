@@ -693,3 +693,11 @@ page.
 - Lax: `src-tauri/src/lib.rs` (setup order, `({error})`),
   `scripts/build-app.sh` (installs to `~/Applications`),
   `tauri.conf.json` (`"signingIdentity": "-"`).
+
+## 2026-10-20: the pre-0.1 paths removed in 0.2
+
+Every released Lax made its database encrypted, so the conversion of a
+plaintext database ("Converting an existing database"), its notice and its
+tests were removed in 0.2 (#169). A plaintext database is now left exactly
+as it is: Lax doesn't open, convert or write it, and says that Lax 0.1 is
+the last version that converts it. The decisions above are unchanged.

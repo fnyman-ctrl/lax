@@ -10,7 +10,7 @@ const mocked = vi.mocked(invoke);
 function withState(state: string) {
   mocked.mockReset();
   mocked.mockImplementation(async (command: string) =>
-    command === "database_status" ? { state, postponed: null } : null,
+    command === "database_status" ? { state } : null,
   );
 }
 
@@ -71,27 +71,16 @@ describe("opening the database", () => {
     expect(mocked).toHaveBeenCalledWith("retry_opening");
   });
 
-  test("a plaintext database is encrypted after the notice", async () => {
-    await show("convert");
+  test("a plaintext database names the version that converts it, and nothing acts on it", async () => {
+    await show("plaintext");
     expect(screen.queryByText("The app")).toBeNull();
-    expect(screen.getByText(/one-way/)).toBeTruthy();
-    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Encrypt" })));
-    expect(mocked).toHaveBeenCalledWith("continue_opening");
-  });
-
-  test("a postponed conversion says so above the app", async () => {
-    mocked.mockReset();
-    mocked.mockImplementation(async (command: string) =>
-      command === "database_status" ? { state: "open", postponed: "lowSpace" } : null,
+    expect(screen.getByRole("heading").textContent).toBe("Lax can't open its database");
+    expect(screen.getByText(/isn't encrypted/).textContent).toBe(
+      "This database was made by a Lax from before 0.1 and isn't encrypted. Lax 0.1 can " +
+        "convert it: build v0.1.0 once, open it, then update.",
     );
-    await act(async () =>
-      render(
-        <DatabaseGate>
-          <p>The app</p>
-        </DatabaseGate>,
-      ),
-    );
-    expect(screen.getByText("The app")).toBeTruthy();
-    expect(screen.getByRole("status").textContent).toContain("free space");
+    // No button: nothing here opens, converts or moves the file.
+    expect(screen.queryAllByRole("button")).toEqual([]);
+    expect(mocked.mock.calls.every(([command]) => command === "database_status")).toBe(true);
   });
 });

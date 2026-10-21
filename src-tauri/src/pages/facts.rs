@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use serde::Deserialize;
 use tauri::{AppHandle, Manager};
 
-use super::{block, folder_of, inside, sync_now};
+use super::{block, sync_now};
 use crate::journal::{When, may_use_model};
 use crate::logging::{self, ErrorKind, Field};
 use crate::models::structured::{self, Captured, StructuredError, Validate};
@@ -152,10 +152,7 @@ pub async fn round(app: &AppHandle, schedule: &mut Schedule) -> Result<(), ()> {
     {
         return Ok(());
     }
-    let Some(dir) = folder_of(app) else {
-        return Ok(());
-    };
-    let work = with_store(app, |store| gather(store, &dir)).unwrap_or_default();
+    let work = with_store(app, |store| gather(store)).unwrap_or_default();
     schedule.last = Some(Instant::now());
     let mut changed = false;
     for work in work {
@@ -211,7 +208,7 @@ pub async fn round(app: &AppHandle, schedule: &mut Schedule) -> Result<(), ()> {
 }
 
 /// The work for the stale pages, if the memory is on and has a model.
-fn gather(store: &Store, dir: &std::path::Path) -> Vec<Work> {
+fn gather(store: &Store) -> Vec<Work> {
     let gathered = || -> crate::store::Result<Vec<Work>> {
         if !store.memory_enabled()? {
             return Ok(Vec::new());
@@ -243,7 +240,7 @@ fn gather(store: &Store, dir: &std::path::Path) -> Vec<Work> {
             if entries.is_empty() {
                 continue;
             }
-            let notes = notes_of(store, dir, page);
+            let notes = notes_of(store, page);
             let rejected = store.rejected_facts(&page.id)?;
             let note_lines = note_lines(&notes);
             let current = page.facts.clone().unwrap_or_default();
@@ -282,7 +279,7 @@ fn gather(store: &Store, dir: &std::path::Path) -> Vec<Work> {
             let mut entries = store.episodes(None, ABOUT_ME_ENTRIES)?;
             entries.reverse();
             if !entries.is_empty() {
-                let notes = notes_of(store, dir, &page);
+                let notes = notes_of(store, &page);
                 let rejected = store.rejected_facts(&page.id)?;
                 let current = page.facts.clone().unwrap_or_default();
                 let mut texts = vec![
@@ -309,15 +306,13 @@ fn gather(store: &Store, dir: &std::path::Path) -> Vec<Work> {
 }
 
 /// The user's notes on a page: everything outside Lax's block, from the
-/// page's row once the pages are in the database (ADR 0011), until then
-/// from its file.
-fn notes_of(store: &Store, dir: &std::path::Path, page: &crate::store::Page) -> String {
-    let text = if store.pages_in_database().unwrap_or(false) {
-        store.page_text(&page.id).ok().flatten()
-    } else {
-        inside(dir, &page.path).and_then(|path| std::fs::read_to_string(path).ok())
-    };
-    text.and_then(|text| block::without_block(&text, &page.id))
+/// page's row (ADR 0011).
+fn notes_of(store: &Store, page: &crate::store::Page) -> String {
+    store
+        .page_text(&page.id)
+        .ok()
+        .flatten()
+        .and_then(|text| block::without_block(&text, &page.id))
         .map(|notes| notes.chars().take(MAX_NOTES_CHARS).collect::<String>())
         .unwrap_or_default()
 }

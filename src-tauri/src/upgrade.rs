@@ -111,7 +111,8 @@ mod tests {
         assert!(store.journal_enabled().unwrap(), "{release}");
         assert!(store.memory_enabled().unwrap(), "{release}");
         assert!(store.writing_enabled().unwrap(), "{release}");
-        assert!(store.pages_in_database().unwrap(), "{release}");
+        // The pages are rows (ADR 0011): the user's line above is read from
+        // the row, as every page is since #169.
         assert_eq!(store.own_names().unwrap(), ["Bo Exempel"], "{release}");
         let chat = store
             .model_choice(ModelTask::Chat)
