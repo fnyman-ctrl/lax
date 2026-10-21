@@ -68,7 +68,11 @@ choose.
 - **Ask:** a conversation about your work. "What did I do yesterday?", "What did
   I work on with Anna last week?", then ask on: "and the day before?". Ask in
   English or Swedish. The answer appears as it's written, and each answer
-  shows the journal entries it's based on. Nothing you ask is saved.
+  shows the journal entries it's based on. A question that names no time,
+  such as "what have I read about SQLCipher?", also looks in what Lax has
+  captured, by word, and the answer can be based on a few captures too:
+  each shows its app, window title and time, and opens under **Captures**.
+  Nothing you ask is saved.
 - **Write:** turn the writing assistant on and pick the key that calls it.
 - **Journal:** what you did, a few lines every 15 minutes or so.
 - **Memory:** the people, projects and organisations Lax has learned about.

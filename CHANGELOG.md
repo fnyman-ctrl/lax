@@ -4,6 +4,12 @@ What changed in each version of Lax, for people who use it.
 
 ## Unreleased
 
+- **Ask looks in what you read.** A question that names no time, such as
+  "what have I read about SQLCipher?", now also finds a few captures by word,
+  and answers from the text as it was on your screen, not only from the
+  journal's summary. A capture the answer is based on shows its app, window
+  title and time, and opens under **Captures**. Questions about a time work
+  as before.
 - **Fixed: models that think too long wrote nothing.** Some models, such as
   Qwen 3.5, think before every answer until they run out of room, so the
   journal and the memory got no answer at all. When that happens, Lax now
