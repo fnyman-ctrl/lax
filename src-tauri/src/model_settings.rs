@@ -160,11 +160,11 @@ pub async fn test_model(app: AppHandle, task: Task) -> Result<TestResult, String
     let mut note = None;
     let (ok, detail) = match task {
         Task::Chat => {
-            // Checked afresh, and not remembered after: the test's budget is
+            // Checked afresh, and not remembered: the test's budget is
             // smaller than background work's, so only background work's own
             // calls decide whether it is asked not to reason.
-            client.forget_unreasoning(&choice.model);
             let answer = client
+                .apart()
                 .answer(
                     &choice.model,
                     &[
@@ -179,9 +179,8 @@ pub async fn test_model(app: AppHandle, task: Task) -> Result<TestResult, String
                     ],
                     Some(400),
                 )
-                .await;
-            client.forget_unreasoning(&choice.model);
-            let answer = answer.map_err(|e| e.to_string())?;
+                .await
+                .map_err(|e| e.to_string())?;
             if answer.without_reasoning {
                 note = Some(SLOW_REASONING.to_string());
             }

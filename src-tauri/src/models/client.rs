@@ -225,21 +225,35 @@ impl ModelClient {
         max_tokens: Option<u32>,
     ) -> Result<Answer, ModelError> {
         let base = self.endpoint.as_str();
-        let known = self.reasoning && self.unreasoning.knows(base, model);
+        if self.reasoning && self.unreasoning.knows(base, model) {
+            let started = Instant::now();
+            let request = self.chat_request(model, messages, max_tokens, false, false);
+            let (opened, attempts) = self
+                .open("chat/completions", Some(&request), CHAT_TIMEOUT)
+                .await;
+            let remembered = [
+                Field::Flag("without_reasoning", true),
+                Field::Flag("remembered", true),
+            ];
+            match chat_reply(opened, attempts, started, &remembered).await {
+                // The server no longer takes it: as if never remembered.
+                Err(ModelError::Status(400 | 422)) => self.unreasoning.forget(base, model),
+                reply => {
+                    return reply.map(|text| Answer {
+                        text,
+                        without_reasoning: true,
+                    });
+                }
+            }
+        }
         let started = Instant::now();
-        let request =
-            self.chat_request(model, messages, max_tokens, false, self.reasoning && !known);
+        let request = self.chat_request(model, messages, max_tokens, false, self.reasoning);
         let (opened, attempts) = self.open_chat(request).await;
-        let remembered = [
-            Field::Flag("without_reasoning", true),
-            Field::Flag("remembered", true),
-        ];
-        let extra: &[Field] = if known { &remembered } else { &[] };
-        let reply = chat_reply(opened, attempts, started, extra).await;
-        if !self.reasoning || known || reply != Err(ModelError::OutOfRoom) {
+        let reply = chat_reply(opened, attempts, started, &[]).await;
+        if !self.reasoning || reply != Err(ModelError::OutOfRoom) {
             return reply.map(|text| Answer {
                 text,
-                without_reasoning: known,
+                without_reasoning: false,
             });
         }
         let started = Instant::now();
@@ -259,12 +273,6 @@ impl ModelClient {
             Err(ModelError::Status(400 | 422)) => Err(ModelError::OutOfRoom),
             Err(error) => Err(error),
         }
-    }
-
-    /// Forgets that `model` answered only when asked not to reason, so the
-    /// next call lets it reason again: for checking it afresh.
-    pub fn forget_unreasoning(&self, model: &str) {
-        self.unreasoning.forget(self.endpoint.as_str(), model);
     }
 
     /// Like [`chat`](Self::chat), but the server sends the reply as it is
@@ -477,8 +485,13 @@ impl ModelClient {
         self
     }
 
-    /// The same client, remembering models apart from every other client.
-    #[cfg(test)]
+    /// The same client, with no models remembered as asked not to reason,
+    /// and keeping what it learns to itself: for checking a model afresh
+    /// without changing how other clients ask it.
+    pub fn apart(self) -> Self {
+        self.with_unreasoning(Arc::default())
+    }
+
     fn with_unreasoning(mut self, unreasoning: Arc<Unreasoning>) -> Self {
         self.unreasoning = unreasoning;
         self
@@ -1074,14 +1087,63 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_forgotten_model_gets_to_reason_again() {
-        let server = MockServer::start(vec![(200, OUT_OF_ROOM), (200, HEJ), (200, HEJ)]);
-        let client = server.client();
-        client.chat("qwen", &[user("x")], Some(10)).await.unwrap();
-        client.forget_unreasoning("qwen");
-        let again = client.answer("qwen", &[user("x")], Some(10)).await;
-        assert_eq!(again.map(|a| a.without_reasoning), Ok(false));
-        assert_eq!(reasoning_effort(&server.requests()[2]), None);
+    async fn a_client_apart_neither_uses_nor_changes_what_others_remember() {
+        let server = MockServer::start(vec![
+            (200, OUT_OF_ROOM),
+            (200, HEJ),
+            (200, OUT_OF_ROOM),
+            (200, HEJ),
+            (200, HEJ),
+        ]);
+        server
+            .client()
+            .chat("qwen", &[user("x")], Some(10))
+            .await
+            .unwrap();
+        // Checked afresh: allowed to reason, and told it was asked not to.
+        let apart = server.client().apart();
+        let checked = apart.answer("qwen", &[user("x")], Some(10)).await;
+        assert_eq!(checked.map(|a| a.without_reasoning), Ok(true));
+        let requests = server.requests();
+        assert_eq!(reasoning_effort(&requests[2]), None);
+        // Other clients still remember it.
+        server
+            .client()
+            .chat("qwen", &[user("x")], Some(10))
+            .await
+            .unwrap();
+        assert_eq!(
+            reasoning_effort(&server.requests()[4]).as_deref(),
+            Some("none")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_remembered_model_on_a_server_that_now_refuses_no_reasoning_is_forgotten() {
+        let server = MockServer::start(vec![
+            (200, OUT_OF_ROOM),
+            (200, HEJ),
+            (400, r#"{"error":"unknown reasoning_effort"}"#),
+            (200, HEJ),
+            (200, HEJ),
+        ]);
+        server
+            .client()
+            .chat("qwen", &[user("x")], Some(10))
+            .await
+            .unwrap();
+        let answer = server.client().answer("qwen", &[user("x")], Some(10)).await;
+        assert_eq!(answer.map(|a| a.without_reasoning), Ok(false));
+        server
+            .client()
+            .chat("qwen", &[user("x")], Some(10))
+            .await
+            .unwrap();
+        let requests = server.requests();
+        assert_eq!(requests.len(), 5);
+        assert_eq!(reasoning_effort(&requests[2]).as_deref(), Some("none"));
+        assert_eq!(reasoning_effort(&requests[3]), None);
+        assert_eq!(reasoning_effort(&requests[4]), None);
     }
 
     #[tokio::test]
