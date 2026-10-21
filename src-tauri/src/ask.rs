@@ -797,6 +797,14 @@ const STOP_WORDS: &[&str] = &[
     "sa",
     "sade",
     "också",
+    // Asking Lax itself: "vad vet du om Nyterio?"
+    "du",
+    "dig",
+    "din",
+    "ditt",
+    "dina",
+    "vi",
+    "oss",
     // English
     "what",
     "who",
@@ -1754,6 +1762,17 @@ mod tests {
             ["launch"]
         );
         assert!(search_words(&words("Vad gjorde jag igår?")).is_empty());
+        // Asking Lax what it knows: only the subject is searched for, in
+        // entries, and in captures once the knowing verb is left out too.
+        let asked = search_words(&words("Vad vet du om Nyterio?"));
+        assert_eq!(asked, ["vet", "nyterio"]);
+        assert_eq!(
+            asked
+                .iter()
+                .filter(|w| !QUESTION_VERBS.contains(&w.as_str()))
+                .collect::<Vec<_>>(),
+            ["nyterio"]
+        );
     }
 
     #[test]
