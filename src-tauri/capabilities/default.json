@@ -64,6 +64,7 @@
     "allow-take-out-part",
     "allow-merge-suggestions",
     "allow-likely-same",
+    "allow-brief-on",
     "allow-part-suggestions",
     "allow-not-part",
     "allow-dont-learn-list",

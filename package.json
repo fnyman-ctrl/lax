@@ -14,6 +14,7 @@
     "preview": "vite preview",
     "tauri": "tauri",
     "icons": "sh scripts/icons.sh",
+    "check": "sh scripts/check.sh",
     "build:app": "sh scripts/build-app.sh",
     "perf": "sh scripts/perf-report.sh",
     "test": "vitest run"
