@@ -1348,8 +1348,14 @@ pub async fn ask_memory(
     let asked = answer(endpoint, &choice.model, &request, &texts, |piece| {
         streamed.push(piece)
     });
+    // Nor does an answer go to a window that locked meanwhile (ADR 0012).
+    let asked = crate::lock::app::unless_locked(&app, asked);
     let Some(reply) = app.state::<Pause>().unless_paused(asked).await else {
         return Err("Lax was paused, so the question was dropped.".to_string());
+    };
+    let Some(reply) = reply else {
+        logging::info("ask.dropped_on_lock", &[]);
+        return Err(crate::lock::LOCKED.to_string());
     };
     let (first_words, shown) = (streamed.first, streamed.chars);
     let reply = reply.and_then(|mut reply| {

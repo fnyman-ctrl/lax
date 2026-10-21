@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { DatabaseGate } from "./Database";
+import { LockGate } from "./Lock";
 import { Setup } from "./Setup";
 import { Viewer } from "./Viewer";
 // The pixel salmon (docs/BRAND.md).
@@ -14,11 +15,14 @@ const ACCESSIBILITY_CHANGED = "accessibility-changed";
 type Access = boolean | null | "unknown";
 
 /** Nothing but where opening the database stands until it is open: the
- * rest reads from it. */
+ * rest reads from it. Then nothing but the lock screen until the window is
+ * unlocked (ADR 0012). */
 function App() {
   return (
     <DatabaseGate>
-      <Main />
+      <LockGate>
+        <Main />
+      </LockGate>
     </DatabaseGate>
   );
 }

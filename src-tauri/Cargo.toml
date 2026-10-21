@@ -70,8 +70,10 @@ block2 = "0.6"
 # turned on in the tree by Tauri's own dependencies.
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFArray", "CFData", "CFDictionary", "CFNumber", "CFString", "CFURL"] }
 # NSError and NSLocale: the app lock's answer from LocalAuthentication, and
-# the system language its reasons are shown in (ADR 0012).
-objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSData", "NSError", "NSGeometry", "NSLocale", "NSProcessInfo", "NSString", "NSPathUtilities"] }
+# the system language its reasons are shown in. The notification centers,
+# NSOperation (their queue parameter) and blocks: the lock's watcher hears
+# the screen lock, sleep and account switch (ADR 0012).
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "block2", "NSArray", "NSData", "NSDistributedNotificationCenter", "NSError", "NSGeometry", "NSLocale", "NSNotification", "NSOperation", "NSProcessInfo", "NSString", "NSPathUtilities"] }
 # The app lock asks for Touch ID or the login password through
 # LocalAuthentication's LAContext (ADR 0012, question 8): typed bindings
 # from the same project and version as the objc2 crates above, rather than

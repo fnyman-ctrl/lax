@@ -1711,6 +1711,19 @@ button.link {
   margin-top: 1rem;
 }
 
+/* The lock screen (src/Lock.tsx): only the salmon, a line and Unlock. */
+
+.lock {
+  max-width: 24rem;
+  padding-top: 6rem;
+  text-align: center;
+}
+
+.lock .chat-salmon {
+  display: block;
+  margin: 0 auto 0.75rem;
+}
+
 /* The memory page editor (src/PageEditor.tsx): plain text. */
 
 /* The editor under a name: clear of the button above it, the hint, the
