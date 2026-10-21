@@ -15,6 +15,8 @@ mod insert;
 mod journal;
 #[cfg(target_os = "macos")]
 mod keychain;
+#[allow(dead_code)] // The gate, the lock screen and the watcher come next (ADR 0012).
+mod lock;
 #[allow(dead_code)] // Some levels and fields have no user yet.
 mod logging;
 mod memory;
