@@ -26,10 +26,16 @@
 //!   the user switches accounts, locks Lax: the window and the writing
 //!   assistant's use of the pages. Five minutes with the window hidden locks
 //!   only the window ([`Lock::tick`], [`Lock::window_visible`]).
-//! - **Nothing here asks on its own.** Only [`Lock::unlock`] and
-//!   [`Lock::confirm`] ask, and they are for something the user just did in
-//!   Lax. Locking never asks, also when the window is visible. One request
-//!   asks at a time; another made meanwhile is cancelled without asking.
+//! - **Nothing here asks on its own.** Only [`Lock::unlock`] and the
+//!   confirmations ([`Lock::confirm`], [`Lock::confirm_while_locked`]) ask,
+//!   and they are for something the user just did in Lax. Locking never
+//!   asks, also when the window is visible. One request asks at a time;
+//!   another made meanwhile is cancelled without asking.
+//! - **Some commands ask again, every time.** Forgets, exports and changes
+//!   that loosen privacy ask before they change anything, in Rust, even in an
+//!   unlocked window ([`EVERY_TIME`], [`LOOSENING`], [`ASKS_WHILE_LOCKED`],
+//!   [`Lock::confirmed`], [`Lock::confirmed_if_loosening`]). There is no
+//!   token or "confirmed" state the web UI could reuse.
 //! - **Default deny.** A command without a rule is refused, locked or not
 //!   ([`Lock::allows`]).
 
@@ -241,8 +247,8 @@ impl Action {
             (Action::ForgetEntity, Sv) => "glömma ett namn och det den lärt sig om det",
             (Action::ForgetMemory, En) => "forget everything the memory noted",
             (Action::ForgetMemory, Sv) => "glömma allt som minnet har noterat",
-            (Action::DeleteOutbox, En) => "delete the log of what was sent",
-            (Action::DeleteOutbox, Sv) => "radera loggen över det som skickats",
+            (Action::DeleteOutbox, En) => "delete from the log of what was sent",
+            (Action::DeleteOutbox, Sv) => "radera ur loggen över det som skickats",
             (Action::ExportPages, En) => "export your memory pages",
             (Action::ExportPages, Sv) => "exportera dina minnessidor",
             (Action::DeleteOldPageFiles, En) => "delete the old page files",
@@ -368,7 +374,16 @@ impl Refused {
             Refused::Failed(failure) => Some(failure.message()),
         }
     }
+
+    /// The command's error for the web UI ([`Refusal`]).
+    pub fn refusal(self) -> Refusal {
+        self.message().map(str::to_string)
+    }
 }
+
+/// The error of a command that asks: a short message, or `None` when the
+/// user cancelled, which the web UI shows as nothing.
+pub type Refusal = Option<String>;
 
 /// What asks the user. The real one is `macos::LocalAuthentication`; tests
 /// use `fake::FakeAuthenticator`.
@@ -527,6 +542,12 @@ impl<A: Authenticator, C: Clock> Lock<A, C> {
         self.state().status()
     }
 
+    /// The authenticator, for tests elsewhere that drive the fake.
+    #[cfg(test)]
+    pub fn authenticator(&self) -> &A {
+        &self.authenticator
+    }
+
     /// Asks the user to unlock, for `asker`. Only for something the user
     /// just did: showing the window or pressing Unlock. Asks nothing if it
     /// is already unlocked for `asker`.
@@ -586,6 +607,72 @@ impl<A: Authenticator, C: Clock> Lock<A, C> {
         }
     }
 
+    /// Asks the user to confirm `action`, locked or not, for the few
+    /// commands that may run before the lock screen ([`ASKS_WHILE_LOCKED`]).
+    /// Changes nothing about the lock: it never unlocks the window. Refused
+    /// without asking for any other action, and quietly if Lax locks while
+    /// asking.
+    pub fn confirm_while_locked(&self, action: Action) -> Result<(), Refused> {
+        if !ASKS_WHILE_LOCKED
+            .iter()
+            .any(|(_, allowed)| *allowed == action)
+        {
+            return Err(Refused::Locked);
+        }
+        let generation = self.state().lax_generation;
+        let outcome = self.ask(action);
+        if self.state().lax_generation != generation {
+            return Err(Refused::Cancelled);
+        }
+        match outcome {
+            Outcome::Success => Ok(()),
+            Outcome::Cancelled => Err(Refused::Cancelled),
+            Outcome::Failed(failure) => Err(Refused::Failed(failure)),
+        }
+    }
+
+    /// Runs `change` only once the user confirmed `action` ([`EVERY_TIME`]).
+    /// A cancel, a failure, or the window locked before or while asking
+    /// changes nothing.
+    pub fn confirmed<T>(
+        &self,
+        action: Action,
+        change: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, Refusal> {
+        logged(self.confirm(action)).map_err(Refused::refusal)?;
+        Ok(change()?)
+    }
+
+    /// [`Lock::confirmed`] for a command that may run while the window is
+    /// locked ([`ASKS_WHILE_LOCKED`], [`Lock::confirm_while_locked`]).
+    pub fn confirmed_while_locked<T>(
+        &self,
+        action: Action,
+        change: impl FnOnce() -> Result<T, String>,
+    ) -> Result<T, Refusal> {
+        logged(self.confirm_while_locked(action)).map_err(Refused::refusal)?;
+        Ok(change()?)
+    }
+
+    /// A change that asks only when it loosens privacy ([`LOOSENING`]).
+    /// `change(false)` compares its arguments with the current setting and
+    /// either makes the change, or changes nothing and returns `None` when
+    /// it would loosen privacy. Then the user is asked to confirm `action`,
+    /// and only then `change(true)` makes the change. The compare and a
+    /// change that doesn't ask happen under one hold of the store, so a
+    /// change made meanwhile can't turn one into the other.
+    pub fn confirmed_if_loosening<T>(
+        &self,
+        action: Action,
+        mut change: impl FnMut(bool) -> Result<Option<T>, String>,
+    ) -> Result<T, Refusal> {
+        if let Some(done) = change(false)? {
+            return Ok(done);
+        }
+        logged(self.confirm(action)).map_err(Refused::refusal)?;
+        change(true)?.ok_or_else(|| Some("Nothing was changed.".to_string()))
+    }
+
     /// One request, with a context of its own that is dropped when the
     /// answer is in. The state isn't held meanwhile, so a lock can come.
     /// While another request asks, this one is cancelled without asking: the
@@ -634,12 +721,30 @@ impl<A: Authenticator, C: Clock> Lock<A, C> {
     /// from a window its rule doesn't name, is refused.
     pub fn allows(&self, command: &str, window: &str) -> bool {
         match (rule(command), window) {
-            (Some(Rule::Open), MAIN_WINDOW) => true,
-            (Some(Rule::Unlocked), MAIN_WINDOW) => self.status().window_unlocked,
+            (Some(Rule::Open | Rule::AsksWhileLocked), MAIN_WINDOW) => true,
+            (Some(Rule::Unlocked | Rule::EveryTime | Rule::Loosening), MAIN_WINDOW) => {
+                self.status().window_unlocked
+            }
             (Some(Rule::Panel), PANEL_WINDOW) => true,
             _ => false,
         }
     }
+}
+
+/// Logs how a confirmation ended: a flag, never the action, and never
+/// anything captured.
+fn logged(result: Result<(), Refused>) -> Result<(), Refused> {
+    use crate::logging::{self, Field};
+    match result {
+        Ok(()) => logging::info("lock.confirmed", &[]),
+        Err(Refused::Cancelled) => logging::info("lock.confirm_cancelled", &[]),
+        Err(Refused::Locked) => logging::info("lock.confirm_locked", &[]),
+        Err(Refused::Failed(failure)) => logging::info(
+            "lock.confirm_failed",
+            &[Field::Flag("no_password", failure == Failure::NoPassword)],
+        ),
+    }
+    result
 }
 
 // The command lists (ADR 0012, "Enforced in Rust, failing closed"). Every
@@ -663,6 +768,15 @@ pub enum Rule {
     /// Needs Lax and the window unlocked, and asks nothing more: the ADR's
     /// `none` list. [`UNLOCKED`].
     Unlocked,
+    /// Needs the window unlocked, and the command asks again every time
+    /// before it changes anything. [`EVERY_TIME`].
+    EveryTime,
+    /// Needs the window unlocked, and the command asks again when the change
+    /// loosens privacy. [`LOOSENING`].
+    Loosening,
+    /// Allowed in the main window locked or not, and the command asks every
+    /// time, without unlocking the window. [`ASKS_WHILE_LOCKED`].
+    AsksWhileLocked,
     /// The writing assistant's own commands, from the panel only, locked or
     /// not. [`PANEL`].
     Panel,
@@ -681,10 +795,9 @@ pub const OPEN: &[&str] = &[
     "retry_opening",
 ];
 
-/// The main window's commands that need the window unlocked. Forgets,
-/// exports and changes that loosen privacy are here too, until they ask
-/// again every time (the ADR's `every_time` and `loosening` lists, which
-/// also need the unlocked window).
+/// The main window's commands that need the window unlocked and ask
+/// nothing more: reading, and ordinary settings (ADR 0012, "Doesn't ask,
+/// once the window is unlocked").
 pub const UNLOCKED: &[&str] = &[
     "accessibility_status",
     "open_accessibility_settings",
@@ -692,48 +805,33 @@ pub const UNLOCKED: &[&str] = &[
     "capture_status",
     "setup_status",
     "bug_report_details",
-    "start_over",
     "recent_captures",
     "search_captures",
     "capture_detail",
     "captured_apps",
-    "forget_captures",
-    "delete_all_data",
     "retention_days",
-    "set_retention_days",
     "exclusion_settings",
     "add_exclusion",
-    "remove_exclusion",
-    "set_default_excluded",
     "find_local_models",
     "model_settings",
-    "set_model",
     "clear_model",
     "test_model",
     "outbox_entries",
     "outbox_payload",
-    "delete_outbox",
     "outbox_retention_days",
-    "set_outbox_retention_days",
     "journal_status",
-    "set_journal_enabled",
     "journal_episodes",
     "ask_memory",
     "memory_status",
-    "set_memory_enabled",
     "memory_entities",
-    "forget_entity",
-    "forget_memory",
     "recreate_page",
     "recreate_about_me",
     "page_history",
     "restore_page_version",
-    "set_own_names",
     "page_text",
     "save_page",
     "close_page",
     "pick_export_folder",
-    "export_pages",
     "page_notes",
     "keep_entity",
     "rename_entity",
@@ -749,12 +847,62 @@ pub const UNLOCKED: &[&str] = &[
     "part_suggestions",
     "not_part",
     "dont_learn_list",
-    "allow_learning",
     "finish_setup",
     "writing_status",
-    "set_writing_enabled",
     "set_writing_key",
 ];
+
+/// The main window's commands that ask for Touch ID or the login password
+/// every time, before they change anything, with the reason each one shows
+/// (ADR 0012, "Asks every time"). They need the window unlocked too.
+pub const EVERY_TIME: &[(&str, Action)] = &[
+    ("forget_captures", Action::ForgetCaptures),
+    ("delete_all_data", Action::DeleteAllData),
+    ("forget_entity", Action::ForgetEntity),
+    ("forget_memory", Action::ForgetMemory),
+    ("delete_outbox", Action::DeleteOutbox),
+    ("export_pages", Action::ExportPages),
+    ("remove_exclusion", Action::RemoveExclusion),
+    ("allow_learning", Action::AllowLearning),
+    ("set_retention_days", Action::SetRetention),
+    ("set_outbox_retention_days", Action::SetOutboxRetention),
+    ("set_own_names", Action::SetOwnNames),
+];
+
+/// The main window's commands that ask only when the change loosens
+/// privacy, by comparing their arguments with the current setting (ADR
+/// 0012, "Asks when the change loosens privacy"). They need the window
+/// unlocked too.
+pub const LOOSENING: &[(&str, Action)] = &[
+    ("set_default_excluded", Action::TurnOffDefaultExclusion),
+    ("set_journal_enabled", Action::TurnOnJournal),
+    ("set_memory_enabled", Action::TurnOnMemory),
+    ("set_writing_enabled", Action::TurnOnWriting),
+    ("set_model", Action::UseModelOffThisMac),
+];
+
+/// The main window's commands that ask every time and may run while it is
+/// locked: Start over is on the database screens, which come before the
+/// lock screen. One dialog, with Start over's reason, and the window stays
+/// locked ([`Lock::confirm_while_locked`]).
+pub const ASKS_WHILE_LOCKED: &[(&str, Action)] = &[("start_over", Action::StartOver)];
+
+/// The action `command` asks the user to confirm, if it asks.
+pub fn action(command: &str) -> Option<Action> {
+    EVERY_TIME
+        .iter()
+        .chain(LOOSENING)
+        .chain(ASKS_WHILE_LOCKED)
+        .find(|(name, _)| *name == command)
+        .map(|(_, action)| *action)
+}
+
+/// Whether setting a switch that is `current` to `wanted` turns it on: the
+/// direction that loosens privacy for the journal, the memory and the
+/// writing assistant. Turning one off, or on when it is on, doesn't ask.
+pub fn turns_on(current: bool, wanted: bool) -> bool {
+    wanted && !current
+}
 
 /// The panel's commands. They keep working while Lax is locked (ADR 0012,
 /// "What stays unlocked"); `write_draft` will check the lock itself before
@@ -769,6 +917,16 @@ pub const PANEL: &[&str] = &[
 
 /// The rule for `command`, or `None` if it has none, which the gate refuses.
 pub fn rule(command: &str) -> Option<Rule> {
+    let asks = |list: &[(&str, Action)]| list.iter().any(|(name, _)| *name == command);
+    if asks(EVERY_TIME) {
+        return Some(Rule::EveryTime);
+    }
+    if asks(LOOSENING) {
+        return Some(Rule::Loosening);
+    }
+    if asks(ASKS_WHILE_LOCKED) {
+        return Some(Rule::AsksWhileLocked);
+    }
     [
         (OPEN, Rule::Open),
         (UNLOCKED, Rule::Unlocked),
@@ -989,6 +1147,7 @@ pub mod fake {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -1500,6 +1659,304 @@ mod tests {
             lock.authenticator.then(outcome);
             assert!(lock.confirm(Action::RemoveExclusion).is_err());
             assert_eq!(lock.status(), open());
+        }
+    }
+
+    // Asking again: the commands' side (ADR 0012, "What else asks").
+
+    const REFUSALS: [Outcome; 5] = [
+        Outcome::Cancelled,
+        Outcome::Failed(Failure::NotAccepted),
+        Outcome::Failed(Failure::Interrupted),
+        Outcome::Failed(Failure::NoPassword),
+        Outcome::Failed(Failure::Unavailable),
+    ];
+
+    /// What a refused confirmation answers the web UI: nothing for a
+    /// cancel, a short message otherwise.
+    fn refusal(outcome: Outcome) -> Refusal {
+        match outcome {
+            Outcome::Cancelled => None,
+            Outcome::Failed(failure) => Some(failure.message().to_string()),
+            Outcome::Success => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn every_time_asks_on_every_call_and_changes_only_on_success() {
+        for (command, action) in EVERY_TIME {
+            let lock = unlocked();
+            let changes = Cell::new(0);
+            let change = || {
+                changes.set(changes.get() + 1);
+                Ok(changes.get())
+            };
+            for outcome in REFUSALS {
+                lock.authenticator.then(outcome);
+                assert_eq!(
+                    lock.confirmed(*action, change),
+                    Err(refusal(outcome)),
+                    "{command}: {outcome:?}"
+                );
+                assert_eq!(changes.get(), 0, "{command}: {outcome:?} changed something");
+            }
+            // Twice in a row: asked twice.
+            for time in 1..=2 {
+                lock.authenticator.then(Outcome::Success);
+                assert_eq!(lock.confirmed(*action, change), Ok(time), "{command}");
+            }
+            let requests = lock.authenticator.requests.lock().unwrap().clone();
+            // The unlock, the refusals and the two successes.
+            assert_eq!(requests.len(), 1 + REFUSALS.len() + 2, "{command}");
+            for (_, reason) in &requests[1..] {
+                assert_eq!(reason, action.reason(Language::English), "{command}");
+            }
+            // Confirming never changes the lock.
+            assert_eq!(lock.status(), open(), "{command}");
+        }
+    }
+
+    #[test]
+    fn a_change_that_fails_after_asking_says_why() {
+        let lock = unlocked();
+        lock.authenticator.then(Outcome::Success);
+        let failed: Result<(), Refusal> = lock.confirmed(Action::ForgetCaptures, || {
+            Err("Lax couldn't change it.".into())
+        });
+        assert_eq!(failed, Err(Some("Lax couldn't change it.".to_string())));
+    }
+
+    #[test]
+    fn asking_again_needs_the_window_unlocked() {
+        let changed = Cell::new(false);
+        let change = || {
+            changed.set(true);
+            Ok(())
+        };
+        let locked_out = Err(Some(LOCKED.to_string()));
+
+        // Locked, or only Lax unlocked from the panel: refused without asking.
+        let lock = lock_answering(&[Outcome::Success]);
+        assert_eq!(lock.confirmed(Action::DeleteAllData, change), locked_out);
+        lock.unlock(Asker::Panel).unwrap();
+        assert_eq!(lock.confirmed(Action::DeleteAllData, change), locked_out);
+        assert_eq!(
+            lock.confirmed_if_loosening(Action::TurnOnJournal, |_| Ok(None::<()>)),
+            locked_out
+        );
+        assert_eq!(lock.authenticator.requests(), 1);
+
+        // Locked while asking: the answer is thrown away.
+        for action in [Action::ForgetEntity, Action::TurnOnMemory] {
+            let lock = Arc::new(unlocked());
+            lock.authenticator.then(Outcome::Success);
+            let during = Arc::clone(&lock);
+            *lock.authenticator.while_asking.lock().unwrap() = Some(Box::new(move || {
+                during.mac_event(MacEvent::ScreenLocked);
+            }));
+            let result = if action == Action::ForgetEntity {
+                lock.confirmed(action, change)
+            } else {
+                lock.confirmed_if_loosening(action, |confirmed| {
+                    if confirmed {
+                        changed.set(true);
+                    }
+                    Ok(confirmed.then_some(()))
+                })
+            };
+            assert_eq!(result, locked_out, "{action:?}");
+            assert_eq!(lock.status(), locked(), "{action:?}");
+        }
+        assert!(!changed.get());
+    }
+
+    /// A switch, as the journal's, the memory's and the writing assistant's
+    /// setting, behind [`Lock::confirmed_if_loosening`] as their commands
+    /// use it.
+    fn set_switch(lock: &TestLock, switch: &Cell<bool>, wanted: bool) -> Result<bool, Refusal> {
+        lock.confirmed_if_loosening(Action::TurnOnJournal, |confirmed| {
+            if !confirmed && turns_on(switch.get(), wanted) {
+                return Ok(None);
+            }
+            switch.set(wanted);
+            Ok(Some(wanted))
+        })
+    }
+
+    #[test]
+    fn loosening_asks_only_in_the_loosening_direction() {
+        let lock = unlocked();
+        let switch = Cell::new(false);
+        // Off to off, and on to off: no asking.
+        assert_eq!(set_switch(&lock, &switch, false), Ok(false));
+        assert_eq!(lock.authenticator.requests(), 1);
+
+        // Off to on: asks, and a refusal leaves it off.
+        for outcome in REFUSALS {
+            lock.authenticator.then(outcome);
+            assert_eq!(set_switch(&lock, &switch, true), Err(refusal(outcome)));
+            assert!(!switch.get(), "{outcome:?}");
+        }
+        lock.authenticator.then(Outcome::Success);
+        assert_eq!(set_switch(&lock, &switch, true), Ok(true));
+        assert!(switch.get());
+        let asked = lock.authenticator.requests();
+        assert_eq!(asked, 1 + REFUSALS.len() + 1);
+        let requests = lock.authenticator.requests.lock().unwrap().clone();
+        assert_eq!(
+            requests.last().unwrap().1,
+            Action::TurnOnJournal.reason(Language::English)
+        );
+
+        // On to on, and on to off: no asking.
+        assert_eq!(set_switch(&lock, &switch, true), Ok(true));
+        assert_eq!(set_switch(&lock, &switch, false), Ok(false));
+        assert!(!switch.get());
+        assert_eq!(lock.authenticator.requests(), asked);
+    }
+
+    #[test]
+    fn only_turning_a_switch_on_loosens() {
+        assert!(turns_on(false, true));
+        assert!(!turns_on(true, true));
+        assert!(!turns_on(false, false));
+        assert!(!turns_on(true, false));
+    }
+
+    #[test]
+    fn start_over_asks_once_while_locked_and_leaves_it_locked() {
+        let lock = lock_answering(&[Outcome::Success]);
+        let changes = Cell::new(0);
+        let change = || {
+            changes.set(changes.get() + 1);
+            Ok(())
+        };
+        assert_eq!(
+            lock.confirmed_while_locked(Action::StartOver, change),
+            Ok(())
+        );
+        assert_eq!(changes.get(), 1);
+        // One dialog, with Start over's reason, and nothing unlocked.
+        let requests = lock.authenticator.requests.lock().unwrap().clone();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].1, Action::StartOver.reason(Language::English));
+        assert_eq!(lock.status(), locked());
+
+        // A refusal changes nothing.
+        for outcome in REFUSALS {
+            lock.authenticator.then(outcome);
+            assert_eq!(
+                lock.confirmed_while_locked(Action::StartOver, change),
+                Err(refusal(outcome))
+            );
+        }
+        assert_eq!(changes.get(), 1);
+
+        // Unlocked, it asks too, and the window stays as it was.
+        let lock = unlocked();
+        lock.authenticator.then(Outcome::Success);
+        assert_eq!(
+            lock.confirmed_while_locked(Action::StartOver, change),
+            Ok(())
+        );
+        assert_eq!(lock.authenticator.requests(), 2);
+        assert_eq!(lock.status(), open());
+    }
+
+    #[test]
+    fn only_start_over_asks_while_locked() {
+        for action in Action::ALL {
+            if ASKS_WHILE_LOCKED.iter().any(|(_, a)| *a == action) {
+                continue;
+            }
+            let lock = lock_answering(&[Outcome::Success]);
+            assert_eq!(
+                lock.confirm_while_locked(action),
+                Err(Refused::Locked),
+                "{action:?}"
+            );
+            assert_eq!(lock.authenticator.requests(), 0, "{action:?}");
+        }
+    }
+
+    #[test]
+    fn a_lock_while_starting_over_is_a_quiet_cancel() {
+        let lock = Arc::new(lock_answering(&[Outcome::Success, Outcome::Success]));
+        lock.unlock(Asker::Panel).unwrap();
+        let during = Arc::clone(&lock);
+        *lock.authenticator.while_asking.lock().unwrap() = Some(Box::new(move || {
+            during.mac_event(MacEvent::Slept);
+        }));
+        assert_eq!(
+            lock.confirm_while_locked(Action::StartOver),
+            Err(Refused::Cancelled)
+        );
+    }
+
+    #[test]
+    fn each_command_that_asks_has_one_action_and_its_rule() {
+        let lists: [(&[(&str, Action)], Rule); 3] = [
+            (EVERY_TIME, Rule::EveryTime),
+            (LOOSENING, Rule::Loosening),
+            (ASKS_WHILE_LOCKED, Rule::AsksWhileLocked),
+        ];
+        let mut actions = Vec::new();
+        for (list, wanted) in lists {
+            for (command, act) in list {
+                assert_eq!(rule(command), Some(wanted), "{command}");
+                assert_eq!(action(command), Some(*act), "{command}");
+                assert!(!actions.contains(act), "{act:?} is used twice");
+                actions.push(*act);
+                // Asking is for what the user does in the window.
+                assert!(!OPEN.contains(command) && !UNLOCKED.contains(command));
+                assert!(!PANEL.contains(command), "{command}");
+            }
+        }
+        // Unlocking isn't a command's confirmation.
+        for act in [Action::OpenWindow, Action::UseMemoryInDraft] {
+            assert!(!actions.contains(&act), "{act:?}");
+        }
+        for command in OPEN.iter().chain(UNLOCKED).chain(PANEL) {
+            assert_eq!(action(command), None, "{command}");
+        }
+    }
+
+    #[test]
+    fn commands_that_ask_need_the_unlocked_window_but_start_over() {
+        let lock = lock_answering(&[Outcome::Success, Outcome::Success]);
+        let asking = || {
+            EVERY_TIME
+                .iter()
+                .chain(LOOSENING)
+                .map(|(command, _)| *command)
+        };
+        for command in asking() {
+            assert!(!lock.allows(command, MAIN), "{command} while locked");
+        }
+        lock.unlock(Asker::Panel).unwrap();
+        for command in asking() {
+            assert!(!lock.allows(command, MAIN), "{command} with only Lax");
+        }
+        lock.unlock(Asker::Window).unwrap();
+        for command in asking() {
+            assert!(lock.allows(command, MAIN), "{command} unlocked");
+            assert!(
+                !lock.allows(command, PANEL_LABEL),
+                "{command} from the panel"
+            );
+        }
+        // Start over: from the main window, locked or not, never the panel.
+        let lock = lock_answering(&[Outcome::Success]);
+        for (command, _) in ASKS_WHILE_LOCKED {
+            assert!(lock.allows(command, MAIN), "{command} while locked");
+            assert!(
+                !lock.allows(command, PANEL_LABEL),
+                "{command} from the panel"
+            );
+        }
+        lock.unlock(Asker::Window).unwrap();
+        for (command, _) in ASKS_WHILE_LOCKED {
+            assert!(lock.allows(command, MAIN), "{command} unlocked");
         }
     }
 

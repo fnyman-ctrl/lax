@@ -18,7 +18,8 @@ use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use super::macos::LocalAuthentication;
 use super::{
-    Asker, Authenticator, Clock, LOCKED, Lock, Locked, MAIN_WINDOW, MacEvent, Refused, SystemClock,
+    Asker, Authenticator, Clock, LOCKED, Lock, Locked, MAIN_WINDOW, MacEvent, Refusal, Refused,
+    SystemClock,
 };
 use crate::logging::{self, Field};
 use crate::store::Store;
@@ -100,6 +101,20 @@ pub async fn unlock(app: AppHandle) -> Result<(), Option<&'static str>> {
         .await
         .unwrap_or(Err(Refused::Failed(super::Failure::Unavailable)))
         .map_err(Refused::message)
+}
+
+/// Runs a command that asks again (ADR 0012, "What else asks"): `work` gets
+/// the app and the lock, and asks with [`Lock::confirmed`] and its siblings
+/// before it changes anything. Off the main thread and the async workers,
+/// since the dialog blocks until the user answers, as in `unlock`. A cancel
+/// is refused with no message (`null`), any other failure with a short one.
+pub async fn asking<T: Send + 'static>(
+    app: AppHandle,
+    work: impl FnOnce(&AppHandle, &AppLock) -> Result<T, Refusal> + Send + 'static,
+) -> Result<T, Refusal> {
+    tauri::async_runtime::spawn_blocking(move || work(&app, &app.state::<AppLock>()))
+        .await
+        .unwrap_or_else(|_| Err(Some("Something went wrong.".to_string())))
 }
 
 /// `work`'s output, or `None` once the window is locked (checked every
@@ -499,6 +514,12 @@ mod tests {
         assert_eq!(call(&main, "recent_captures"), refused());
         assert_eq!(call(&main, "database_status"), Ok("database_status".into()));
         assert_eq!(call(&main, "not_in_any_list"), refused());
+        // Commands that ask need the unlocked window, but Start over, on the
+        // database screens, asks for itself.
+        assert_eq!(call(&main, "forget_captures"), refused());
+        assert_eq!(call(&main, "set_journal_enabled"), refused());
+        assert_eq!(call(&main, "start_over"), Ok("start_over".into()));
+        assert_eq!(call(&panel, "start_over"), refused());
         // The panel's commands from the panel only.
         assert_eq!(call(&panel, "write_draft"), Ok("write_draft".into()));
         assert_eq!(call(&main, "write_draft"), refused());
@@ -509,6 +530,7 @@ mod tests {
         let lock = app.state::<AppLock>();
         lock.state().unlock(Asker::Window, lock.clock.now());
         assert_eq!(call(&main, "recent_captures"), Ok("recent_captures".into()));
+        assert_eq!(call(&main, "forget_captures"), Ok("forget_captures".into()));
         assert_eq!(call(&main, "not_in_any_list"), refused());
         assert_eq!(call(&panel, "recent_captures"), refused());
 

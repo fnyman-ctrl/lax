@@ -21,6 +21,8 @@ use tauri::{AppHandle, Manager};
 #[cfg(target_os = "macos")]
 use crate::ax::FieldText;
 use crate::exclusions::{Current, Decision, Exclusions};
+use crate::lock::app::asking;
+use crate::lock::{Action, Refusal, turns_on};
 use crate::logging::{self, Field};
 use crate::pause::Pause;
 use crate::store::Store;
@@ -484,23 +486,32 @@ pub fn set_writing_key(app: AppHandle, key: CallKey) -> Result<WritingStatus, St
     writing_status(app)
 }
 
-#[tauri::command(async)]
-pub fn set_writing_enabled(app: AppHandle, enabled: bool) -> Result<WritingStatus, String> {
-    {
-        let store = app
-            .try_state::<Mutex<Store>>()
-            .ok_or("The database isn't available.")?;
-        let store = store.lock().unwrap_or_else(PoisonError::into_inner);
-        store
-            .set_writing_enabled(enabled)
-            .map_err(|_| "Lax couldn't save the setting.")?;
-    }
-    if enabled {
-        start(&app);
-    } else {
-        stop(&app);
-    }
-    writing_status(app)
+/// Turns the writing assistant on or off. Turning it on asks for Touch ID
+/// or the password first (ADR 0012); turning it off doesn't.
+#[tauri::command]
+pub async fn set_writing_enabled(app: AppHandle, enabled: bool) -> Result<WritingStatus, Refusal> {
+    asking(app, move |app, lock| {
+        lock.confirmed_if_loosening(Action::TurnOnWriting, |confirmed| {
+            {
+                let store = app
+                    .try_state::<Mutex<Store>>()
+                    .ok_or("The database isn't available.")?;
+                let store = store.lock().unwrap_or_else(PoisonError::into_inner);
+                let failed = |_| "Lax couldn't save the setting.";
+                if !confirmed && turns_on(store.writing_enabled().map_err(failed)?, enabled) {
+                    return Ok(None);
+                }
+                store.set_writing_enabled(enabled).map_err(failed)?;
+            }
+            if enabled {
+                start(app);
+            } else {
+                stop(app);
+            }
+            writing_status(app.clone()).map(Some)
+        })
+    })
+    .await
 }
 
 /// Closes the panel and gives focus back to the app Lax was called to.

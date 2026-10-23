@@ -11,6 +11,8 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
+use crate::lock::app::asking;
+use crate::lock::{Action, Refusal};
 use crate::models::{ChatMessage, Endpoint, Locality, ModelClient, Role};
 use crate::store::{ModelChoice, ModelTask, Store};
 
@@ -117,21 +119,40 @@ pub fn model_settings(app: AppHandle) -> Result<ModelSettings, String> {
     with_store(&app, read_settings)
 }
 
-/// Chooses `model` on the server at `base_url` for `task`.
-#[tauri::command(async)]
-pub fn set_model(
+/// Chooses `model` on the server at `base_url` for `task`. A model that
+/// doesn't run on this Mac would ask for Touch ID or the password first
+/// (ADR 0012); today `validate` refuses those before that, so nothing asks
+/// yet. The rule is here so remote providers (#16) can't skip it.
+#[tauri::command]
+pub async fn set_model(
     app: AppHandle,
     task: Task,
     base_url: String,
     model: String,
-) -> Result<ModelSettings, String> {
+) -> Result<ModelSettings, Refusal> {
     let choice = validate(&base_url, &model)?;
-    with_store(&app, |store| {
-        store
-            .set_model_choice(task.into(), Some(&choice))
-            .map_err(|_| "Lax couldn't save the choice.".to_string())?;
-        read_settings(store)
+    asking(app, move |app, lock| {
+        lock.confirmed_if_loosening(Action::UseModelOffThisMac, |confirmed| {
+            if !confirmed && off_this_mac(&choice) {
+                return Ok(None);
+            }
+            with_store(app, |store| {
+                store
+                    .set_model_choice(task.into(), Some(&choice))
+                    .map_err(|_| "Lax couldn't save the choice.".to_string())?;
+                read_settings(store)
+            })
+            .map(Some)
+        })
     })
+    .await
+}
+
+/// Whether `choice` runs off this Mac: the direction that loosens privacy.
+/// An endpoint that can't be read counts as off this Mac.
+fn off_this_mac(choice: &ModelChoice) -> bool {
+    Endpoint::parse(&choice.base_url)
+        .map_or(true, |endpoint| endpoint.locality() != Locality::Local)
 }
 
 #[tauri::command(async)]
@@ -273,6 +294,24 @@ mod tests {
         assert!(validate("http://192.168.1.10:11434/v1", "llama").is_err());
         assert!(validate("http://localhost:1234/v1", "  ").is_err());
         assert!(validate("http://localhost:1234/v1", &"m".repeat(201)).is_err());
+    }
+
+    #[test]
+    fn only_a_model_off_this_mac_would_ask() {
+        let choice = |base_url: &str| ModelChoice {
+            base_url: base_url.to_string(),
+            model: "google/gemma-4-e4b".to_string(),
+        };
+        for local in ["http://localhost:1234/v1", "http://127.0.0.1:11434/v1"] {
+            assert!(!off_this_mac(&choice(local)), "{local}");
+        }
+        for remote in [
+            "https://api.example.com/v1",
+            "http://192.168.1.10:11434/v1",
+            "not a url",
+        ] {
+            assert!(off_this_mac(&choice(remote)), "{remote}");
+        }
     }
 
     #[test]

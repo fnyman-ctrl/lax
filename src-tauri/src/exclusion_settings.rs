@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
 use crate::exclusions::{ALWAYS_EXCLUDED, Category, Current, DEFAULT_EXCLUSIONS, Exclusions};
+use crate::lock::app::asking;
+use crate::lock::{Action, Refusal};
 use crate::logging::{self, ErrorKind, Field};
 use crate::site::site_from_url;
 use crate::store::{ExclusionKind, Store};
@@ -135,35 +137,61 @@ pub fn add_exclusion(
     change(&app, |store| store.add_exclusion(store_kind(kind), &value))
 }
 
-#[tauri::command(async)]
-pub fn remove_exclusion(
+/// Removes one of the user's own exclusions. Asks for Touch ID or the
+/// password first, every time (ADR 0012).
+#[tauri::command]
+pub async fn remove_exclusion(
     app: AppHandle,
     kind: Kind,
     value: String,
-) -> Result<ExclusionSettings, String> {
-    change(&app, |store| {
-        store.remove_exclusion(store_kind(kind), value.trim())
+) -> Result<ExclusionSettings, Refusal> {
+    asking(app, move |app, lock| {
+        lock.confirmed(Action::RemoveExclusion, || {
+            change(app, |store| {
+                store.remove_exclusion(store_kind(kind), value.trim())
+            })
+        })
     })
+    .await
 }
 
-/// Turns a banking or health default on (`excluded`) or off.
-#[tauri::command(async)]
-pub fn set_default_excluded(
+/// Turns a banking or health default on (`excluded`) or off. Turning one
+/// off asks for Touch ID or the password first (ADR 0012); turning one on,
+/// or off when it is off, doesn't.
+#[tauri::command]
+pub async fn set_default_excluded(
     app: AppHandle,
     name: String,
     excluded: bool,
-) -> Result<ExclusionSettings, String> {
+) -> Result<ExclusionSettings, Refusal> {
     let rule = DEFAULT_EXCLUSIONS
         .iter()
         .find(|rule| rule.name.eq_ignore_ascii_case(name.trim()))
-        .ok_or("There is no such default.")?;
-    change(&app, |store| {
-        if excluded {
-            store.remove_exclusion(ExclusionKind::DefaultOff, rule.name)
-        } else {
-            store.add_exclusion(ExclusionKind::DefaultOff, rule.name)
-        }
+        .ok_or_else(|| "There is no such default.".to_string())?;
+    asking(app, move |app, lock| {
+        lock.confirmed_if_loosening(Action::TurnOffDefaultExclusion, |confirmed| {
+            let mut asks = false;
+            let settings = change(app, |store| {
+                if !confirmed && turns_off(store, rule.name, excluded)? {
+                    asks = true;
+                    return Ok(());
+                }
+                if excluded {
+                    store.remove_exclusion(ExclusionKind::DefaultOff, rule.name)
+                } else {
+                    store.add_exclusion(ExclusionKind::DefaultOff, rule.name)
+                }
+            })?;
+            Ok((!asks).then_some(settings))
+        })
     })
+    .await
+}
+
+/// Whether setting the default `name` to `excluded` turns it off: the
+/// direction that loosens privacy.
+fn turns_off(store: &Store, name: &str, excluded: bool) -> crate::store::Result<bool> {
+    Ok(!excluded && !store.exclusions()?.re_enabled_defaults.contains(name))
 }
 
 /// Applies `update` to the store, reads the exclusions back and hands them
@@ -194,6 +222,22 @@ fn change(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_turning_a_default_off_loosens() {
+        let store = Store::open_in_memory().unwrap();
+        // Excluded, as it starts: turning it off loosens, on doesn't.
+        assert!(turns_off(&store, "Klarna", false).unwrap());
+        assert!(!turns_off(&store, "Klarna", true).unwrap());
+        // Off: turning it off again changes nothing, and doesn't ask.
+        store
+            .add_exclusion(ExclusionKind::DefaultOff, "Klarna")
+            .unwrap();
+        assert!(!turns_off(&store, "Klarna", false).unwrap());
+        assert!(!turns_off(&store, "Klarna", true).unwrap());
+        // Another default is still excluded.
+        assert!(turns_off(&store, "Swedbank", false).unwrap());
+    }
 
     #[test]
     fn websites_keep_only_the_host() {

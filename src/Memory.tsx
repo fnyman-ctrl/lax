@@ -8,6 +8,7 @@ import {
   useState,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { refusal } from "./Lock";
 import { ExportPages } from "./ExportPages";
 import { PageEditor } from "./PageEditor";
 
@@ -114,7 +115,7 @@ export function Memory({
           return true;
         },
         (e) => {
-          setMessage(String(e));
+          setMessage(refusal(e));
           return false;
         },
       )
@@ -157,7 +158,7 @@ export function Memory({
               ? "The memory is off. There was nothing to forget."
               : `The memory is off, and Lax forgot ${n} ${n === 1 ? "name" : "names"}.`,
           ),
-        (e) => setMessage(String(e)),
+        (e) => setMessage(refusal(e)),
       )
       .finally(() => {
         setBusy(false);
@@ -169,7 +170,7 @@ export function Memory({
   const toggle = (enabled: boolean) => {
     setMessage(null);
     invoke<MemoryStatus>("set_memory_enabled", { enabled }).then(setStatus, (e) =>
-      setMessage(String(e)),
+      setMessage(refusal(e)),
     );
   };
 
@@ -439,7 +440,7 @@ function AboutYou({
         setNames(next.ownNames.join(", "));
         onMessage("Saved. Lax won't note these names as people, and forgot any it had.");
       },
-      (e) => onMessage(String(e)),
+      (e) => onMessage(refusal(e)),
     );
   };
 

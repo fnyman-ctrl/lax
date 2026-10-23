@@ -62,25 +62,40 @@ describe("opening the database", () => {
     fireEvent.click(screen.getByRole("button", { name: "Start over…" }));
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Start over" })));
     expect(mocked).toHaveBeenCalledWith("start_over");
-    // Unlocked first: starting over needs the unlocked window (ADR 0012).
-    const commands = mocked.mock.calls.map(([command]) => command);
-    expect(commands.indexOf("unlock")).toBeGreaterThan(-1);
-    expect(commands.indexOf("unlock")).toBeLessThan(commands.indexOf("start_over"));
+    // Start over asks for Touch ID itself, in Rust (ADR 0012): no unlock
+    // first, so the user sees one dialog, not two.
+    expect(mocked).not.toHaveBeenCalledWith("unlock");
   });
 
-  test("a cancelled unlock doesn't start over, and says nothing", async () => {
+  test("a cancelled Touch ID for starting over says nothing", async () => {
     await show("cannotUnlock");
     mocked.mockImplementation(async (command: string) => {
-      if (command === "unlock") {
+      if (command === "start_over") {
         throw null;
       }
       return command === "database_status" ? { state: "cannotUnlock" } : null;
     });
     fireEvent.click(screen.getByRole("button", { name: "Start over…" }));
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Start over" })));
-    expect(mocked).toHaveBeenCalledWith("unlock");
-    expect(mocked).not.toHaveBeenCalledWith("start_over");
+    expect(mocked).toHaveBeenCalledWith("start_over");
     expect(screen.queryByRole("alert")).toBeNull();
+    // The screen is as it was, with Start over still offered.
+    expect(screen.getByRole("button", { name: "Start over…" })).toBeTruthy();
+  });
+
+  test("a failed Touch ID for starting over says why", async () => {
+    await show("cannotUnlock");
+    mocked.mockImplementation(async (command: string) => {
+      if (command === "start_over") {
+        throw "Touch ID or the password wasn't accepted.";
+      }
+      return command === "database_status" ? { state: "cannotUnlock" } : null;
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Start over…" }));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Start over" })));
+    expect(screen.getByRole("alert").textContent).toBe(
+      "Touch ID or the password wasn't accepted.",
+    );
   });
 
   test("a locked keychain offers only to try again", async () => {

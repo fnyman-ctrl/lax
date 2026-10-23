@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { failure } from "./Lock";
 
 // Shapes used by src-tauri/src/model_settings.rs.
 type Task = "chat" | "embeddings";
@@ -56,7 +57,7 @@ export function Models() {
         setSettings(next);
         setMessage({ text: `${model} is now the ${task === "chat" ? "chat" : "embedding"} model.`, error: false });
       },
-      (error) => setMessage({ text: String(error), error: true }),
+      (error) => setMessage(failure(error)),
     );
   };
 

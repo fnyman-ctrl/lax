@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { refusal } from "./Lock";
 
 type Picked = { name: string; synced: string | null };
 type Exported = { pages: number; folder: string };
@@ -36,7 +37,7 @@ export function ExportPages({ scope, onClose }: { scope: ExportScope; onClose: (
         setStep("done");
       },
       (e) => {
-        setError(String(e));
+        setError(refusal(e));
         setStep("notice");
       },
     );

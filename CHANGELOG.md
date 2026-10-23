@@ -11,6 +11,13 @@ What changed in each version of Lax, for people who use it.
   and at once when your Mac's screen locks, its display or the Mac goes to
   sleep, or you switch accounts. Capture, pausing and the writing assistant keep working while
   it is locked.
+- **Forgetting, exporting and loosening privacy ask for Touch ID.** Every
+  forget, delete, export, removed exclusion, name allowed back, change of
+  retention or of your other names asks for Touch ID or your login password
+  each time, even with the window unlocked. So does turning off a banking or
+  health default, or turning on the journal, the memory or the writing
+  assistant; turning them off doesn't. **Start over** asks once. Cancel, and
+  nothing changes.
 - **Ask looks in what you read.** A question that names no time, such as
   "what have I read about SQLCipher?", now also finds a few captures by word,
   and answers from the text as it was on your screen, not only from the

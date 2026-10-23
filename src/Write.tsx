@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { refusal } from "./Lock";
 
 // Shapes from src-tauri/src/summon.rs.
 type CallKey = "option" | "rightOption" | "control" | "command" | "shift";
@@ -29,7 +30,7 @@ export function Write() {
   const toggle = (enabled: boolean) => {
     setMessage(null);
     invoke<WritingStatus>("set_writing_enabled", { enabled }).then(setStatus, (e) =>
-      setMessage(String(e)),
+      setMessage(refusal(e)),
     );
   };
 
