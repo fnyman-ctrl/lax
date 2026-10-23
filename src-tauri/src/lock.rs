@@ -3,10 +3,11 @@
 //! Lax's window shows nothing until the user confirms with Touch ID or the
 //! login password, through macOS's LocalAuthentication, and locks again when
 //! the user is away. This module holds the lock's state, the away rules, the
-//! reasons the dialog shows, and the [`Authenticator`] that asks. Nothing
-//! calls it yet: the gate in front of the commands, the lock screen and the
-//! watcher that feeds [`Lock::tick`] and [`Lock::mac_event`] come in later
-//! steps of the ADR's rollout.
+//! reasons the dialog shows, the [`Authenticator`] that asks, and each
+//! command's lock rule ([`rule`], [`Lock::allows`]). [`app`] puts it into the
+//! running app: the gate in front of the commands, `lock_status` and
+//! `unlock`, and the watcher that feeds [`Lock::tick`] and
+//! [`Lock::mac_event`].
 //!
 //! The rules this module keeps:
 //!
@@ -27,10 +28,16 @@
 //!   only the window ([`Lock::tick`], [`Lock::window_visible`]).
 //! - **Nothing here asks on its own.** Only [`Lock::unlock`] and
 //!   [`Lock::confirm`] ask, and they are for something the user just did in
-//!   Lax. Locking never asks, also when the window is visible.
+//!   Lax. Locking never asks, also when the window is visible. One request
+//!   asks at a time; another made meanwhile is cancelled without asking.
+//! - **Default deny.** A command without a rule is refused, locked or not
+//!   ([`Lock::allows`]).
 
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, TryLockError};
 use std::time::{Duration, Instant, SystemTime};
+
+#[cfg(target_os = "macos")]
+pub mod app;
 
 /// How long the user may be away before Lax locks. Fixed (ADR 0012,
 /// question 9).
@@ -357,7 +364,7 @@ impl Refused {
     pub fn message(self) -> Option<&'static str> {
         match self {
             Refused::Cancelled => None,
-            Refused::Locked => Some("Lax is locked."),
+            Refused::Locked => Some(LOCKED),
             Refused::Failed(failure) => Some(failure.message()),
         }
     }
@@ -487,6 +494,8 @@ pub struct Lock<A: Authenticator, C: Clock = SystemClock> {
     clock: C,
     language: fn() -> Language,
     state: Mutex<State>,
+    /// Held while a request asks, so only one dialog shows at a time.
+    asking: Mutex<()>,
 }
 
 impl<A: Authenticator, C: Clock> Lock<A, C> {
@@ -497,6 +506,7 @@ impl<A: Authenticator, C: Clock> Lock<A, C> {
             clock,
             language: Language::system,
             state: Mutex::new(State::default()),
+            asking: Mutex::new(()),
         }
     }
 
@@ -578,7 +588,16 @@ impl<A: Authenticator, C: Clock> Lock<A, C> {
 
     /// One request, with a context of its own that is dropped when the
     /// answer is in. The state isn't held meanwhile, so a lock can come.
+    /// While another request asks, this one is cancelled without asking: the
+    /// user is already answering a dialog, and a second would only stack
+    /// another on top.
     fn ask(&self, action: Action) -> Outcome {
+        let _one_at_a_time = match self.asking.try_lock() {
+            Ok(guard) => guard,
+            // A request that panicked asks nothing more; the next may ask.
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return Outcome::Cancelled,
+        };
         let context = self.authenticator.new_context();
         let outcome = self
             .authenticator
@@ -609,6 +628,155 @@ impl<A: Authenticator, C: Clock> Lock<A, C> {
     pub fn mac_event(&self, _event: MacEvent) -> Option<Locked> {
         self.state().lock_lax()
     }
+
+    /// The gate: whether `command`, called from the window labelled
+    /// `window`, may run now. Default deny: a command without a rule, or
+    /// from a window its rule doesn't name, is refused.
+    pub fn allows(&self, command: &str, window: &str) -> bool {
+        match (rule(command), window) {
+            (Some(Rule::Open), MAIN_WINDOW) => true,
+            (Some(Rule::Unlocked), MAIN_WINDOW) => self.status().window_unlocked,
+            (Some(Rule::Panel), PANEL_WINDOW) => true,
+            _ => false,
+        }
+    }
+}
+
+// The command lists (ADR 0012, "Enforced in Rust, failing closed"). Every
+// `#[tauri::command]` in `lib.rs`'s handler is in exactly one of them
+// (`lib::tests::every_command_has_a_lock_rule`).
+
+/// What the gate answers a command it refuses. Fixed, and never says more.
+pub const LOCKED: &str = "Lax is locked.";
+
+/// The label of Lax's own window (`tauri.conf.json`).
+pub const MAIN_WINDOW: &str = "main";
+/// The label of the writing assistant's panel (`summon::PANEL`).
+pub const PANEL_WINDOW: &str = "panel";
+
+/// A command's lock rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rule {
+    /// Allowed in the main window while it is locked: none of them returns
+    /// anything Lax captured or learned. [`OPEN`].
+    Open,
+    /// Needs Lax and the window unlocked, and asks nothing more: the ADR's
+    /// `none` list. [`UNLOCKED`].
+    Unlocked,
+    /// The writing assistant's own commands, from the panel only, locked or
+    /// not. [`PANEL`].
+    Panel,
+}
+
+/// The main window's commands that work while it is locked: the lock
+/// itself, and opening the database, whose screens come before the lock
+/// screen. Nothing else: the rest of the window, the setup guide and
+/// onboarding included, shows only once it is unlocked (ADR 0012, question
+/// 10).
+pub const OPEN: &[&str] = &[
+    "lock_status",
+    "unlock",
+    "database_status",
+    "continue_opening",
+    "retry_opening",
+];
+
+/// The main window's commands that need the window unlocked. Forgets,
+/// exports and changes that loosen privacy are here too, until they ask
+/// again every time (the ADR's `every_time` and `loosening` lists, which
+/// also need the unlocked window).
+pub const UNLOCKED: &[&str] = &[
+    "accessibility_status",
+    "open_accessibility_settings",
+    "filevault_enabled",
+    "capture_status",
+    "setup_status",
+    "bug_report_details",
+    "start_over",
+    "recent_captures",
+    "search_captures",
+    "capture_detail",
+    "captured_apps",
+    "forget_captures",
+    "delete_all_data",
+    "retention_days",
+    "set_retention_days",
+    "exclusion_settings",
+    "add_exclusion",
+    "remove_exclusion",
+    "set_default_excluded",
+    "find_local_models",
+    "model_settings",
+    "set_model",
+    "clear_model",
+    "test_model",
+    "outbox_entries",
+    "outbox_payload",
+    "delete_outbox",
+    "outbox_retention_days",
+    "set_outbox_retention_days",
+    "journal_status",
+    "set_journal_enabled",
+    "journal_episodes",
+    "ask_memory",
+    "memory_status",
+    "set_memory_enabled",
+    "memory_entities",
+    "forget_entity",
+    "forget_memory",
+    "recreate_page",
+    "recreate_about_me",
+    "page_history",
+    "restore_page_version",
+    "set_own_names",
+    "page_text",
+    "save_page",
+    "close_page",
+    "pick_export_folder",
+    "export_pages",
+    "page_notes",
+    "keep_entity",
+    "rename_entity",
+    "merge_entities",
+    "obvious_pairs",
+    "not_same",
+    "merge_obvious_pairs",
+    "set_part_of",
+    "take_out_part",
+    "merge_suggestions",
+    "likely_same",
+    "brief_on",
+    "part_suggestions",
+    "not_part",
+    "dont_learn_list",
+    "allow_learning",
+    "finish_setup",
+    "writing_status",
+    "set_writing_enabled",
+    "set_writing_key",
+];
+
+/// The panel's commands. They keep working while Lax is locked (ADR 0012,
+/// "What stays unlocked"); `write_draft` will check the lock itself before
+/// it uses the memory pages.
+pub const PANEL: &[&str] = &[
+    "panel_call",
+    "write_draft",
+    "fit_panel",
+    "insert_draft",
+    "close_panel",
+];
+
+/// The rule for `command`, or `None` if it has none, which the gate refuses.
+pub fn rule(command: &str) -> Option<Rule> {
+    [
+        (OPEN, Rule::Open),
+        (UNLOCKED, Rule::Unlocked),
+        (PANEL, Rule::Panel),
+    ]
+    .into_iter()
+    .find(|(list, _)| list.contains(&command))
+    .map(|(_, rule)| rule)
 }
 
 #[cfg(target_os = "macos")]
@@ -821,7 +989,7 @@ pub mod fake {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     use super::fake::{FakeAuthenticator, FakeClock};
@@ -1333,6 +1501,130 @@ mod tests {
             assert!(lock.confirm(Action::RemoveExclusion).is_err());
             assert_eq!(lock.status(), open());
         }
+    }
+
+    #[test]
+    fn one_request_asks_at_a_time() {
+        let lock = Arc::new(lock_answering(&[Outcome::Success]));
+        let during = Arc::clone(&lock);
+        let second = Arc::new(Mutex::new(None));
+        let seen = Arc::clone(&second);
+        *lock.authenticator.while_asking.lock().unwrap() = Some(Box::new(move || {
+            *seen.lock().unwrap() = Some(during.unlock(Asker::Window));
+        }));
+        assert_eq!(lock.unlock(Asker::Window), Ok(()));
+        // The second was cancelled quietly, without a dialog of its own.
+        assert_eq!(*second.lock().unwrap(), Some(Err(Refused::Cancelled)));
+        assert_eq!(lock.authenticator.requests(), 1);
+        assert_eq!(lock.authenticator.contexts(), 1);
+        assert_eq!(lock.status(), open());
+        // Once answered, the next request asks.
+        lock.authenticator.then(Outcome::Success);
+        assert_eq!(lock.confirm(Action::ForgetMemory), Ok(()));
+        assert_eq!(lock.authenticator.requests(), 2);
+    }
+
+    // The gate.
+
+    const MAIN: &str = MAIN_WINDOW;
+    const PANEL_LABEL: &str = PANEL_WINDOW;
+
+    #[test]
+    fn locked_commands_are_refused() {
+        let lock = lock_answering(&[Outcome::Success, Outcome::Success]);
+        for command in UNLOCKED {
+            assert!(!lock.allows(command, MAIN), "{command} while locked");
+        }
+        // Unlocked from the panel: Lax, but not the window.
+        lock.unlock(Asker::Panel).unwrap();
+        for command in UNLOCKED {
+            assert!(!lock.allows(command, MAIN), "{command} with only Lax");
+        }
+        lock.unlock(Asker::Window).unwrap();
+        for command in UNLOCKED {
+            assert!(lock.allows(command, MAIN), "{command} unlocked");
+            // Never from the panel, whatever the lock.
+            assert!(
+                !lock.allows(command, PANEL_LABEL),
+                "{command} from the panel"
+            );
+        }
+        // Locked again: refused again.
+        lock.mac_event(MacEvent::ScreenLocked);
+        for command in UNLOCKED {
+            assert!(!lock.allows(command, MAIN), "{command} locked again");
+        }
+    }
+
+    #[test]
+    fn open_commands_work_while_locked_from_the_main_window_only() {
+        let lock = lock_answering(&[Outcome::Success]);
+        for command in OPEN {
+            assert!(lock.allows(command, MAIN), "{command}");
+            assert!(
+                !lock.allows(command, PANEL_LABEL),
+                "{command} from the panel"
+            );
+        }
+        lock.unlock(Asker::Window).unwrap();
+        for command in OPEN {
+            assert!(lock.allows(command, MAIN), "{command}");
+            assert!(
+                !lock.allows(command, PANEL_LABEL),
+                "{command} from the panel"
+            );
+        }
+        // Nothing open returns what Lax captured or learned.
+        for command in [
+            "recent_captures",
+            "journal_episodes",
+            "ask_memory",
+            "page_text",
+        ] {
+            assert_ne!(rule(command), Some(Rule::Open), "{command}");
+        }
+    }
+
+    #[test]
+    fn panel_commands_work_from_the_panel_only_locked_or_not() {
+        let lock = lock_answering(&[Outcome::Success]);
+        for command in PANEL {
+            assert!(lock.allows(command, PANEL_LABEL), "{command} while locked");
+            assert!(
+                !lock.allows(command, MAIN),
+                "{command} from the main window"
+            );
+        }
+        lock.unlock(Asker::Window).unwrap();
+        for command in PANEL {
+            assert!(lock.allows(command, PANEL_LABEL), "{command} unlocked");
+            assert!(
+                !lock.allows(command, MAIN),
+                "{command} from the main window"
+            );
+        }
+    }
+
+    #[test]
+    fn a_command_without_a_rule_or_from_another_window_is_refused() {
+        let lock = unlocked();
+        for command in ["", "new_command", "Recent_Captures", "recent_captures "] {
+            assert_eq!(rule(command), None, "{command:?}");
+            assert!(!lock.allows(command, MAIN), "{command:?}");
+            assert!(!lock.allows(command, PANEL_LABEL), "{command:?}");
+        }
+        for window in ["", "Main", "settings", "panel2"] {
+            assert!(!lock.allows("recent_captures", window), "{window:?}");
+            assert!(!lock.allows("lock_status", window), "{window:?}");
+            assert!(!lock.allows("write_draft", window), "{window:?}");
+        }
+    }
+
+    #[test]
+    fn the_window_labels_are_the_apps() {
+        assert_eq!(PANEL_WINDOW, crate::summon::PANEL);
+        let config = include_str!("../tauri.conf.json");
+        assert!(config.contains(&format!("\"label\": \"{MAIN_WINDOW}\"")));
     }
 
     // Failing closed.

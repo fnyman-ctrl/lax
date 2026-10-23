@@ -87,6 +87,19 @@ function NotOpen({ state }: { state: Exclude<State, "open" | "opening"> }) {
       .finally(() => setBusy(false));
   };
 
+  // Starting over needs the window unlocked (ADR 0012), and these screens
+  // come before the lock screen, so it asks first. A cancel says nothing.
+  const unlockAndStartOver = () => {
+    setBusy(true);
+    setError(null);
+    invoke("unlock")
+      .then(
+        () => invoke("start_over").catch((e) => setError(String(e))),
+        (e) => setError(typeof e === "string" ? e : null),
+      )
+      .finally(() => setBusy(false));
+  };
+
   if (state === "update") {
     return (
       <main className="container database">
@@ -228,7 +241,7 @@ function NotOpen({ state }: { state: Exclude<State, "open" | "opening"> }) {
               disabled={busy}
               onClick={() => {
                 setConfirming(false);
-                run("start_over");
+                unlockAndStartOver();
               }}
             >
               Start over

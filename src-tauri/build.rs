@@ -33,6 +33,8 @@ fn main() {
     // capabilities/, so the web UI can only call what a window is granted.
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
+            "lock_status",
+            "unlock",
             "accessibility_status",
             "bug_report_details",
             "open_accessibility_settings",

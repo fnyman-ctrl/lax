@@ -15,7 +15,7 @@ mod insert;
 mod journal;
 #[cfg(target_os = "macos")]
 mod keychain;
-#[allow(dead_code)] // The gate, the lock screen and the watcher come next (ADR 0012).
+#[allow(dead_code)] // Asking again and the panel's unlock come next (ADR 0012, steps 3 and 4).
 mod lock;
 #[allow(dead_code)] // Some levels and fields have no user yet.
 mod logging;
@@ -55,7 +55,13 @@ pub fn run() {
         .manage(database::Database::default())
         .manage(pages::OpenPages::default())
         .manage(pages::export::ChosenFolder::default())
-        .invoke_handler(tauri::generate_handler![
+        // Lax starts locked (ADR 0012).
+        .manage(lock::app::new())
+        // Every command passes the lock's gate first. One without a rule in
+        // lock.rs is refused (`every_command_has_a_lock_rule`).
+        .invoke_handler(lock::app::gate(tauri::generate_handler![
+            lock::app::lock_status,
+            lock::app::unlock,
             accessibility::accessibility_status,
             report::bug_report_details,
             accessibility::open_accessibility_settings,
@@ -132,7 +138,7 @@ pub fn run() {
             write::write_draft,
             write::fit_panel,
             insert::insert_draft,
-        ])
+        ]))
         .setup(|app| {
             // Lax lives in the menu bar, without a Dock icon.
             #[cfg(target_os = "macos")]
@@ -159,6 +165,8 @@ pub fn run() {
                 .restore(pause::CaptureState::Paused { until: None });
             tray::create(app.handle())?;
             database::start(app.handle());
+            // Locks when the user is away, whether capture runs or not.
+            lock::app::watch(app.handle());
 
             // Without the Accessibility permission Lax can't capture anything,
             // so show the onboarding window explaining why it's needed.
@@ -182,6 +190,9 @@ pub fn run() {
             WindowEvent::CloseRequested { api, .. } => {
                 api.prevent_close();
                 let _ = window.hide();
+                if window.label() == lock::MAIN_WINDOW {
+                    lock::app::hidden(window.app_handle());
+                }
             }
             // The panel goes away when the user clicks elsewhere.
             WindowEvent::Focused(false) if window.label() == summon::PANEL => {
@@ -196,19 +207,9 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    /// Every command the window can call must be listed in `build.rs` and
-    /// allowed in `capabilities/default.json`; Tauri refuses any other
-    /// ("not allowed. Command not found"), and nothing else catches it. And
-    /// nothing is listed or allowed that isn't a command any more.
-    #[test]
-    fn every_command_is_listed_and_allowed() {
+    /// The commands in `generate_handler!`, by name.
+    fn commands() -> Vec<&'static str> {
         let lib = include_str!("lib.rs");
-        let build = include_str!("../build.rs");
-        let capabilities = [
-            include_str!("../capabilities/default.json"),
-            include_str!("../capabilities/panel.json"),
-        ]
-        .concat();
         let start =
             lib.find("generate_handler![").expect("the handler") + "generate_handler![".len();
         let end = start + lib[start..].find("])").expect("its end");
@@ -220,6 +221,31 @@ mod tests {
             })
             .collect();
         assert!(commands.len() > 40, "found {} commands", commands.len());
+        commands
+    }
+
+    /// The permissions a capability file grants, as command names.
+    fn allowed(capability: &str) -> Vec<String> {
+        capability
+            .split('"')
+            .filter_map(|word| word.strip_prefix("allow-"))
+            .map(|allowed| allowed.replace('-', "_"))
+            .collect()
+    }
+
+    /// Every command the window can call must be listed in `build.rs` and
+    /// allowed in `capabilities/default.json`; Tauri refuses any other
+    /// ("not allowed. Command not found"), and nothing else catches it. And
+    /// nothing is listed or allowed that isn't a command any more.
+    #[test]
+    fn every_command_is_listed_and_allowed() {
+        let build = include_str!("../build.rs");
+        let capabilities = [
+            include_str!("../capabilities/default.json"),
+            include_str!("../capabilities/panel.json"),
+        ]
+        .concat();
+        let commands = commands();
         for command in &commands {
             assert!(
                 build.contains(&format!("\"{command}\"")),
@@ -232,12 +258,9 @@ mod tests {
             );
         }
         // The other way: every allowed permission and listed name is a command.
-        for allowed in capabilities
-            .split('"')
-            .filter_map(|word| word.strip_prefix("allow-"))
-        {
+        for allowed in allowed(&capabilities) {
             assert!(
-                commands.contains(&allowed.replace('-', "_").as_str()),
+                commands.contains(&allowed.as_str()),
                 "allow-{allowed} is granted but isn't a command"
             );
         }
@@ -249,5 +272,41 @@ mod tests {
                 "{name} is listed in build.rs but isn't a command"
             );
         }
+    }
+
+    /// Every command has exactly one lock rule in `lock.rs` (ADR 0012), so
+    /// the gate knows it: a command without one is refused. The rules match
+    /// the capabilities: the panel's commands are the panel's, and the main
+    /// window's are the main window's.
+    #[test]
+    fn every_command_has_a_lock_rule() {
+        use crate::lock::{OPEN, PANEL, UNLOCKED, rule};
+
+        let commands = commands();
+        for command in &commands {
+            let lists = [OPEN, UNLOCKED, PANEL]
+                .iter()
+                .filter(|list| list.contains(command))
+                .count();
+            assert_eq!(lists, 1, "{command} is in {lists} of the lock's lists");
+            assert!(rule(command).is_some(), "{command}");
+        }
+        for command in OPEN.iter().chain(UNLOCKED).chain(PANEL) {
+            assert!(
+                commands.contains(command),
+                "{command} has a lock rule but isn't a command"
+            );
+        }
+
+        let mut main = allowed(include_str!("../capabilities/default.json"));
+        let mut panel = allowed(include_str!("../capabilities/panel.json"));
+        let mut main_rules: Vec<String> =
+            OPEN.iter().chain(UNLOCKED).map(|c| c.to_string()).collect();
+        let mut panel_rules: Vec<String> = PANEL.iter().map(|c| c.to_string()).collect();
+        for list in [&mut main, &mut panel, &mut main_rules, &mut panel_rules] {
+            list.sort();
+        }
+        assert_eq!(main, main_rules, "the main window's commands");
+        assert_eq!(panel, panel_rules, "the panel's commands");
     }
 }

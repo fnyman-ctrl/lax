@@ -61,8 +61,10 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
             return;
         }
         RESUME => pause.resume(),
+        // The user opened the window: if it is locked, ask at once.
         OPEN => {
             open_window(app);
+            crate::lock::app::ask_on_open(app);
             return;
         }
         QUIT => {
@@ -167,8 +169,11 @@ fn tooltip(state: CaptureState) -> String {
     format!("Lax: {}", label(state))
 }
 
+/// Shows the window. Asks nothing: the lock screen shows if it is locked,
+/// and the hidden-window rule is applied before it shows anything.
 pub fn open_window(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("main") {
+    crate::lock::app::showing(app);
+    if let Some(window) = app.get_webview_window(crate::lock::MAIN_WINDOW) {
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();

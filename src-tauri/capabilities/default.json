@@ -6,6 +6,8 @@
   "permissions": [
     "core:default",
     "core:window:allow-set-theme",
+    "allow-lock-status",
+    "allow-unlock",
     "allow-accessibility-status",
     "allow-bug-report-details",
     "allow-open-accessibility-settings",
