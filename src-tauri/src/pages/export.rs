@@ -34,7 +34,16 @@ impl ChosenFolder {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = folder;
     }
 
-    /// The folder, once: an export uses up the pick, whatever happens.
+    /// The folder, still chosen.
+    pub fn get(&self) -> Option<PathBuf> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The folder, once: a confirmed export uses up the pick, whatever
+    /// happens.
     pub fn take(&self) -> Option<PathBuf> {
         self.0
             .lock()
@@ -205,6 +214,18 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     use super::*;
+
+    #[test]
+    fn the_pick_stays_until_it_is_taken() {
+        let chosen = ChosenFolder::default();
+        assert_eq!(chosen.get(), None);
+        chosen.set(Some(PathBuf::from("/tmp/export")));
+        // Looking doesn't use it up, as before a cancelled Touch ID.
+        assert_eq!(chosen.get(), Some(PathBuf::from("/tmp/export")));
+        assert_eq!(chosen.take(), Some(PathBuf::from("/tmp/export")));
+        assert_eq!(chosen.get(), None);
+        assert_eq!(chosen.take(), None);
+    }
 
     struct Temp(PathBuf);
 

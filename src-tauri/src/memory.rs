@@ -588,6 +588,21 @@ pub async fn set_own_names(app: AppHandle, names: Vec<String>) -> Result<MemoryS
             clean.push(name);
         }
     }
+    // Nothing added or removed, such as a name only written differently:
+    // saved without asking, since it neither forgets nor lets Lax learn
+    // anything.
+    let unchanged = command(&app, |store| {
+        let failed = |_| "Lax couldn't save your names.".to_string();
+        if !same_names(&store.own_names().map_err(failed)?, &clean) {
+            return Ok(None);
+        }
+        store.set_own_names(&clean).map_err(failed)?;
+        status(store).map(Some).map_err(failed)
+    })?;
+    if let Some(status) = unchanged {
+        pages::sync_now(&app);
+        return Ok(status);
+    }
     asking(app, move |app, lock| {
         lock.confirmed(Action::SetOwnNames, || {
             let status = command(app, |store| {
@@ -608,6 +623,18 @@ pub async fn set_own_names(app: AppHandle, names: Vec<String>) -> Result<MemoryS
 
 /// Most other names the user can give.
 const MAX_OWN_NAMES: usize = 10;
+
+/// Whether `a` and `b` hold the same names, whatever their order or how
+/// each is written.
+fn same_names(a: &[String], b: &[String]) -> bool {
+    let keys = |names: &[String]| {
+        names
+            .iter()
+            .map(|n| name_key(n))
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    keys(a) == keys(b)
+}
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -819,7 +846,7 @@ pub fn pick_export_folder(app: AppHandle) -> Result<Option<PickedFolder>, String
 /// of `entity`, the About me page for `None`, or every page with `all`. The
 /// window has shown that the copy isn't encrypted; a synced folder needs
 /// `synced_confirmed` too. Then asks for Touch ID or the password, every
-/// time (ADR 0012). The pick is used up whatever happens, a cancel too.
+/// time (ADR 0012). The pick is used up once the user confirms.
 #[tauri::command]
 pub async fn export_pages(
     app: AppHandle,
@@ -827,9 +854,11 @@ pub async fn export_pages(
     all: bool,
     synced_confirmed: bool,
 ) -> Result<pages::export::Exported, Refusal> {
+    // Kept until the user confirms: a cancelled dialog doesn't throw the
+    // pick away.
     let folder = app
         .state::<pages::export::ChosenFolder>()
-        .take()
+        .get()
         .ok_or_else(|| "Choose a folder first.".to_string())?;
     if pages::export::synced_service(&folder).is_some() && !synced_confirmed {
         return Err(Some(
@@ -838,6 +867,11 @@ pub async fn export_pages(
     }
     asking(app, move |app, lock| {
         lock.confirmed(Action::ExportPages, || {
+            // Used up now, whatever happens next, and only if it is still the
+            // folder the notice was about.
+            if app.state::<pages::export::ChosenFolder>().take() != Some(folder.clone()) {
+                return Err("Choose a folder first.".to_string());
+            }
             export_into(app, &folder, entity, all)
         })
     })
@@ -997,6 +1031,17 @@ fn with_store<T>(app: &AppHandle, work: impl FnOnce(&mut Store) -> T) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_same_names_written_differently_are_the_same() {
+        let names = |list: &[&str]| list.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        assert!(same_names(&names(&["Anna", "Ex"]), &names(&["ex", "ANNA"])));
+        assert!(same_names(&names(&[]), &names(&[])));
+        // Added or removed: not the same, so it asks.
+        assert!(!same_names(&names(&["Anna"]), &names(&["Anna", "Ex"])));
+        assert!(!same_names(&names(&["Anna", "Ex"]), &names(&["Anna"])));
+        assert!(!same_names(&names(&["Anna"]), &names(&["Anne"])));
+    }
 
     fn entities(people: &[&str], organisations: &[&str], projects: &[&str]) -> Entities {
         let list = |names: &[&str]| names.iter().map(|n| n.to_string()).collect();

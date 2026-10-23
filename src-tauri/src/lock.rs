@@ -888,6 +888,7 @@ pub const LOOSENING: &[(&str, Action)] = &[
 pub const ASKS_WHILE_LOCKED: &[(&str, Action)] = &[("start_over", Action::StartOver)];
 
 /// The action `command` asks the user to confirm, if it asks.
+#[cfg(test)]
 pub fn action(command: &str) -> Option<Action> {
     EVERY_TIME
         .iter()

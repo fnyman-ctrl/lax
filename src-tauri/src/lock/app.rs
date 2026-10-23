@@ -94,13 +94,13 @@ pub fn lock_status(lock: tauri::State<'_, AppLock>) -> LockStatus {
 /// user pressed Unlock. A cancel is refused with no message (`null`), any
 /// other failure with a short one.
 #[tauri::command]
-pub async fn unlock(app: AppHandle) -> Result<(), Option<&'static str>> {
+pub async fn unlock(app: AppHandle) -> Result<(), Refusal> {
     // The dialog blocks until the user answers: off the main thread and the
     // async workers.
     tauri::async_runtime::spawn_blocking(move || app.state::<AppLock>().unlock(Asker::Window))
         .await
         .unwrap_or(Err(Refused::Failed(super::Failure::Unavailable)))
-        .map_err(Refused::message)
+        .map_err(Refused::refusal)
 }
 
 /// Runs a command that asks again (ADR 0012, "What else asks"): `work` gets
