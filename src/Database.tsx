@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 // The pixel salmon (docs/BRAND.md).
 import salmon from "../src-tauri/icons/salmon.svg";
+import { refusal } from "./Lock";
 
 // Must match CHANGED_EVENT in src-tauri/src/database.rs.
 const DATABASE_CHANGED = "database-changed";
@@ -87,16 +88,13 @@ function NotOpen({ state }: { state: Exclude<State, "open" | "opening"> }) {
       .finally(() => setBusy(false));
   };
 
-  // Starting over needs the window unlocked (ADR 0012), and these screens
-  // come before the lock screen, so it asks first. A cancel says nothing.
-  const unlockAndStartOver = () => {
+  // Starting over asks for Touch ID or the password itself, in Rust, also
+  // while the window is locked (ADR 0012). A cancel says nothing.
+  const startOverNow = () => {
     setBusy(true);
     setError(null);
-    invoke("unlock")
-      .then(
-        () => invoke("start_over").catch((e) => setError(String(e))),
-        (e) => setError(typeof e === "string" ? e : null),
-      )
+    invoke("start_over")
+      .catch((e) => setError(refusal(e)))
       .finally(() => setBusy(false));
   };
 
@@ -241,7 +239,7 @@ function NotOpen({ state }: { state: Exclude<State, "open" | "opening"> }) {
               disabled={busy}
               onClick={() => {
                 setConfirming(false);
-                unlockAndStartOver();
+                startOverNow();
               }}
             >
               Start over

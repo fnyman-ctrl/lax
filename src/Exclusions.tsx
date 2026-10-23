@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { failure } from "./Lock";
 
 // Shapes used by src-tauri/src/exclusion_settings.rs and forget.rs.
 type Kind = "app" | "site" | "title";
@@ -46,7 +47,7 @@ export function Exclusions({ onForgotten }: { onForgotten: () => void }) {
           return true;
         },
         (error) => {
-          setMessage({ text: String(error), error: true });
+          setMessage(failure(error));
           return false;
         },
       )
@@ -66,7 +67,8 @@ export function Exclusions({ onForgotten }: { onForgotten: () => void }) {
               onForgotten();
               loadApps();
             },
-            (error) => setMessage({ text: String(error), error: true }),
+            // A cancelled Touch ID keeps "Excluded.": that part is done.
+            (error) => setMessage((shown) => failure(error) ?? shown),
           );
         }
         return ok;

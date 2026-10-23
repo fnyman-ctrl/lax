@@ -15,7 +15,7 @@ mod insert;
 mod journal;
 #[cfg(target_os = "macos")]
 mod keychain;
-#[allow(dead_code)] // Asking again and the panel's unlock come next (ADR 0012, steps 3 and 4).
+#[allow(dead_code)] // The panel's unlock comes next (ADR 0012, step 4).
 mod lock;
 #[allow(dead_code)] // Some levels and fields have no user yet.
 mod logging;
@@ -207,21 +207,55 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    /// The commands in `generate_handler!`, by name.
-    fn commands() -> Vec<&'static str> {
+    use crate::lock::Action;
+
+    /// The commands in `generate_handler!`, each with its module path, such
+    /// as `("forget", "forget_captures")`.
+    fn handler() -> Vec<(&'static str, &'static str)> {
         let lib = include_str!("lib.rs");
         let start =
             lib.find("generate_handler![").expect("the handler") + "generate_handler![".len();
         let end = start + lib[start..].find("])").expect("its end");
-        let commands: Vec<&str> = lib[start..end]
+        let commands: Vec<(&str, &str)> = lib[start..end]
             .split(',')
-            .filter_map(|item| item.trim().rsplit("::").next())
-            .filter(|name| {
+            .filter_map(|item| item.trim().rsplit_once("::"))
+            .filter(|(_, name)| {
                 !name.is_empty() && name.chars().all(|c| c.is_ascii_lowercase() || c == '_')
             })
             .collect();
         assert!(commands.len() > 40, "found {} commands", commands.len());
         commands
+    }
+
+    /// The commands in `generate_handler!`, by name.
+    fn commands() -> Vec<&'static str> {
+        handler().into_iter().map(|(_, name)| name).collect()
+    }
+
+    /// The source of the module a command is in, for the commands that ask.
+    fn source(module: &str) -> Option<&'static str> {
+        Some(match module {
+            "database" => include_str!("database.rs"),
+            "exclusion_settings" => include_str!("exclusion_settings.rs"),
+            "forget" => include_str!("forget.rs"),
+            "journal" => include_str!("journal.rs"),
+            "memory" => include_str!("memory.rs"),
+            "model_settings" => include_str!("model_settings.rs"),
+            "outbox" => include_str!("outbox.rs"),
+            "summon" => include_str!("summon.rs"),
+            _ => return None,
+        })
+    }
+
+    /// The body of `command` in `module`'s source.
+    fn body(module: &str, command: &str) -> &'static str {
+        let source =
+            source(module).unwrap_or_else(|| panic!("add {module}.rs to `source` for {command}"));
+        let start = source
+            .find(&format!("pub async fn {command}("))
+            .unwrap_or_else(|| panic!("{command} isn't a `pub async fn` in {module}.rs"));
+        let end = start + source[start..].find("\n}\n").expect("its end");
+        &source[start..end]
     }
 
     /// The permissions a capability file grants, as command names.
@@ -280,33 +314,138 @@ mod tests {
     /// window's are the main window's.
     #[test]
     fn every_command_has_a_lock_rule() {
-        use crate::lock::{OPEN, PANEL, UNLOCKED, rule};
+        use crate::lock::{ASKS_WHILE_LOCKED, EVERY_TIME, LOOSENING, OPEN, PANEL, UNLOCKED, rule};
+
+        let names = |list: &[(&'static str, Action)]| -> Vec<&'static str> {
+            list.iter().map(|(command, _)| *command).collect()
+        };
+        let main_lists = [
+            OPEN.to_vec(),
+            UNLOCKED.to_vec(),
+            names(EVERY_TIME),
+            names(LOOSENING),
+            names(ASKS_WHILE_LOCKED),
+        ];
+        let lists: Vec<&Vec<&str>> = main_lists.iter().collect();
+        let panel_list = PANEL.to_vec();
+        let all: Vec<&Vec<&str>> = lists.iter().copied().chain([&panel_list]).collect();
 
         let commands = commands();
         for command in &commands {
-            let lists = [OPEN, UNLOCKED, PANEL]
-                .iter()
-                .filter(|list| list.contains(command))
-                .count();
-            assert_eq!(lists, 1, "{command} is in {lists} of the lock's lists");
+            let found = all.iter().filter(|list| list.contains(command)).count();
+            assert_eq!(found, 1, "{command} is in {found} of the lock's lists");
             assert!(rule(command).is_some(), "{command}");
         }
-        for command in OPEN.iter().chain(UNLOCKED).chain(PANEL) {
+        for command in all.iter().flat_map(|list| list.iter()) {
             assert!(
                 commands.contains(command),
                 "{command} has a lock rule but isn't a command"
             );
+            let times = all
+                .iter()
+                .flat_map(|list| list.iter())
+                .filter(|c| *c == command);
+            assert_eq!(times.count(), 1, "{command} is listed twice");
         }
 
         let mut main = allowed(include_str!("../capabilities/default.json"));
         let mut panel = allowed(include_str!("../capabilities/panel.json"));
-        let mut main_rules: Vec<String> =
-            OPEN.iter().chain(UNLOCKED).map(|c| c.to_string()).collect();
+        let mut main_rules: Vec<String> = lists
+            .iter()
+            .flat_map(|list| list.iter())
+            .map(|c| c.to_string())
+            .collect();
         let mut panel_rules: Vec<String> = PANEL.iter().map(|c| c.to_string()).collect();
         for list in [&mut main, &mut panel, &mut main_rules, &mut panel_rules] {
             list.sort();
         }
         assert_eq!(main, main_rules, "the main window's commands");
         assert_eq!(panel, panel_rules, "the panel's commands");
+    }
+
+    /// Every command that asks again (ADR 0012, "What else asks") asks with
+    /// its own action, through the lock, before it changes anything: its
+    /// body confirms with the action its list names, and runs off the main
+    /// thread (`asking`). And a command whose name says it forgets, deletes,
+    /// exports or loosens can't be left out of the lists: it would change
+    /// things without asking.
+    #[test]
+    fn every_command_that_asks_asks_with_its_action() {
+        use crate::lock::{ASKS_WHILE_LOCKED, EVERY_TIME, LOOSENING, action};
+
+        let handler = handler();
+        let module = |command: &str| {
+            handler
+                .iter()
+                .find(|(_, name)| *name == command)
+                .map(|(module, _)| *module)
+                .unwrap_or_else(|| panic!("{command} isn't a command"))
+        };
+        let mut actions = Vec::new();
+        for (list, confirms) in [
+            (EVERY_TIME, "confirmed"),
+            (LOOSENING, "confirmed_if_loosening"),
+            (ASKS_WHILE_LOCKED, "confirmed_while_locked"),
+        ] {
+            for (command, wanted) in list {
+                let body = body(module(command), command);
+                assert!(
+                    body.contains("asking("),
+                    "{command} doesn't ask off the main thread"
+                );
+                let call = format!(".{confirms}(Action::{wanted:?}");
+                assert!(body.contains(&call), "{command} doesn't call {call}");
+                // No other action.
+                assert_eq!(body.matches("Action::").count(), 1, "{command}");
+                assert!(!actions.contains(wanted), "{wanted:?} is used twice");
+                actions.push(*wanted);
+            }
+        }
+
+        // What the names promise.
+        let must_ask = |name: &str| {
+            [
+                "forget_",
+                "delete_",
+                "export_",
+                "remove_",
+                "allow_",
+                "start_over",
+            ]
+            .iter()
+            .any(|start| name.starts_with(start))
+                || name.ends_with("_retention_days") && name.starts_with("set_")
+                || name == "set_own_names"
+        };
+        for (_, command) in &handler {
+            if must_ask(command) {
+                assert!(
+                    EVERY_TIME
+                        .iter()
+                        .chain(ASKS_WHILE_LOCKED)
+                        .any(|(c, _)| c == command),
+                    "{command} must ask every time"
+                );
+            }
+            if command.starts_with("set_") && command.ends_with("_enabled") {
+                assert!(
+                    LOOSENING.iter().any(|(c, _)| c == command),
+                    "{command} must ask when it turns something on"
+                );
+            }
+            // A command not in the lists doesn't ask: one that asks must be
+            // listed, so the gate and these tests know it.
+            if action(command).is_none()
+                && let Some(source) = source(module(command))
+                && let Some(start) = source.find(&format!("fn {command}("))
+            {
+                let rest = &source[start..];
+                let body = &rest[..rest.find("\n}\n").unwrap_or(rest.len())];
+                assert!(
+                    !body.contains(".confirm"),
+                    "{command} asks but isn't listed"
+                );
+            }
+        }
     }
 }

@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import App from "./App";
-import { LockGate } from "./Lock";
+import { LockGate, failure, refusal } from "./Lock";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
@@ -146,5 +146,18 @@ describe("the window", () => {
     expect(screen.getByText("Lax is locked")).toBeTruthy();
     const commands = new Set(mocked.mock.calls.map(([command]) => command));
     expect([...commands].sort()).toEqual(["database_status", "lock_status"]);
+  });
+});
+
+describe("a refused command", () => {
+  test("a cancelled Touch ID shows nothing, anything else its message", () => {
+    expect(refusal(null)).toBeNull();
+    expect(refusal(undefined)).toBeNull();
+    expect(refusal("Lax is locked.")).toBe("Lax is locked.");
+    expect(failure(null)).toBeNull();
+    expect(failure("Touch ID or the password wasn't accepted.")).toEqual({
+      text: "Touch ID or the password wasn't accepted.",
+      error: true,
+    });
   });
 });

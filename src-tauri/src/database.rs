@@ -31,6 +31,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::keychain::{self, ACCOUNT, BuildHash, KeyError, KeySource, LoginKeychain};
+use crate::lock::app::asking;
+use crate::lock::{Action, Refusal};
 use crate::logging::{self, ErrorKind, Field};
 use crate::pause::{CaptureState, Pause};
 use crate::store::{DATABASE_FILE, FileKind, Opened, Store, StoreError, file_kind};
@@ -149,17 +151,37 @@ pub fn retry_opening(app: AppHandle) {
 /// so the old file can still be opened if its key turns up (ADR 0010,
 /// "When the key is missing or wrong").
 ///
-/// Async, so a Keychain prompt for the rename never holds the main thread.
-#[tauri::command(async)]
-pub fn start_over(app: AppHandle) -> Result<(), String> {
+/// Asks for Touch ID or the login password first, every time, also while
+/// the window is locked, since this screen comes before the lock screen
+/// (ADR 0012). One dialog, and the window stays locked.
+///
+/// Async, so neither the dialog nor a Keychain prompt for the rename ever
+/// holds the main thread.
+#[tauri::command]
+pub async fn start_over(app: AppHandle) -> Result<(), Refusal> {
+    // Checked before asking too, so a database that opens doesn't ask.
+    if !START_OVER_FROM.contains(&app.state::<Database>().get()) {
+        return Err(Some(CANNOT_START_OVER.to_string()));
+    }
+    asking(app, |app, lock| {
+        lock.confirmed_while_locked(Action::StartOver, || start_over_now(app))
+    })
+    .await
+}
+
+/// Where opening must stand for Start over: the key doesn't open the file.
+const START_OVER_FROM: [Option<State>; 2] = [
+    Some(State::Failed(Failure::KeyMissing)),
+    Some(State::Failed(Failure::CannotUnlock)),
+];
+
+const CANNOT_START_OVER: &str = "Lax can only start over when its key doesn't open the database.";
+
+fn start_over_now(app: &AppHandle) -> Result<(), String> {
     let database = app.state::<Database>();
     let before = database.get();
-    let from = [
-        Some(State::Failed(Failure::KeyMissing)),
-        Some(State::Failed(Failure::CannotUnlock)),
-    ];
-    if !database.change(&from, State::Opening) {
-        return Err("Lax can only start over when its key doesn't open the database.".into());
+    if !database.change(&START_OVER_FROM, State::Opening) {
+        return Err(CANNOT_START_OVER.into());
     }
     let dir = app
         .path()
@@ -170,7 +192,7 @@ pub fn start_over(app: AppHandle) -> Result<(), String> {
         logging::warn("store.start_over_failed", &[Field::Error(ErrorKind::Other)]);
         // As it was: the same explanation, and Start over still offered.
         database.set(before.unwrap_or(State::Failed(Failure::CannotUnlock)));
-        changed(&app);
+        changed(app);
         return Err(error);
     }
     logging::info("store.started_over", &[]);

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { failure } from "./Lock";
 
 // Shapes used by src-tauri/src/forget.rs.
 type ForgetRequest =
@@ -62,16 +63,24 @@ export function Forget({ onForgotten }: { onForgotten: () => void }) {
       return;
     }
     setBusy(true);
+    // A cancelled Touch ID forgot nothing, so nothing needs reloading.
+    let cancelled = false;
     pending
       .run()
       .then(
         (text) => setMessage({ text, error: false }),
-        (error) => setMessage({ text: String(error), error: true }),
+        (error) => {
+          const shown = failure(error);
+          cancelled = shown === null;
+          setMessage(shown);
+        },
       )
       .finally(() => {
         // Also after an error: part of it may have been deleted.
-        onForgotten();
-        loadApps();
+        if (!cancelled) {
+          onForgotten();
+          loadApps();
+        }
         setBusy(false);
         setPending(null);
       });
@@ -129,7 +138,7 @@ export function Forget({ onForgotten }: { onForgotten: () => void }) {
     } else {
       saveRetention(days).then(
         (text) => setMessage({ text, error: false }),
-        (error) => setMessage({ text: String(error), error: true }),
+        (error) => setMessage(failure(error)),
       );
     }
   };

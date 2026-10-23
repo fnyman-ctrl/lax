@@ -23,4 +23,20 @@ describe("Write", () => {
     expect(mocked).toHaveBeenCalledWith("set_writing_key", { key: "rightOption" });
     expect(await screen.findByText("Double-tap Right ⌥ Option")).toBeTruthy();
   });
+
+  test("a cancelled Touch ID leaves it off and says nothing", async () => {
+    mocked.mockReset();
+    mocked.mockImplementation(async (command: string) => {
+      if (command === "writing_status") return { enabled: false, key: "option" };
+      if (command === "set_writing_enabled") throw null;
+      return null;
+    });
+    const { container } = render(<Write />);
+    const turnOn = await screen.findByRole("button", { name: "Turn the writing assistant on" });
+    await act(async () => fireEvent.click(turnOn));
+    expect(mocked).toHaveBeenCalledWith("set_writing_enabled", { enabled: true });
+    expect(screen.getByRole("button", { name: "Turn the writing assistant on" })).toBeTruthy();
+    expect(container.textContent).not.toContain("null");
+    expect(container.querySelector(".error")).toBeNull();
+  });
 });

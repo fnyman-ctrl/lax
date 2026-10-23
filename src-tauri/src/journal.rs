@@ -18,6 +18,8 @@ use chrono::{DateTime, Local, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
+use crate::lock::app::asking;
+use crate::lock::{Action, Refusal, turns_on};
 use crate::logging::{self, ErrorKind, Field};
 use crate::memory;
 use crate::models::structured::{self, Captured, StructuredError, Validate};
@@ -516,22 +518,35 @@ pub fn journal_status(app: AppHandle) -> Result<JournalStatus, String> {
 }
 
 /// Turns the journal on or off. It can only be turned on with a chat model
-/// chosen.
-#[tauri::command(async)]
-pub fn set_journal_enabled(app: AppHandle, enabled: bool) -> Result<JournalStatus, String> {
-    command(&app, |store| {
-        let failed = |_| "Lax couldn't change the journal setting.".to_string();
-        if enabled
-            && store
-                .model_choice(ModelTask::Chat)
-                .map_err(failed)?
-                .is_none()
-        {
-            return Err("Choose a chat model under Models first.".to_string());
-        }
-        store.set_journal_enabled(enabled).map_err(failed)?;
-        status(store).map_err(failed)
+/// chosen. Turning it on asks for Touch ID or the password first (ADR
+/// 0012); turning it off doesn't.
+#[tauri::command]
+pub async fn set_journal_enabled(app: AppHandle, enabled: bool) -> Result<JournalStatus, Refusal> {
+    asking(app, move |app, lock| {
+        lock.confirmed_if_loosening(Action::TurnOnJournal, |confirmed| {
+            command(app, |store| switch(store, enabled, confirmed))
+        })
     })
+    .await
+}
+
+/// Turns the journal on or off, unless that turns it on and the user hasn't
+/// `confirmed` it yet: then `None`, and nothing changes.
+fn switch(store: &Store, enabled: bool, confirmed: bool) -> Result<Option<JournalStatus>, String> {
+    let failed = |_| "Lax couldn't change the journal setting.".to_string();
+    if enabled
+        && store
+            .model_choice(ModelTask::Chat)
+            .map_err(failed)?
+            .is_none()
+    {
+        return Err("Choose a chat model under Models first.".to_string());
+    }
+    if !confirmed && turns_on(store.journal_enabled().map_err(failed)?, enabled) {
+        return Ok(None);
+    }
+    store.set_journal_enabled(enabled).map_err(failed)?;
+    status(store).map(Some).map_err(failed)
 }
 
 #[tauri::command(async)]
@@ -577,6 +592,49 @@ fn with_store<T>(app: &AppHandle, work: impl FnOnce(&mut Store) -> T) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn turning_the_journal_on_asks_and_a_refusal_changes_nothing() {
+        use crate::lock::fake::{FakeAuthenticator, FakeClock};
+        use crate::lock::{Asker, Failure, Lock, Outcome};
+
+        let store = Store::open_in_memory().unwrap();
+        store
+            .set_model_choice(
+                ModelTask::Chat,
+                Some(&crate::store::ModelChoice {
+                    base_url: "http://localhost:1234/v1".to_string(),
+                    model: "google/gemma-4-e4b".to_string(),
+                }),
+            )
+            .unwrap();
+        let lock = Lock::new(
+            FakeAuthenticator::answering(&[Outcome::Success]),
+            FakeClock::default(),
+        );
+        lock.unlock(Asker::Window).unwrap();
+        let set = |enabled| {
+            lock.confirmed_if_loosening(Action::TurnOnJournal, |confirmed| {
+                switch(&store, enabled, confirmed)
+            })
+        };
+
+        for outcome in [Outcome::Cancelled, Outcome::Failed(Failure::NotAccepted)] {
+            lock.authenticator().then(outcome);
+            assert!(set(true).is_err(), "{outcome:?}");
+            assert!(!store.journal_enabled().unwrap(), "{outcome:?}");
+        }
+        lock.authenticator().then(Outcome::Success);
+        assert!(set(true).unwrap().enabled);
+        assert!(store.journal_enabled().unwrap());
+        assert_eq!(lock.authenticator().requests(), 4);
+
+        // On again, and off: nothing asks.
+        assert!(set(true).unwrap().enabled);
+        assert!(!set(false).unwrap().enabled);
+        assert!(!store.journal_enabled().unwrap());
+        assert_eq!(lock.authenticator().requests(), 4);
+    }
 
     fn capture(id: i64, minute: i64, bundle_id: &str, title: &str, text: &str) -> Capture {
         Capture {

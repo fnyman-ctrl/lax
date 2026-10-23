@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { refusal } from "./Lock";
 import { usePaged } from "./usePaged";
 
 // Shapes returned by src-tauri/src/journal.rs.
@@ -60,7 +61,7 @@ export function Journal({ onShowModels }: { onShowModels: () => void }) {
   const toggle = (enabled: boolean) => {
     setMessage(null);
     invoke<JournalStatus>("set_journal_enabled", { enabled }).then(setStatus, (e) =>
-      setMessage(String(e)),
+      setMessage(refusal(e)),
     );
   };
 

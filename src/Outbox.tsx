@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { refusal } from "./Lock";
 
 // Shape returned by src-tauri/src/outbox.rs.
 type OutboxItem = {
@@ -56,7 +57,7 @@ export function Outbox() {
         setConfirmClear(false);
         load();
       },
-      (e) => setMessage(String(e)),
+      (e) => setMessage(refusal(e)),
     );
   };
 
@@ -67,7 +68,7 @@ export function Outbox() {
         setMessage(`The outbox now keeps entries for ${days} days.`);
         load();
       },
-      (e) => setMessage(String(e)),
+      (e) => setMessage(refusal(e)),
     );
   };
 

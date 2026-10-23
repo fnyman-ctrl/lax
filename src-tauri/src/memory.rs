@@ -19,6 +19,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
 use crate::journal::{When, may_use_model};
+use crate::lock::app::asking;
+use crate::lock::{Action, Refusal, turns_on};
 use crate::logging::{self, ErrorKind, Field};
 use crate::models::structured::{self, Captured, Entities, StructuredError};
 use crate::models::{Endpoint, ModelClient, ModelTurn};
@@ -338,23 +340,32 @@ pub fn memory_status(app: AppHandle) -> Result<MemoryStatus, String> {
 
 /// Turns the memory on or off. It can only be turned on with a chat model
 /// chosen. Turning it off stops it learning; what it learned stays until
-/// the user forgets it.
-#[tauri::command(async)]
-pub fn set_memory_enabled(app: AppHandle, enabled: bool) -> Result<MemoryStatus, String> {
-    command(&app, |store| {
-        let failed = |_| "Lax couldn't change the memory setting.".to_string();
-        if enabled
-            && store
-                .model_choice(ModelTask::Chat)
-                .map_err(failed)?
-                .is_none()
-        {
-            return Err("Choose a chat model under Models first.".to_string());
-        }
-        store.set_memory_enabled(enabled).map_err(failed)?;
-        status(store).map_err(failed)
+/// the user forgets it. Turning it on asks for Touch ID or the password
+/// first (ADR 0012); turning it off doesn't.
+#[tauri::command]
+pub async fn set_memory_enabled(app: AppHandle, enabled: bool) -> Result<MemoryStatus, Refusal> {
+    asking(app, move |app, lock| {
+        lock.confirmed_if_loosening(Action::TurnOnMemory, |confirmed| {
+            command(app, |store| {
+                let failed = |_| "Lax couldn't change the memory setting.".to_string();
+                if enabled
+                    && store
+                        .model_choice(ModelTask::Chat)
+                        .map_err(failed)?
+                        .is_none()
+                {
+                    return Err("Choose a chat model under Models first.".to_string());
+                }
+                if !confirmed && turns_on(store.memory_enabled().map_err(failed)?, enabled) {
+                    return Ok(None);
+                }
+                store.set_memory_enabled(enabled).map_err(failed)?;
+                status(store).map(Some).map_err(failed)
+            })
+        })
+        .inspect(|_| pages::sync_now(app))
     })
-    .inspect(|_| pages::sync_now(&app))
+    .await
 }
 
 #[tauri::command(async)]
@@ -510,30 +521,42 @@ pub fn take_out_part(app: AppHandle, part: i64) -> Result<(), String> {
     Ok(())
 }
 
-/// Forgets everything the memory noted and turns it off.
-#[tauri::command(async)]
-pub fn forget_memory(app: AppHandle) -> Result<usize, String> {
-    let forgotten = command(&app, |store| {
-        store
-            .forget_memory()
-            .map_err(|_| "Lax couldn't forget what the memory noted.".to_string())
-    })?;
-    pages::sync_now(&app);
-    Ok(forgotten)
+/// Forgets everything the memory noted and turns it off. Asks for Touch ID
+/// or the password first, every time (ADR 0012).
+#[tauri::command]
+pub async fn forget_memory(app: AppHandle) -> Result<usize, Refusal> {
+    asking(app, |app, lock| {
+        lock.confirmed(Action::ForgetMemory, || {
+            let forgotten = command(app, |store| {
+                store
+                    .forget_memory()
+                    .map_err(|_| "Lax couldn't forget what the memory noted.".to_string())
+            })?;
+            pages::sync_now(app);
+            Ok(forgotten)
+        })
+    })
+    .await
 }
 
 /// Forgets one entity: its names and mentions. The episodes stay. With
 /// `dont_learn`, its names go on the "don't learn" list so later episodes
 /// can't bring it back; without, a later episode that names it starts anew.
-#[tauri::command(async)]
-pub fn forget_entity(app: AppHandle, id: i64, dont_learn: bool) -> Result<bool, String> {
-    let existed = command(&app, |store| {
-        store
-            .forget_entity(id, dont_learn, Utc::now())
-            .map_err(|_| "Lax couldn't forget it.".to_string())
-    })?;
-    pages::sync_now(&app);
-    Ok(existed)
+/// Asks first, every time.
+#[tauri::command]
+pub async fn forget_entity(app: AppHandle, id: i64, dont_learn: bool) -> Result<bool, Refusal> {
+    asking(app, move |app, lock| {
+        lock.confirmed(Action::ForgetEntity, || {
+            let existed = command(app, |store| {
+                store
+                    .forget_entity(id, dont_learn, Utc::now())
+                    .map_err(|_| "Lax couldn't forget it.".to_string())
+            })?;
+            pages::sync_now(app);
+            Ok(existed)
+        })
+    })
+    .await
 }
 
 /// Keeps a new entity, as if it had been seen on two days.
@@ -549,9 +572,11 @@ pub fn keep_entity(app: AppHandle, id: i64) -> Result<bool, String> {
 }
 
 /// Sets the other names the user goes by (nicknames, a maiden name): kept
-/// out of the memory's people, and part of `about-me.md`.
-#[tauri::command(async)]
-pub fn set_own_names(app: AppHandle, names: Vec<String>) -> Result<MemoryStatus, String> {
+/// out of the memory's people, and part of `about-me.md`. Asks for Touch ID
+/// or the password first, every time (ADR 0012): adding a name forgets the
+/// people noted under it, and removing one lets Lax learn it again.
+#[tauri::command]
+pub async fn set_own_names(app: AppHandle, names: Vec<String>) -> Result<MemoryStatus, Refusal> {
     let mut clean: Vec<String> = Vec::new();
     for name in names
         .iter()
@@ -563,21 +588,53 @@ pub fn set_own_names(app: AppHandle, names: Vec<String>) -> Result<MemoryStatus,
             clean.push(name);
         }
     }
-    let status = command(&app, |store| {
+    // Nothing added or removed, such as a name only written differently:
+    // saved without asking, since it neither forgets nor lets Lax learn
+    // anything.
+    let unchanged = command(&app, |store| {
         let failed = |_| "Lax couldn't save your names.".to_string();
+        if !same_names(&store.own_names().map_err(failed)?, &clean) {
+            return Ok(None);
+        }
         store.set_own_names(&clean).map_err(failed)?;
-        // Noted before the user named them as theirs: forgotten now.
-        store
-            .forget_people_named(&clean, Utc::now())
-            .map_err(failed)?;
-        status(store).map_err(failed)
+        status(store).map(Some).map_err(failed)
     })?;
-    pages::sync_now(&app);
-    Ok(status)
+    if let Some(status) = unchanged {
+        pages::sync_now(&app);
+        return Ok(status);
+    }
+    asking(app, move |app, lock| {
+        lock.confirmed(Action::SetOwnNames, || {
+            let status = command(app, |store| {
+                let failed = |_| "Lax couldn't save your names.".to_string();
+                store.set_own_names(&clean).map_err(failed)?;
+                // Noted before the user named them as theirs: forgotten now.
+                store
+                    .forget_people_named(&clean, Utc::now())
+                    .map_err(failed)?;
+                status(store).map_err(failed)
+            })?;
+            pages::sync_now(app);
+            Ok(status)
+        })
+    })
+    .await
 }
 
 /// Most other names the user can give.
 const MAX_OWN_NAMES: usize = 10;
+
+/// Whether `a` and `b` hold the same names, whatever their order or how
+/// each is written.
+fn same_names(a: &[String], b: &[String]) -> bool {
+    let keys = |names: &[String]| {
+        names
+            .iter()
+            .map(|n| name_key(n))
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    keys(a) == keys(b)
+}
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -788,22 +845,46 @@ pub fn pick_export_folder(app: AppHandle) -> Result<Option<PickedFolder>, String
 /// Exports pages as Markdown files into the folder just picked: the page
 /// of `entity`, the About me page for `None`, or every page with `all`. The
 /// window has shown that the copy isn't encrypted; a synced folder needs
-/// `synced_confirmed` too.
-#[tauri::command(async)]
-pub fn export_pages(
+/// `synced_confirmed` too. Then asks for Touch ID or the password, every
+/// time (ADR 0012). The pick is used up once the user confirms.
+#[tauri::command]
+pub async fn export_pages(
     app: AppHandle,
     entity: Option<i64>,
     all: bool,
     synced_confirmed: bool,
-) -> Result<pages::export::Exported, String> {
+) -> Result<pages::export::Exported, Refusal> {
+    // Kept until the user confirms: a cancelled dialog doesn't throw the
+    // pick away.
     let folder = app
         .state::<pages::export::ChosenFolder>()
-        .take()
-        .ok_or("Choose a folder first.")?;
+        .get()
+        .ok_or_else(|| "Choose a folder first.".to_string())?;
     if pages::export::synced_service(&folder).is_some() && !synced_confirmed {
-        return Err("That folder is synced off this Mac. Confirm it first.".into());
+        return Err(Some(
+            "That folder is synced off this Mac. Confirm it first.".into(),
+        ));
     }
-    let exported = command(&app, |store| {
+    asking(app, move |app, lock| {
+        lock.confirmed(Action::ExportPages, || {
+            // Used up now, whatever happens next, and only if it is still the
+            // folder the notice was about.
+            if app.state::<pages::export::ChosenFolder>().take() != Some(folder.clone()) {
+                return Err("Choose a folder first.".to_string());
+            }
+            export_into(app, &folder, entity, all)
+        })
+    })
+    .await
+}
+
+fn export_into(
+    app: &AppHandle,
+    folder: &std::path::Path,
+    entity: Option<i64>,
+    all: bool,
+) -> Result<pages::export::Exported, String> {
+    let exported = command(app, |store| {
         let failed = |_| "Lax couldn't read the pages.".to_string();
         let chosen = if all {
             store.pages().map_err(failed)?
@@ -816,7 +897,7 @@ pub fn export_pages(
             .collect::<crate::store::Result<Vec<_>>>()
             .map_err(failed)?;
         let date = chrono::Local::now().format("%Y-%m-%d").to_string();
-        pages::export::write(&pages, &folder, &date)
+        pages::export::write(&pages, folder, &date)
             .map_err(|_| "Lax couldn't write the pages there.".to_string())
     })?;
     Ok(exported)
@@ -895,15 +976,21 @@ pub fn dont_learn_list(app: AppHandle) -> Result<Vec<DontLearnItem>, String> {
     })
 }
 
-/// Takes a name off the "don't learn" list.
-#[tauri::command(async)]
-pub fn allow_learning(app: AppHandle, kind: String, name: String) -> Result<bool, String> {
-    let kind = EntityKind::parse(&kind).ok_or("Unknown kind.")?;
-    command(&app, |store| {
-        store
-            .allow_learning(kind, &name)
-            .map_err(|_| "Lax couldn't change the list.".to_string())
+/// Takes a name off the "don't learn" list. Asks for Touch ID or the
+/// password first, every time (ADR 0012).
+#[tauri::command]
+pub async fn allow_learning(app: AppHandle, kind: String, name: String) -> Result<bool, Refusal> {
+    let kind = EntityKind::parse(&kind).ok_or_else(|| "Unknown kind.".to_string())?;
+    asking(app, move |app, lock| {
+        lock.confirmed(Action::AllowLearning, || {
+            command(app, |store| {
+                store
+                    .allow_learning(kind, &name)
+                    .map_err(|_| "Lax couldn't change the list.".to_string())
+            })
+        })
     })
+    .await
 }
 
 /// A name the user typed, with whitespace collapsed; refused if empty, too
@@ -944,6 +1031,17 @@ fn with_store<T>(app: &AppHandle, work: impl FnOnce(&mut Store) -> T) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_same_names_written_differently_are_the_same() {
+        let names = |list: &[&str]| list.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        assert!(same_names(&names(&["Anna", "Ex"]), &names(&["ex", "ANNA"])));
+        assert!(same_names(&names(&[]), &names(&[])));
+        // Added or removed: not the same, so it asks.
+        assert!(!same_names(&names(&["Anna"]), &names(&["Anna", "Ex"])));
+        assert!(!same_names(&names(&["Anna", "Ex"]), &names(&["Anna"])));
+        assert!(!same_names(&names(&["Anna"]), &names(&["Anne"])));
+    }
 
     fn entities(people: &[&str], organisations: &[&str], projects: &[&str]) -> Entities {
         let list = |names: &[&str]| names.iter().map(|n| n.to_string()).collect();

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { refusal } from "./Lock";
 import { Models } from "./Models";
 // The pixel salmon (docs/BRAND.md).
 import salmon from "../src-tauri/icons/salmon.svg";
@@ -75,7 +76,7 @@ export function Setup({ memoryGb, onDone }: { memoryGb: number; onDone: () => vo
     setMessage(null);
     invoke<{ enabled: boolean }>(feature.set, { enabled }).then(
       (status) => setOn((o) => ({ ...o, [feature.key]: status.enabled })),
-      (e) => setMessage(String(e)),
+      (e) => setMessage(refusal(e)),
     );
   };
 

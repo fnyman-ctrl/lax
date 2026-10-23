@@ -44,6 +44,21 @@ describe("exporting pages", () => {
     );
   });
 
+  test("a cancelled Touch ID says nothing and goes back to choosing a folder", async () => {
+    picks({ name: "Documents", synced: null });
+    mocked.mockImplementation(async (command: string) => {
+      if (command === "pick_export_folder") return { name: "Documents", synced: null };
+      if (command === "export_pages") throw null;
+      return null;
+    });
+    render(<ExportPages scope="all" onClose={() => {}} />);
+    await choose();
+    expect(mocked).toHaveBeenCalledWith("export_pages", expect.anything());
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(screen.getByRole("button", { name: "Choose a folder…" })).toBeTruthy();
+  });
+
   test("asks again before a folder that is synced off this Mac", async () => {
     picks({ name: "Export", synced: "iCloud Drive" });
     render(<ExportPages scope={{ entity: 7 }} onClose={() => {}} />);

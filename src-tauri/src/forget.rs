@@ -9,6 +9,8 @@ use chrono::{DateTime, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
+use crate::lock::app::asking;
+use crate::lock::{Action, Refusal};
 use crate::logging::{self, ErrorKind, Field};
 use crate::store::{CapturedApp, Forget, MAX_RETENTION_DAYS, Store};
 
@@ -84,32 +86,47 @@ pub fn captured_apps(app: AppHandle) -> Result<Vec<AppItem>, String> {
 }
 
 /// Forgets what `what` covers and returns how many captures were deleted.
-#[tauri::command(async)]
-pub fn forget_captures(app: AppHandle, what: ForgetRequest) -> Result<usize, String> {
-    let forget = what.to_forget(Utc::now())?;
-    let deleted = with_store(&app, |store| store.forget(&forget))?;
-    logging::info("forget.done", &[Field::Count("deleted", deleted as u64)]);
-    // What the memory's pages drew from the forgotten episodes goes too.
-    crate::pages::sync_now(&app);
-    Ok(deleted)
+/// Asks for Touch ID or the password first, every time (ADR 0012).
+#[tauri::command]
+pub async fn forget_captures(app: AppHandle, what: ForgetRequest) -> Result<usize, Refusal> {
+    // Checked before asking, so a request that can't be done doesn't ask.
+    what.to_forget(Utc::now())?;
+    asking(app, move |app, lock| {
+        lock.confirmed(Action::ForgetCaptures, || {
+            // From the time the user confirmed, so "the last hour" covers
+            // the time the dialog was open too.
+            let forget = what.to_forget(Utc::now())?;
+            let deleted = with_store(app, |store| store.forget(&forget))?;
+            logging::info("forget.done", &[Field::Count("deleted", deleted as u64)]);
+            // What the memory's pages drew from the forgotten episodes goes too.
+            crate::pages::sync_now(app);
+            Ok(deleted)
+        })
+    })
+    .await
 }
 
 /// Deletes every capture and the logs, whose timestamps show when Lax was
 /// in use. Settings (retention, pause) are kept: they say nothing about what
-/// was on screen.
-#[tauri::command(async)]
-pub fn delete_all_data(app: AppHandle) -> Result<usize, String> {
-    let deleted = with_store(&app, |store| store.forget(&Forget::Everything))?;
-    crate::pages::sync_now(&app);
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|_| "Lax couldn't find its data folder.".to_string())?;
-    if logging::delete_all(&data_dir).is_err() {
-        logging::warn("forget.logs_failed", &[Field::Error(ErrorKind::Io)]);
-        return Err("The captures were deleted, but the logs couldn't be.".to_string());
-    }
-    Ok(deleted)
+/// was on screen. Asks first, every time.
+#[tauri::command]
+pub async fn delete_all_data(app: AppHandle) -> Result<usize, Refusal> {
+    asking(app, |app, lock| {
+        lock.confirmed(Action::DeleteAllData, || {
+            let deleted = with_store(app, |store| store.forget(&Forget::Everything))?;
+            crate::pages::sync_now(app);
+            let data_dir = app
+                .path()
+                .app_data_dir()
+                .map_err(|_| "Lax couldn't find its data folder.".to_string())?;
+            if logging::delete_all(&data_dir).is_err() {
+                logging::warn("forget.logs_failed", &[Field::Error(ErrorKind::Io)]);
+                return Err("The captures were deleted, but the logs couldn't be.".to_string());
+            }
+            Ok(deleted)
+        })
+    })
+    .await
 }
 
 #[tauri::command(async)]
@@ -118,12 +135,20 @@ pub fn retention_days(app: AppHandle) -> Result<u32, String> {
 }
 
 /// Changes how long raw captures are kept, and deletes older ones now.
-#[tauri::command(async)]
-pub fn set_retention_days(app: AppHandle, days: u32) -> Result<(), String> {
+/// Asks first, every time: longer keeps more, shorter deletes.
+#[tauri::command]
+pub async fn set_retention_days(app: AppHandle, days: u32) -> Result<(), Refusal> {
     if !(1..=MAX_RETENTION_DAYS).contains(&days) {
-        return Err(format!("Choose between 1 and {MAX_RETENTION_DAYS} days."));
+        return Err(Some(format!(
+            "Choose between 1 and {MAX_RETENTION_DAYS} days."
+        )));
     }
-    with_store(&app, |store| store.set_retention_days(days, Utc::now()))
+    asking(app, move |app, lock| {
+        lock.confirmed(Action::SetRetention, || {
+            with_store(app, |store| store.set_retention_days(days, Utc::now()))
+        })
+    })
+    .await
 }
 
 /// Runs `change` on the store. Errors become a fixed message: they are never

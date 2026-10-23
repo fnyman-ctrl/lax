@@ -10,6 +10,8 @@ use chrono::{DateTime, Utc};
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
+use crate::lock::app::asking;
+use crate::lock::{Action, Refusal};
 use crate::store::{MAX_RETENTION_DAYS, OutboxSummary, Store};
 
 const MAX_LIMIT: u32 = 200;
@@ -73,10 +75,16 @@ pub fn outbox_payload(app: AppHandle, id: i64) -> Result<Option<String>, String>
     with_store(&app, |store| store.outbox_payload(id))
 }
 
-/// Deletes one entry, or with no `id` the whole outbox.
-#[tauri::command(async)]
-pub fn delete_outbox(app: AppHandle, id: Option<i64>) -> Result<usize, String> {
-    with_store(&app, |store| store.delete_outbox(id))
+/// Deletes one entry, or with no `id` the whole outbox. Asks for Touch ID
+/// or the password first, every time (ADR 0012).
+#[tauri::command]
+pub async fn delete_outbox(app: AppHandle, id: Option<i64>) -> Result<usize, Refusal> {
+    asking(app, move |app, lock| {
+        lock.confirmed(Action::DeleteOutbox, || {
+            with_store(app, |store| store.delete_outbox(id))
+        })
+    })
+    .await
 }
 
 #[tauri::command(async)]
@@ -84,14 +92,23 @@ pub fn outbox_retention_days(app: AppHandle) -> Result<u32, String> {
     with_store(&app, |store| store.outbox_retention_days())
 }
 
-#[tauri::command(async)]
-pub fn set_outbox_retention_days(app: AppHandle, days: u32) -> Result<(), String> {
+/// Asks first, every time: longer keeps more of what was sent, shorter
+/// deletes.
+#[tauri::command]
+pub async fn set_outbox_retention_days(app: AppHandle, days: u32) -> Result<(), Refusal> {
     if !(1..=MAX_RETENTION_DAYS).contains(&days) {
-        return Err(format!("Choose between 1 and {MAX_RETENTION_DAYS} days."));
+        return Err(Some(format!(
+            "Choose between 1 and {MAX_RETENTION_DAYS} days."
+        )));
     }
-    with_store(&app, |store| {
-        store.set_outbox_retention_days(days, Utc::now())
+    asking(app, move |app, lock| {
+        lock.confirmed(Action::SetOutboxRetention, || {
+            with_store(app, |store| {
+                store.set_outbox_retention_days(days, Utc::now())
+            })
+        })
     })
+    .await
 }
 
 fn with_store<T>(

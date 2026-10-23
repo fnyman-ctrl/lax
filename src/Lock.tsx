@@ -10,6 +10,22 @@ const LOCK_CHANGED = "lock-changed";
 type Changed = { locked: boolean; message: string | null };
 
 /**
+ * What to show when a command is refused: its message, or nothing when the
+ * user cancelled Touch ID or the password dialog, which Rust answers with
+ * `null` (ADR 0012). Forgets, exports and changes that loosen privacy ask
+ * every time, so every place that calls one shows its error through this.
+ */
+export function refusal(error: unknown): string | null {
+  return error === null || error === undefined ? null : String(error);
+}
+
+/** `refusal` as an error message to show, or none for a cancel. */
+export function failure(error: unknown): { text: string; error: true } | null {
+  const text = refusal(error);
+  return text === null ? null : { text, error: true };
+}
+
+/**
  * Shows the app only while the window is unlocked, and the lock screen
  * otherwise (ADR 0012). The lock is kept in Rust, which refuses every
  * command that returns what Lax captured or learned while the window is
@@ -72,7 +88,7 @@ function LockScreen({
     setAsking(true);
     onMessage(null);
     invoke("unlock")
-      .then(onUnlocked, (e) => onMessage(typeof e === "string" ? e : null))
+      .then(onUnlocked, (e) => onMessage(refusal(e)))
       .finally(() => setAsking(false));
   };
 
